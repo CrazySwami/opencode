@@ -116,7 +116,7 @@ async function runBrowserUse(params: Schema.Schema.Type<typeof Parameters>, brid
         requestJSON(bridgeURL, "/health"),
         requestJSON(bridgeURL, "/sessions"),
       ])
-      return { ok: Boolean(health?.ok), bridgeURL, health, sessions }
+      return { ok: Boolean(health?.ok), bridgeURL, profilePolicy: browserUseProfilePolicy(), health, sessions }
     }
     case "sessions":
       return await requestJSON(bridgeURL, "/sessions")
@@ -214,6 +214,52 @@ async function requestJSON(
 
 function browserUseBridgeURL() {
   return (process.env.OPENCODE_BROWSER_USE_URL || "http://127.0.0.1:8768").replace(/\/+$/, "")
+}
+
+function browserUseProfilePolicy() {
+  const persistentProfileRequested = process.env.OPENCODE_BROWSER_USE_PERSISTENT_PROFILE === "1"
+  const extensionsRequested = process.env.OPENCODE_BROWSER_USE_EXTENSIONS === "1"
+  const lastPassRequested = process.env.OPENCODE_BROWSER_USE_LASTPASS === "1"
+  const accessConfigured = Boolean(
+    process.env.OPENCODE_CLOUDFLARE_ACCESS_AUD && process.env.OPENCODE_CLOUDFLARE_ACCESS_TEAM_DOMAIN,
+  )
+  const accessBoundaryReady = process.env.OPENCODE_LIVE_BROWSER_EXPOSE === "1" && accessConfigured
+  return {
+    status: accessBoundaryReady
+      ? persistentProfileRequested
+        ? "manual_profile_setup_required"
+        : "safe_default_no_persistent_auth"
+      : "blocked_access_boundary",
+    requiredAccessBoundary: "Cloudflare Access GitHub login for code.hustletogether.com",
+    accessBoundaryReady,
+    persistentProfile: {
+      requested: persistentProfileRequested,
+      enabled: accessBoundaryReady && persistentProfileRequested,
+      status: accessBoundaryReady
+        ? persistentProfileRequested
+          ? "manual_profile_setup_required"
+          : "disabled_by_policy"
+        : "blocked_until_access_boundary",
+    },
+    extensions: {
+      requested: extensionsRequested,
+      enabled: accessBoundaryReady && extensionsRequested,
+      status: accessBoundaryReady
+        ? extensionsRequested
+          ? "manual_install_required"
+          : "disabled_by_policy"
+        : "blocked_until_access_boundary",
+    },
+    lastPass: {
+      requested: lastPassRequested,
+      enabled: accessBoundaryReady && extensionsRequested && lastPassRequested,
+      status: accessBoundaryReady
+        ? extensionsRequested && lastPassRequested
+          ? "manual_install_and_login_required"
+          : "disabled_by_policy"
+        : "blocked_until_access_boundary",
+    },
+  }
 }
 
 function requireSession(params: Schema.Schema.Type<typeof Parameters>) {

@@ -1,5 +1,5 @@
 Control the CT100 Browser Use OSS bridge. Use this when a task should be handled by Browser Use instead of low-level Playwright CLI or manual in-tab browser controls.
 
-The bridge runs a real visible Chromium session on the CT100 virtual display and exposes a live noVNC view. Start with action=status or action=sessions to inspect availability. Use action=create to create a Browser Use session, then action=run, navigate, state, click, type, keys, wait, snapshot, or close with the returned sessionID.
+The bridge runs a real visible Chromium session on the CT100 virtual display and may expose a live noVNC view when the Agent Chrome access boundary is enabled. Start with action=status or action=sessions to inspect availability and profile/extension policy. Use action=create to create a Browser Use session, then action=run, navigate, state, click, type, keys, wait, snapshot, or close with the returned sessionID.
 
-Browser Use can interact with real pages and credentials if the profile/session is configured that way, so do not enter or expose secrets unless the user explicitly authorizes it.
+Browser Use can interact with real pages and credentials if the profile/session is configured that way. Persistent Chrome profiles, extensions, and LastPass stay disabled until code.hustletogether.com is behind the approved Cloudflare Access/GitHub login boundary and the profile policy reports them enabled. Do not enter or expose secrets unless the user explicitly authorizes it.

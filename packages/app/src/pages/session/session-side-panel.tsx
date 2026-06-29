@@ -312,6 +312,15 @@ type LiveBrowserStatus = {
   requiredAccessBoundary?: string
   streamURL?: string
   proxiedLiveURL?: string
+  profilePolicy?: {
+    status?: string
+    accessBoundaryReady?: boolean
+    profileRoot?: string
+    persistentAuth?: { enabled?: boolean; status?: string }
+    extensions?: { enabled?: boolean; status?: string }
+    lastPass?: { enabled?: boolean; status?: string }
+    surfaces?: Array<{ id?: string; label?: string; purpose?: string; exposed?: boolean; safeWhilePublic?: boolean }>
+  }
   browserUse?: {
     ok?: boolean
     liveURL?: string
@@ -343,6 +352,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
   let canvasRef: HTMLCanvasElement | undefined
 
   const browserExposureBlocked = createMemo(() => !!status().exposureBlocked)
+  const profilePolicy = createMemo(() => status().profilePolicy)
   const controlsDisabled = createMemo(() => browserBusy() || browserExposureBlocked())
   const streamSrc = createMemo(() => `${status().streamURL ?? "/experimental/browser/live/stream"}?t=${streamKey()}`)
   const interactiveUrl = createMemo(() => {
@@ -732,6 +742,11 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
                 </Show>
                 <Show when={status().browserUse?.liveURL}>{(url) => <button class="rounded px-2 py-0.5 text-text-strong hover:bg-surface-raised-base-hover disabled:text-text-disabled" type="button" disabled={browserExposureBlocked()} onClick={() => window.open(url(), "_blank", "noopener,noreferrer")}>Open noVNC</button>}</Show>
               </div>
+              <div class="grid grid-cols-1 gap-2 text-12-regular text-text-weak md:grid-cols-3">
+                <StatusPill label="Profile" value={profilePolicy()?.persistentAuth?.status ?? "unknown"} active={!!profilePolicy()?.persistentAuth?.enabled} />
+                <StatusPill label="Extensions" value={profilePolicy()?.extensions?.status ?? "unknown"} active={!!profilePolicy()?.extensions?.enabled} />
+                <StatusPill label="LastPass" value={profilePolicy()?.lastPass?.status ?? "unknown"} active={!!profilePolicy()?.lastPass?.enabled} />
+              </div>
               <Show when={browserError()}>{(error) => <div class="text-12-regular text-text-weak break-all">{error()}</div>}</Show>
               <Show when={lastArtifact()}>{(artifact) => <div class="text-12-regular text-text-weak">Saved <a class="text-text-strong underline" href={artifact().url} target="_blank" rel="noreferrer">{artifact().name}</a></div>}</Show>
             </div>
@@ -766,6 +781,14 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
                 <div class="mt-3 text-12-regular text-text-weak">
                   {status().requiredAccessBoundary ?? "Cloudflare Access GitHub login for code.hustletogether.com"}
                 </div>
+                <div class="mt-4 grid grid-cols-1 gap-2 text-left">
+                  <StatusPill label="Profile" value={profilePolicy()?.persistentAuth?.status ?? "blocked"} active={!!profilePolicy()?.persistentAuth?.enabled} />
+                  <StatusPill label="Extensions" value={profilePolicy()?.extensions?.status ?? "blocked"} active={!!profilePolicy()?.extensions?.enabled} />
+                  <StatusPill label="LastPass" value={profilePolicy()?.lastPass?.status ?? "blocked"} active={!!profilePolicy()?.lastPass?.enabled} />
+                </div>
+                <Show when={profilePolicy()?.profileRoot}>
+                  {(profileRoot) => <div class="mt-3 break-all text-11-regular text-text-weak">{profileRoot()}</div>}
+                </Show>
               </div>
             </div>
           }
@@ -958,6 +981,21 @@ function StatusRow(props: { label: string; value?: string | number | boolean | n
     <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
       <div class="text-12-regular text-text-weak">{props.label}</div>
       <div class="text-14-regular text-text-strong break-all">{String(props.value ?? "Not available")}</div>
+    </div>
+  )
+}
+
+function StatusPill(props: { label: string; value?: string | number | boolean | null; active?: boolean }) {
+  return (
+    <div class="min-w-0 rounded-md border border-border-weaker-base bg-background-base px-2.5 py-2">
+      <div class="flex min-w-0 items-center gap-2">
+        <span
+          class="h-2 w-2 shrink-0 rounded-full"
+          classList={{ "bg-[#f97316]": !!props.active, "bg-text-disabled": !props.active }}
+        />
+        <span class="shrink-0 text-11-medium text-text-strong">{props.label}</span>
+      </div>
+      <div class="mt-1 truncate text-11-regular text-text-weak">{String(props.value ?? "unknown").replaceAll("_", " ")}</div>
     </div>
   )
 }

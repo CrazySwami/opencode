@@ -287,6 +287,10 @@ const browserPreviewRoute = HttpRouter.use((router) =>
       }),
     )
 
+    yield* router.add("GET", "/experimental/browser/profile/status", () =>
+      Effect.promise(async () => HttpServerResponse.jsonUnsafe(liveBrowserProfilePolicy())),
+    )
+
     yield* router.add("GET", "/experimental/browser/live/stream", (request) =>
       Effect.promise(async () => liveBrowserExposureAccess(request)).pipe(
         Effect.flatMap((access) =>
@@ -885,12 +889,112 @@ function liveBrowserGateStatus() {
     mode: liveBrowserExposureEnabled() ? "cloudflare-access-required" : "disabled",
     requiredAccessBoundary: "Cloudflare Access GitHub login for code.hustletogether.com",
     cloudflareAccess: liveBrowserAccessConfigSummary(),
+    profilePolicy: liveBrowserProfilePolicy(),
     routes: {
       status: "/experimental/browser/live/status",
+      profileStatus: "/experimental/browser/profile/status",
       stream: "/experimental/browser/live/stream",
       snapshot: "/experimental/browser/live/snapshot",
       novnc: "/experimental/browser/novnc/opencode-lite.html?path=websockify",
     },
+  }
+}
+
+function liveBrowserProfilePolicy() {
+  const cloudflareAccess = liveBrowserAccessConfigSummary()
+  const accessBoundaryReady = liveBrowserExposureEnabled() && cloudflareAccess.configured
+  const extensionRequested = process.env.OPENCODE_LIVE_BROWSER_EXTENSIONS === "1"
+  const lastPassRequested = process.env.OPENCODE_LIVE_BROWSER_LASTPASS === "1"
+  const persistentAuthRequested =
+    process.env.OPENCODE_LIVE_BROWSER_PERSISTENT_AUTH === "1" ||
+    process.env.OPENCODE_BROWSER_USE_PERSISTENT_PROFILE === "1"
+  const profileRoot = liveBrowserProfile()
+  const status = accessBoundaryReady
+    ? extensionRequested || persistentAuthRequested
+      ? "ready_after_manual_profile_setup"
+      : "safe_default_no_persistent_auth"
+    : "blocked_access_boundary"
+
+  return {
+    ok: true,
+    status,
+    requiredAccessBoundary: "Cloudflare Access GitHub login for code.hustletogether.com",
+    accessBoundaryReady,
+    cloudflareAccess,
+    profileRoot,
+    profileStorage: {
+      type: "ct100-local-chrome-user-data-dir",
+      persistentOnDisk: true,
+      containsSecrets: "unknown_until_user_configures_profile",
+      exposedToBrowserUI: accessBoundaryReady,
+    },
+    persistentAuth: {
+      requested: persistentAuthRequested,
+      enabled: accessBoundaryReady && persistentAuthRequested,
+      status: accessBoundaryReady
+        ? persistentAuthRequested
+          ? "manual_profile_setup_required"
+          : "disabled_by_policy"
+        : "blocked_until_access_boundary",
+    },
+    extensions: {
+      requested: extensionRequested,
+      enabled: accessBoundaryReady && extensionRequested,
+      installMode: accessBoundaryReady && extensionRequested ? "manual_chrome_profile" : "disabled",
+      status: accessBoundaryReady
+        ? extensionRequested
+          ? "manual_install_required"
+          : "disabled_by_policy"
+        : "blocked_until_access_boundary",
+    },
+    lastPass: {
+      requested: lastPassRequested,
+      enabled: accessBoundaryReady && extensionRequested && lastPassRequested,
+      status: accessBoundaryReady
+        ? extensionRequested && lastPassRequested
+          ? "manual_install_and_login_required"
+          : "disabled_by_policy"
+        : "blocked_until_access_boundary",
+    },
+    surfaces: [
+      {
+        id: "preview",
+        label: "Preview",
+        tab: "Preview",
+        purpose: "Interactive renderer for hosted routes, local project URLs, and viewable files.",
+        usesChromeProfile: false,
+        toolControlled: false,
+        safeWhilePublic: true,
+      },
+      {
+        id: "agent_chrome",
+        label: "Agent Chrome",
+        tab: "Agent Chrome",
+        purpose: "Shared visible Chromium surface for manual viewing and tool control.",
+        usesChromeProfile: true,
+        toolControlled: true,
+        safeWhilePublic: false,
+        exposed: accessBoundaryReady,
+      },
+      {
+        id: "browser_use",
+        label: "Browser Use",
+        tab: "Agent Chrome",
+        purpose: "Browser Use OSS bridge for model-driven browser tasks.",
+        usesChromeProfile: persistentAuthRequested,
+        toolControlled: true,
+        safeWhilePublic: !persistentAuthRequested,
+      },
+      {
+        id: "open_design",
+        label: "Open Design",
+        tab: "Open Design",
+        purpose: "Interactive Open Design UI and daemon-backed tool surface.",
+        usesChromeProfile: false,
+        toolControlled: true,
+        safeWhilePublic: false,
+      },
+    ],
   }
 }
 
@@ -989,6 +1093,7 @@ function liveBrowserExposureBlockedResponse(format: "json" | "text", access?: Li
             : "Cloudflare Access GitHub login for code.hustletogether.com",
         mode: access?.ok === false ? access.mode : "disabled",
         cloudflareAccess: access?.ok === false ? access.cloudflareAccess : liveBrowserAccessConfigSummary(),
+        profilePolicy: liveBrowserProfilePolicy(),
       },
       { status: 403 },
     )
@@ -1093,6 +1198,7 @@ async function liveBrowserStatus(access?: Extract<LiveBrowserAccess, { ok: true 
     mode: "ct100-xvfb-chrome",
     display: liveBrowserDisplay(),
     profile: liveBrowserProfile(),
+    profilePolicy: liveBrowserProfilePolicy(),
     debugPort: liveBrowserDebugPort(),
     currentURL: cdp?.url,
     title: cdp?.title,
