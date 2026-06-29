@@ -1603,7 +1603,7 @@ export function SessionSidePanel(props: {
                             {(tab) => <SortableTab tab={tab} onTabClose={tabs().close} />}
                           </For>
                         </SortableProvider>
-                        <div class="bg-background-stronger h-full shrink-0 sticky right-0 z-20 flex items-center justify-center pr-3 relative">
+                        <div class="bg-background-stronger h-full shrink-0 sticky right-0 z-50 flex items-center justify-center pr-3 relative">
                           <IconButton
                             icon="plus-small"
                             variant="ghost"
@@ -1618,7 +1618,7 @@ export function SessionSidePanel(props: {
                           />
                           <Show when={panelMenuOpen()}>
                             <div
-                              class="absolute right-3 top-9 z-50 w-48 rounded-lg border border-border-base bg-background-stronger p-1 shadow-lg"
+                              class="absolute right-3 top-9 z-[100] w-48 rounded-lg border border-border-base bg-background-stronger p-1 shadow-lg"
                               onClick={(event) => event.stopPropagation()}
                             >
                               <button
