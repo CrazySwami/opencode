@@ -1600,12 +1600,7 @@ export function SessionSidePanel(props: {
                             {(tab) => <SortableTab tab={tab} onTabClose={tabs().close} />}
                           </For>
                         </SortableProvider>
-                        <div
-                          class="bg-background-stronger h-full shrink-0 sticky right-0 z-20 flex items-center justify-center pr-3"
-                          onPointerDown={(event) => event.stopPropagation()}
-                          onMouseDown={(event) => event.stopPropagation()}
-                          onClick={(event) => event.stopPropagation()}
-                        >
+                        <div class="bg-background-stronger h-full shrink-0 sticky right-0 z-20 flex items-center justify-center pr-3">
                           <DropdownMenu gutter={4} placement="bottom-end" modal={false}>
                             <DropdownMenu.Trigger
                               as={IconButton}
@@ -1614,7 +1609,6 @@ export function SessionSidePanel(props: {
                               iconSize="large"
                               class="!rounded-md"
                               aria-label="Add tab"
-                              onPointerDown={(event: PointerEvent) => event.stopPropagation()}
                             />
                             <DropdownMenu.Portal>
                               <DropdownMenu.Content>
