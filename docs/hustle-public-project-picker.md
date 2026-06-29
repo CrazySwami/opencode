@@ -120,7 +120,7 @@ The public proxy now protects the server-backed default workspace in six places.
 
 ## 2026-06-29 Topology Guardrail
 
-The project-picker normalization depends on the public route reaching `opencode-public-proxy.service` on port `8300`, with OpenCode itself listening internally on `127.0.0.1:8299`. If a future OpenCode release drop-in points OpenCode directly at public `8300`, the Open Project modal will bypass the `/find/file` rewrite and show only recent projects or no folders.
+The project-picker normalization depends on the public route reaching `opencode-public-proxy.service` on port `8300`, with OpenCode itself listening internally on `127.0.0.1:8299`. If a future OpenCode release drop-in points OpenCode directly at public `8300`, the Open Project modal will bypass the `/find/file` rewrite and show only recent projects or no folders. The proxy also normalizes `/project/current?directory=/home/dev/repos` and `/path?directory=/home/dev/repos` so the active Dev Folder state reports worktree `/home/dev/repos` instead of `/`.
 
 Expected listeners:
 
@@ -136,6 +136,8 @@ systemctl restart opencode.service
 systemctl start opencode-public-proxy.service
 curl -sS https://code.hustletogether.com/__health
 curl -sS 'https://code.hustletogether.com/find/file?directory=%2Fhome%2Fdev&query=&type=directory&limit=50'
+curl -sS 'https://code.hustletogether.com/project/current?directory=%2Fhome%2Fdev%2Frepos'
+curl -sS 'https://code.hustletogether.com/path?directory=%2Fhome%2Fdev%2Frepos'
 ```
 
 ## Verification Commands
