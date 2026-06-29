@@ -87,7 +87,7 @@ type VcsMode = "git" | "branch"
 
 const sessionViewState = () => ({
   messageId: undefined as string | undefined,
-  mobileTab: "session" as "session" | "changes",
+  mobileTab: "session" as "session" | "workspace",
   changes: "git" as ChangeMode,
 })
 
@@ -369,11 +369,11 @@ export default function Page() {
     list.push("turn")
     return list
   })
-  const mobileChanges = createMemo(() => !isDesktop() && store.mobileTab === "changes")
+  const mobileWorkspace = createMemo(() => !isDesktop() && store.mobileTab === "workspace")
   const wantsReview = createMemo(() =>
     isDesktop()
       ? desktopFileTreeOpen() || (desktopReviewOpen() && activeTab() === "review")
-      : store.mobileTab === "changes",
+      : store.mobileTab === "workspace",
   )
   const vcsMode = createMemo<VcsMode | undefined>(() => {
     if (store.changes === "git" || store.changes === "branch") return store.changes
@@ -1704,17 +1704,20 @@ export default function Page() {
           {language.t("session.tab.session")}
         </Tabs.Trigger>
         <Tabs.Trigger
-          value="changes"
+          value="workspace"
           classList={{
             "!w-1/2 !max-w-none !border-r-0": true,
             "!border-b-0 !border-t !border-border-weak-base [&:has([data-selected])]:!border-t-transparent": bottom,
           }}
           classes={{ button: compact ? "w-full !py-2" : "w-full" }}
-          onClick={() => setStore("mobileTab", "changes")}
+          onClick={() => setStore("mobileTab", "workspace")}
         >
-          {hasReview()
-            ? language.t("session.review.filesChanged", { count: reviewCount() })
-            : language.t("session.review.change.other")}
+          <div class="flex items-center justify-center gap-1.5">
+            <span>Workspace</span>
+            <Show when={hasReview()}>
+              <span class="text-12-regular text-text-weak">{reviewCount()}</span>
+            </Show>
+          </div>
         </Tabs.Trigger>
       </Tabs.List>
     </Tabs>
@@ -1759,19 +1762,21 @@ export default function Page() {
             </Show>
             <div class="flex-1 min-h-0 overflow-hidden">
               <Switch>
-                <Match when={params.id && mobileChanges()}>
-                  <div class="relative h-full overflow-hidden">
-                    {reviewContent({
-                      diffStyle: "unified",
-                      classes: {
-                        root: "pb-8 [&_[data-slot=session-review-list]]:pb-0",
-                        header: "px-4 !h-16 !pb-4",
-                        container: "px-4",
-                      },
-                      loadingClass: "px-4 py-4 text-text-weak",
-                      emptyClass: "h-full pb-64 -mt-4 flex flex-col items-center justify-center text-center gap-6",
-                    })}
-                  </div>
+                <Match when={params.id && mobileWorkspace()}>
+                  <SessionSidePanel
+                    mobile
+                    canReview={canReview}
+                    diffs={reviewDiffs}
+                    diffsReady={reviewReady}
+                    empty={reviewEmptyText}
+                    hasReview={hasReview}
+                    reviewCount={reviewCount}
+                    reviewPanel={reviewPanel}
+                    activeDiff={tree.activeDiff}
+                    focusReviewDiff={focusReviewDiff}
+                    reviewSnap={ui.reviewSnap}
+                    size={size}
+                  />
                 </Match>
                 <Match when={params.id}>
                   <Show when={messagesReady() ? params.id : undefined} keyed>
@@ -1821,7 +1826,7 @@ export default function Page() {
               </Switch>
             </div>
 
-            <Show when={(params.id || !newSessionDesign()) && !mobileChanges()}>{(_) => composerRegion()}</Show>
+            <Show when={(params.id || !newSessionDesign()) && !mobileWorkspace()}>{(_) => composerRegion()}</Show>
             <Show when={!!params.id && mobileTabsBottom()}>{mobileTabs(true, true)}</Show>
           </div>
 

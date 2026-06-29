@@ -1141,6 +1141,7 @@ export function SessionSidePanel(props: {
   activeDiff?: string
   focusReviewDiff: (path: string) => void
   reviewSnap: boolean
+  mobile?: boolean
   size: Sizing
 }) {
   const layout = useLayout()
@@ -1153,19 +1154,22 @@ export function SessionSidePanel(props: {
 
   const isDesktop = createMediaQuery("(min-width: 768px)")
   const shown = settings.visibility.fileTree
+  const mobile = createMemo(() => props.mobile === true)
 
-  const reviewOpen = createMemo(() => isDesktop() && view().reviewPanel.opened())
+  const reviewOpen = createMemo(() => mobile() || (isDesktop() && view().reviewPanel.opened()))
   const fileOpen = createMemo(
     () =>
+      !mobile() &&
       isDesktop() &&
       shouldShowFileTree({
         visible: shown(),
         opened: layout.fileTree.opened(),
       }),
   )
-  const open = createMemo(() => reviewOpen() || fileOpen())
-  const reviewTab = createMemo(() => isDesktop())
+  const open = createMemo(() => mobile() || reviewOpen() || fileOpen())
+  const reviewTab = createMemo(() => mobile() || isDesktop())
   const panelWidth = createMemo(() => {
+    if (mobile()) return "100%"
     if (!open()) return "0px"
     if (reviewOpen()) return "auto"
     return `${layout.fileTree.width()}px`
@@ -1344,7 +1348,7 @@ export function SessionSidePanel(props: {
   })
 
   return (
-    <Show when={isDesktop() && !(settings.general.newLayoutDesigns() && !params.id)}>
+    <Show when={(mobile() && !!params.id) || (isDesktop() && !(settings.general.newLayoutDesigns() && !params.id))}>
       <aside
         id="review-panel"
         aria-label={language.t("session.panel.reviewAndFiles")}
@@ -1354,9 +1358,9 @@ export function SessionSidePanel(props: {
         classList={{
           "pointer-events-none": !open(),
           "transition-[width] duration-[240ms] ease-[cubic-bezier(0.22,1,0.36,1)] will-change-[width] motion-reduce:transition-none":
-            !props.size.active() && !props.reviewSnap,
-          "rounded-[10px] shadow-[var(--v2-elevation-raised)] overflow-hidden": settings.general.newLayoutDesigns(),
-          "flex-1": reviewOpen(),
+            !mobile() && !props.size.active() && !props.reviewSnap,
+          "rounded-[10px] shadow-[var(--v2-elevation-raised)] overflow-hidden": !mobile() && settings.general.newLayoutDesigns(),
+          "flex-1": reviewOpen() || mobile(),
         }}
         style={{ width: panelWidth() }}
       >
