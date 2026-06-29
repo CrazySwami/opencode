@@ -49,6 +49,7 @@ const PANEL_RESOURCES_TAB = "panel://resources"
 const PANEL_ARTIFACTS_TAB = "panel://artifacts"
 const PANEL_FILE_BROWSER_TAB = "panel://file-browser"
 const PANEL_QUEUE_TAB = "panel://queue"
+const ARTIFACT_VIEWER_TAB_PREFIX = "artifact://"
 const PANEL_TABS = new Set([
   PANEL_TERMINAL_TAB,
   PANEL_BROWSER_TAB,
@@ -67,10 +68,34 @@ function renderDiff(value: SnapshotFileDiff | VcsFileDiff): value is RenderDiff 
 }
 
 function isPanelTab(tab: string) {
-  return PANEL_TABS.has(tab)
+  return PANEL_TABS.has(tab) || tab.startsWith(ARTIFACT_VIEWER_TAB_PREFIX)
+}
+
+function artifactViewerTab(file: any) {
+  return `${ARTIFACT_VIEWER_TAB_PREFIX}${encodeURIComponent(
+    JSON.stringify({
+      name: file.name,
+      path: file.path,
+      url: file.url,
+      kind: file.kind,
+      contentType: file.contentType,
+      size: file.size,
+    }),
+  )}`
+}
+
+function artifactFromTab(tab: string) {
+  if (!tab.startsWith(ARTIFACT_VIEWER_TAB_PREFIX)) return undefined
+  try {
+    return JSON.parse(decodeURIComponent(tab.slice(ARTIFACT_VIEWER_TAB_PREFIX.length)))
+  } catch {
+    return undefined
+  }
 }
 
 function panelTabLabel(tab: string) {
+  const artifact = artifactFromTab(tab)
+  if (artifact) return artifact.name ?? "Artifact"
   if (tab === PANEL_TERMINAL_TAB) return "Terminal"
   if (tab === PANEL_BROWSER_TAB) return "Browser"
   if (tab === PANEL_OPEN_DESIGN_TAB) return "Open Design"
@@ -85,6 +110,10 @@ function panelTabLabel(tab: string) {
 }
 
 function panelTabIcon(tab: string) {
+  const artifact = artifactFromTab(tab)
+  if (artifact?.kind === "image") return <Icon name="photo" size="small" />
+  if (artifact?.kind === "video" || artifact?.kind === "audio") return <Icon name="photo" size="small" />
+  if (artifact) return <Icon name="code" size="small" />
   if (tab === PANEL_TERMINAL_TAB) return <Icon name="terminal" size="small" />
   if (tab === PANEL_BROWSER_TAB) return <Icon name="window-cursor" size="small" />
   if (tab === PANEL_OPEN_DESIGN_TAB) return <span class="text-[10px] leading-none font-semibold tracking-[0]">OD</span>
@@ -1264,6 +1293,7 @@ function formatLoad(value?: number) {
 }
 
 function ArtifactsTabContent(props: { sessionID?: string }) {
+  const { tabs } = useSessionLayout()
   const [selected, setSelected] = createSignal<any>()
   const artifacts = createPolledJson<any>(
     () => (props.sessionID ? `/experimental/browser/${encodeURIComponent(props.sessionID)}/artifacts` : undefined),
@@ -1277,6 +1307,12 @@ function ArtifactsTabContent(props: { sessionID?: string }) {
     setSelected(files[0])
   })
 
+  const openArtifact = (file: any) => {
+    const tab = artifactViewerTab(file)
+    tabs().open(tab)
+    tabs().setActive(tab)
+  }
+
   return (
     <TabChrome title="Artifacts" iconTab={PANEL_ARTIFACTS_TAB} onRefresh={artifacts.refresh}>
       <div class="flex h-full min-h-0 flex-col gap-3">
@@ -1288,7 +1324,10 @@ function ArtifactsTabContent(props: { sessionID?: string }) {
                 <button
                   class="flex w-full items-center gap-3 border-b border-border-weaker-base p-3 text-left last:border-b-0 hover:bg-surface-raised-base-hover"
                   classList={{ "bg-background-base": selected()?.name === file.name }}
-                  onClick={() => setSelected(file)}
+                  onClick={() => {
+                    setSelected(file)
+                    openArtifact(file)
+                  }}
                 >
                   <PanelGlyph tab={PANEL_ARTIFACTS_TAB} />
                   <div class="min-w-0 flex-1">
@@ -1334,7 +1373,8 @@ function FileBrowserTabContent() {
     12000,
   )
 
-  const opensInViewer = (entry: any) => ["image", "video", "audio", "pdf"].includes(entry.kind)
+  const opensInViewer = (entry: any) =>
+    ["image", "video", "audio", "pdf", "html", "json", "text"].includes(entry.kind)
   const openCodeFile = (entry: any) => {
     const tab = fileContext.tab(entry.path)
     tabs().open(tab)
@@ -1353,6 +1393,9 @@ function FileBrowserTabContent() {
       return
     }
     setSelected(entry)
+    const tab = artifactViewerTab(entry)
+    tabs().open(tab)
+    tabs().setActive(tab)
   }
 
   const preview = createMemo(() => selected())
@@ -1473,14 +1516,38 @@ function FilePreview(props: { file: any }) {
           <Match when={file().kind === "pdf"}>
             <iframe src={url()} title={file().name} class="h-full min-h-96 w-full border-0" />
           </Match>
+          <Match when={file().kind === "html"}>
+            <iframe src={url()} title={file().name} class="h-full min-h-96 w-full border-0 bg-white" sandbox="allow-scripts allow-forms allow-same-origin" />
+          </Match>
+          <Match when={file().kind === "json" || file().kind === "text"}>
+            <iframe src={url()} title={file().name} class="h-full min-h-96 w-full border-0 bg-white" />
+          </Match>
           <Match when={true}>
             <div class="flex h-full min-h-56 items-center justify-center p-6 text-center text-12-regular text-text-weak">
-              Code and text files open in normal editor tabs.
+              This file type can be opened externally or from the File Browser.
             </div>
           </Match>
         </Switch>
       </div>
     </div>
+  )
+}
+
+function ArtifactViewerTabContent(props: { tab: string }) {
+  const file = createMemo(() => artifactFromTab(props.tab))
+  return (
+    <TabChrome title={file()?.name ?? "Artifact"} iconTab={props.tab}>
+      <Show
+        when={file()}
+        fallback={
+          <div class="flex h-full min-h-56 items-center justify-center p-6 text-center text-12-regular text-text-weak">
+            Artifact tab data is unavailable.
+          </div>
+        }
+      >
+        {(artifact) => <FilePreview file={artifact()} />}
+      </Show>
+    </TabChrome>
   )
 }
 
@@ -1693,6 +1760,11 @@ export function SessionSidePanel(props: {
     const active = activeTab()
     if (!active) return
     if (!openedFileTabs().includes(active)) return
+    return active
+  })
+  const activeArtifactTab = createMemo(() => {
+    const active = activePanelTab()
+    if (!active?.startsWith(ARTIFACT_VIEWER_TAB_PREFIX)) return
     return active
   })
 
@@ -2078,6 +2150,13 @@ export function SessionSidePanel(props: {
                       </Show>
                     </Tabs.Content>
 
+                    <Show when={activeArtifactTab()} keyed>
+                      {(tab) => (
+                        <Tabs.Content value={tab} class="flex flex-col h-full overflow-hidden contain-strict">
+                          <ArtifactViewerTabContent tab={tab} />
+                        </Tabs.Content>
+                      )}
+                    </Show>
 
                     <Show when={activeFileTab()} keyed>
                       {(tab) => <FileTabContent tab={tab} />}
