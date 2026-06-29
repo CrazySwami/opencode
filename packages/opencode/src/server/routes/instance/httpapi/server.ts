@@ -2,7 +2,8 @@ import { Config as EffectConfig, Context, Effect, Layer } from "effect"
 import { HttpApiBuilder, OpenApi } from "effect/unstable/httpapi"
 import { HttpClient, HttpMiddleware, HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http"
 import * as Socket from "effect/unstable/socket/Socket"
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
+import { execFile, spawn } from "node:child_process"
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import * as Observability from "@opencode-ai/core/observability"
@@ -260,6 +261,91 @@ const browserPreviewRoute = HttpRouter.use((router) =>
         })
       }),
     )
+
+    yield* router.add("GET", "/experimental/browser/live/status", () =>
+      Effect.promise(async () => HttpServerResponse.jsonUnsafe(await liveBrowserStatus())),
+    )
+
+    yield* router.add("GET", "/experimental/browser/live/snapshot", () =>
+      Effect.promise(async () => {
+        await ensureLiveBrowser()
+        const image = await captureLiveBrowserImage()
+        return HttpServerResponse.setHeader(
+          HttpServerResponse.uint8Array(new Uint8Array(image), { contentType: "image/png" }),
+          "cache-control",
+          "no-store",
+        )
+      }).pipe(
+        Effect.catch((error: unknown) =>
+          Effect.succeed(
+            HttpServerResponse.text(error instanceof Error ? error.message : String(error), {
+              status: 502,
+            }),
+          ),
+        ),
+      ),
+    )
+
+    yield* router.add("POST", "/experimental/browser/live/input", (request) =>
+      Effect.gen(function* () {
+        const raw = yield* Effect.orDie(request.text)
+        let body: LiveBrowserInput
+        try {
+          body = JSON.parse(raw || "{}") as LiveBrowserInput
+        } catch {
+          return HttpServerResponse.text("Invalid JSON body", { status: 400 })
+        }
+
+        const result = yield* Effect.promise(() => runLiveBrowserInput(body)).pipe(
+          Effect.catch((error: unknown) =>
+            Effect.succeed({ ok: false, error: error instanceof Error ? error.message : String(error) }),
+          ),
+        )
+        return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : 500 })
+      }),
+    )
+
+    yield* router.add("POST", "/experimental/browser/live/selector", (request) =>
+      Effect.gen(function* () {
+        const raw = yield* Effect.orDie(request.text)
+        let body: { selector?: string }
+        try {
+          body = JSON.parse(raw || "{}") as { selector?: string }
+        } catch {
+          return HttpServerResponse.text("Invalid JSON body", { status: 400 })
+        }
+        if (!body.selector?.trim()) return HttpServerResponse.text("Missing selector", { status: 400 })
+
+        const result = yield* Effect.promise(() => highlightLiveBrowserSelector(body.selector!.trim())).pipe(
+          Effect.catch((error: unknown) =>
+            Effect.succeed({ ok: false, error: error instanceof Error ? error.message : String(error) }),
+          ),
+        )
+        return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : 500 })
+      }),
+    )
+
+    yield* router.add("POST", "/experimental/browser/:sessionID/live/screenshot", (request) =>
+      Effect.gen(function* () {
+        const sessionID = decodeParam(request.url, /^\/experimental\/browser\/([^/]+)\/live\/screenshot$/)
+        if (!sessionID) return HttpServerResponse.text("Missing session ID", { status: 400 })
+
+        const raw = yield* Effect.orDie(request.text)
+        let body: { annotationDataURL?: string; note?: string; selector?: string }
+        try {
+          body = JSON.parse(raw || "{}") as { annotationDataURL?: string; note?: string; selector?: string }
+        } catch {
+          return HttpServerResponse.text("Invalid JSON body", { status: 400 })
+        }
+
+        const result = yield* Effect.promise(() => saveLiveBrowserScreenshot(sessionID, body)).pipe(
+          Effect.catch((error: unknown) =>
+            Effect.succeed({ ok: false, error: error instanceof Error ? error.message : String(error) }),
+          ),
+        )
+        return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : 500 })
+      }),
+    )
   }),
 ).pipe(Layer.provide(authOnlyRouterLayer))
 
@@ -441,6 +527,21 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
       }),
     )
 
+    yield* router.add("GET", "/experimental/mac-view/stream", () =>
+      Effect.promise(async () => {
+        const feedURL = process.env.OPENCODE_MAC_VIEW_URL?.replace(/\/+$/, "")
+        if (!feedURL) return HttpServerResponse.text("Mac View is not configured", { status: 404 })
+        const response = await fetch(`${feedURL}/snapshot`).catch(() => undefined)
+        if (!response?.ok) return HttpServerResponse.text("Mac View stream unavailable", { status: 502 })
+        const bytes = new Uint8Array(await response.arrayBuffer())
+        return HttpServerResponse.setHeader(
+          HttpServerResponse.uint8Array(bytes, { contentType: response.headers.get("content-type") ?? "image/jpeg" }),
+          "cache-control",
+          "no-store",
+        )
+      }),
+    )
+
     yield* router.add("GET", "/experimental/browser/:sessionID/artifacts", (request) =>
       Effect.promise(async () => {
         const sessionID = decodeParam(request.url, /^\/experimental\/browser\/([^/]+)\/artifacts$/)
@@ -569,6 +670,292 @@ function fileKind(contentType: string) {
   if (contentType === "application/pdf") return "pdf"
   if (contentType.startsWith("text/") || contentType === "application/json") return "text"
   return "file"
+}
+
+
+type LiveBrowserInput =
+  | { action: "status" }
+  | { action: "goto"; url?: string }
+  | { action: "back" }
+  | { action: "forward" }
+  | { action: "reload" }
+  | { action: "click"; x?: number; y?: number }
+  | { action: "type"; text?: string }
+  | { action: "key"; key?: string }
+  | { action: "scroll"; deltaX?: number; deltaY?: number }
+
+const liveBrowserDisplay = () => process.env.OPENCODE_LIVE_BROWSER_DISPLAY || ":99"
+const liveBrowserHome = () =>
+  path.resolve(
+    process.env.OPENCODE_LIVE_BROWSER_HOME ||
+      path.join(process.env.HOME ?? "/home/dev", ".local", "share", "opencode-live-browser"),
+  )
+const liveBrowserProfile = () => path.join(liveBrowserHome(), "profile")
+const liveBrowserArtifacts = () => path.join(liveBrowserHome(), "artifacts")
+const liveBrowserDebugPort = () => Number(process.env.OPENCODE_LIVE_BROWSER_DEBUG_PORT || 9224)
+
+async function liveBrowserStatus() {
+  const browser = await ensureLiveBrowser().catch((error: unknown) => ({
+    ok: false,
+    error: error instanceof Error ? error.message : String(error),
+  }))
+  const cdp = await currentLiveBrowserURL().catch(() => undefined)
+  return {
+    ok: browser.ok,
+    mode: "ct100-xvfb-chrome",
+    display: liveBrowserDisplay(),
+    profile: liveBrowserProfile(),
+    debugPort: liveBrowserDebugPort(),
+    currentURL: cdp?.url,
+    title: cdp?.title,
+    error: "error" in browser ? browser.error : undefined,
+    screenshotURL: "/experimental/browser/live/snapshot",
+  }
+}
+
+async function ensureLiveBrowser(): Promise<{ ok: true; pid?: number } | { ok: false; error: string }> {
+  mkdirSync(liveBrowserProfile(), { recursive: true })
+  mkdirSync(liveBrowserArtifacts(), { recursive: true })
+
+  const existing = await execText("pgrep", ["-f", `${liveBrowserProfile()}`]).catch(() => "")
+  const pid = existing
+    .split(/\s+/)
+    .map((value) => Number(value))
+    .find((value) => Number.isFinite(value) && value > 0)
+  if (pid) return { ok: true, pid }
+
+  const chrome = process.env.OPENCODE_LIVE_BROWSER_BIN || "google-chrome"
+  const child = spawn(
+    chrome,
+    [
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--no-first-run",
+      "--no-default-browser-check",
+      `--user-data-dir=${liveBrowserProfile()}`,
+      "--remote-debugging-address=127.0.0.1",
+      `--remote-debugging-port=${liveBrowserDebugPort()}`,
+      "--window-size=1440,1000",
+      "--start-maximized",
+      "about:blank",
+    ],
+    {
+      detached: true,
+      stdio: "ignore",
+      env: {
+        ...process.env,
+        DISPLAY: liveBrowserDisplay(),
+      },
+    },
+  )
+  child.unref()
+  await delay(1200)
+  return { ok: true, pid: child.pid }
+}
+
+async function runLiveBrowserInput(input: LiveBrowserInput) {
+  await ensureLiveBrowser()
+  switch (input.action) {
+    case "status":
+      return await liveBrowserStatus()
+    case "goto": {
+      const url = normalizeBrowserURL(input.url)
+      if (!url) return { ok: false, error: "Missing URL" }
+      await cdpEvaluate(`location.href = ${JSON.stringify(url)}`)
+      return { ok: true, currentURL: url }
+    }
+    case "back":
+      await cdpEvaluate("history.back()")
+      return { ok: true }
+    case "forward":
+      await cdpEvaluate("history.forward()")
+      return { ok: true }
+    case "reload":
+      await cdpEvaluate("location.reload()")
+      return { ok: true }
+    case "click": {
+      const x = Math.max(0, Math.round(input.x ?? 0))
+      const y = Math.max(0, Math.round(input.y ?? 0))
+      await execText("xdotool", ["mousemove", "--sync", String(x), String(y), "click", "1"], liveBrowserDisplay())
+      return { ok: true, x, y }
+    }
+    case "type": {
+      if (!input.text) return { ok: false, error: "Missing text" }
+      await execText("xdotool", ["type", "--delay", "1", input.text], liveBrowserDisplay())
+      return { ok: true }
+    }
+    case "key": {
+      if (!input.key) return { ok: false, error: "Missing key" }
+      await execText("xdotool", ["key", input.key], liveBrowserDisplay())
+      return { ok: true }
+    }
+    case "scroll": {
+      const dy = input.deltaY ?? 0
+      const button = dy < 0 ? "4" : "5"
+      const steps = Math.min(8, Math.max(1, Math.round(Math.abs(dy) / 160)))
+      for (let idx = 0; idx < steps; idx += 1) await execText("xdotool", ["click", button], liveBrowserDisplay())
+      return { ok: true, steps, deltaY: dy }
+    }
+  }
+}
+
+async function captureLiveBrowserImage() {
+  await ensureLiveBrowser()
+  const file = path.join(liveBrowserArtifacts(), `snapshot-${Date.now()}.png`)
+  await execText("import", ["-window", "root", "-resize", "1280x889", file], liveBrowserDisplay())
+  return readFileSync(file)
+}
+
+async function saveLiveBrowserScreenshot(
+  sessionID: string,
+  input: { annotationDataURL?: string; note?: string; selector?: string },
+) {
+  await ensureLiveBrowser()
+  const paths = sessionPaths(sessionID)
+  mkdirSync(paths.artifactDir, { recursive: true })
+  const stamped = new Date().toISOString().replace(/[:.]/g, "-")
+  const name = input.annotationDataURL ? `browser-annotation-${stamped}.png` : `browser-screenshot-${stamped}.png`
+  const file = path.join(paths.artifactDir, name)
+
+  if (input.annotationDataURL?.startsWith("data:image/")) {
+    const base64 = input.annotationDataURL.split(",", 2)[1]
+    if (!base64) throw new Error("Invalid annotation data URL")
+    writeFileSync(file, Buffer.from(base64, "base64"))
+  } else {
+    const image = await captureLiveBrowserImage()
+    writeFileSync(file, image)
+  }
+
+  const meta = {
+    createdAt: new Date().toISOString(),
+    kind: input.annotationDataURL ? "browser-annotation" : "browser-screenshot",
+    note: input.note ?? null,
+    selector: input.selector ?? null,
+    source: await currentLiveBrowserURL().catch(() => null),
+    image: name,
+  }
+  writeFileSync(path.join(paths.artifactDir, `${name}.json`), JSON.stringify(meta, null, 2))
+
+  return {
+    ok: true,
+    name,
+    path: file,
+    url: `/experimental/browser/${encodeURIComponent(sessionID)}/artifacts/${encodeURIComponent(name)}`,
+    meta,
+  }
+}
+
+async function highlightLiveBrowserSelector(selector: string) {
+  await ensureLiveBrowser()
+  const expression = `(() => {
+    const previous = document.querySelectorAll('[data-opencode-selector-highlight="true"]');
+    for (const el of previous) {
+      el.style.outline = el.dataset.opencodePreviousOutline || '';
+      el.style.boxShadow = el.dataset.opencodePreviousBoxShadow || '';
+      delete el.dataset.opencodeSelectorHighlight;
+      delete el.dataset.opencodePreviousOutline;
+      delete el.dataset.opencodePreviousBoxShadow;
+    }
+    const el = document.querySelector(${JSON.stringify(selector)});
+    if (!el) return { found: false };
+    el.dataset.opencodeSelectorHighlight = 'true';
+    el.dataset.opencodePreviousOutline = el.style.outline || '';
+    el.dataset.opencodePreviousBoxShadow = el.style.boxShadow || '';
+    el.style.outline = '3px solid #f97316';
+    el.style.boxShadow = '0 0 0 6px rgba(249, 115, 22, 0.25)';
+    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    const rect = el.getBoundingClientRect();
+    return {
+      found: true,
+      tag: el.tagName,
+      text: (el.innerText || el.getAttribute('aria-label') || el.getAttribute('alt') || '').slice(0, 240),
+      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+    };
+  })()`
+  const result = await cdpEvaluate(expression)
+  return { ok: true, selector, result }
+}
+
+async function currentLiveBrowserURL() {
+  const page = await liveBrowserPage()
+  return { url: page.url, title: page.title }
+}
+
+async function cdpEvaluate(expression: string) {
+  const page = await liveBrowserPage()
+  const ws = page.webSocketDebuggerUrl
+  if (!ws) throw new Error("Live browser CDP websocket is unavailable")
+
+  const WebSocketCtor = (globalThis as any).WebSocket
+  if (typeof WebSocketCtor !== "function") throw new Error("WebSocket is unavailable in this runtime")
+
+  return await new Promise((resolve, reject) => {
+    const socket = new WebSocketCtor(ws)
+    const timeout = setTimeout(() => {
+      socket.close()
+      reject(new Error("Live browser CDP request timed out"))
+    }, 5000)
+    socket.addEventListener("open", () => {
+      socket.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression, returnByValue: true } }))
+    })
+    socket.addEventListener("message", (event: MessageEvent) => {
+      try {
+        const body = JSON.parse(String(event.data))
+        if (body.id !== 1) return
+        clearTimeout(timeout)
+        socket.close()
+        if (body.error) reject(new Error(body.error.message || "CDP evaluate failed"))
+        else resolve(body.result?.result?.value ?? body.result)
+      } catch (error) {
+        clearTimeout(timeout)
+        socket.close()
+        reject(error)
+      }
+    })
+    socket.addEventListener("error", () => {
+      clearTimeout(timeout)
+      reject(new Error("Live browser CDP websocket failed"))
+    })
+  })
+}
+
+async function liveBrowserPage() {
+  await ensureLiveBrowser()
+  const response = await fetch(`http://127.0.0.1:${liveBrowserDebugPort()}/json/list`)
+  if (!response.ok) throw new Error(`Live browser CDP returned HTTP ${response.status}`)
+  const pages = (await response.json()) as Array<{ type?: string; url?: string; title?: string; webSocketDebuggerUrl?: string }>
+  const page = pages.find((item) => item.type === "page" && item.webSocketDebuggerUrl) ?? pages.find((item) => item.webSocketDebuggerUrl)
+  if (!page?.webSocketDebuggerUrl) throw new Error("No live browser page target found")
+  return {
+    url: page.url || "about:blank",
+    title: page.title || "",
+    webSocketDebuggerUrl: page.webSocketDebuggerUrl,
+  }
+}
+
+function normalizeBrowserURL(raw?: string) {
+  const value = raw?.trim()
+  if (!value) return undefined
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return value
+  if (value.includes(".") && !value.includes(" ")) return `https://${value}`
+  return `https://www.google.com/search?q=${encodeURIComponent(value)}`
+}
+
+function execText(command: string, args: string[], display?: string) {
+  return new Promise<string>((resolve, reject) => {
+    execFile(command, args, { env: display ? { ...process.env, DISPLAY: display } : process.env }, (error, stdout, stderr) => {
+      if (error) {
+        reject(new Error(stderr || stdout || error.message))
+        return
+      }
+      resolve(stdout.toString())
+    })
+  })
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 async function openDesignStatus() {

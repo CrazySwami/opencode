@@ -1276,6 +1276,26 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     getPathForFile: platform.getPathForFile,
   })
 
+  createEffect(() => {
+    const addImageAttachment = (event: Event) => {
+      if (!(event instanceof CustomEvent)) return
+      const detail = event.detail as Partial<ImageAttachmentPart>
+      if (!detail?.dataUrl || !detail?.filename || !detail?.mime) return
+      const attachment: ImageAttachmentPart = {
+        type: "image",
+        id: typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}`,
+        filename: detail.filename,
+        sourcePath: detail.sourcePath,
+        mime: detail.mime,
+        dataUrl: detail.dataUrl,
+      }
+      prompt.set([...prompt.current(), attachment], prompt.cursor())
+      showToast({ title: "Screenshot attached", description: detail.filename })
+    }
+    window.addEventListener("opencode:add-image-attachment", addImageAttachment)
+    onCleanup(() => window.removeEventListener("opencode:add-image-attachment", addImageAttachment))
+  })
+
   const fileAttachmentInput = () => (
     <input
       ref={(el) => (fileInputRef = el)}

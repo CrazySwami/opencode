@@ -146,6 +146,26 @@ describe("createSessionTabs", () => {
     })
   })
 
+  test("keeps active non-file panel tabs selected", () => {
+    createRoot((dispose) => {
+      const [state] = createStore({
+        active: "panel://terminal" as string | undefined,
+        all: ["panel://browser", "panel://terminal", "panel://mac-view"],
+      })
+      const tabs = createMemo(() => ({ active: () => state.active, all: () => state.all }))
+      const result = createSessionTabs({
+        tabs,
+        pathFromTab: () => undefined,
+        normalizeTab: (tab) => tab,
+      })
+
+      expect(result.activeTab()).toBe("panel://terminal")
+      expect(result.activeFileTab()).toBeUndefined()
+      expect(result.closableTab()).toBe("panel://terminal")
+      dispose()
+    })
+  })
+
   test("prefers context and review fallbacks when no file tab is active", () => {
     createRoot((dispose) => {
       const [state] = createStore({

@@ -116,7 +116,10 @@ function PanelTab(props: { tab: string; onClose: (tab: string) => void }) {
             icon="close-small"
             variant="ghost"
             class="h-5 w-5"
-            onClick={() => props.onClose(props.tab)}
+            onClick={(event) => {
+              event.stopPropagation()
+              props.onClose(props.tab)
+            }}
             aria-label={language.t("common.closeTab")}
           />
         </TooltipKeybind>
@@ -179,7 +182,10 @@ function SessionTerminalTab() {
                       icon="close-small"
                       variant="ghost"
                       class="h-5 w-5"
-                      onClick={() => void terminal.close(pty.id)}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        void terminal.close(pty.id)
+                      }}
                       aria-label={language.t("terminal.close")}
                     />
                   }
@@ -234,77 +240,62 @@ function SessionTerminalTab() {
 
 type BrowserLaunchRequest = { url: string; nonce: number }
 
+type LiveBrowserStatus = {
+  ok?: boolean
+  currentURL?: string
+  title?: string
+  mode?: string
+  display?: string
+  error?: string
+}
+
 function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRequest }) {
-  const sync = useSync()
-  const [previewTick, setPreviewTick] = createSignal(Date.now())
-  const [previewReady, setPreviewReady] = createSignal(false)
+  const [tick, setTick] = createSignal(Date.now())
+  const [status, setStatus] = createSignal<LiveBrowserStatus>({})
   const [browserUrl, setBrowserUrl] = createSignal("")
   const [browserText, setBrowserText] = createSignal("")
-  const [activeUrl, setActiveUrl] = createSignal("")
+  const [selector, setSelector] = createSignal("")
+  const [note, setNote] = createSignal("")
   const [browserBusy, setBrowserBusy] = createSignal(false)
   const [browserError, setBrowserError] = createSignal<string | undefined>()
-  const [browserActive, setBrowserActive] = createSignal(false)
+  const [previewReady, setPreviewReady] = createSignal(false)
+  const [annotating, setAnnotating] = createSignal(false)
+  const [drawing, setDrawing] = createSignal(false)
+  const [lastArtifact, setLastArtifact] = createSignal<{ url: string; name: string } | undefined>()
   let consumedLaunch = 0
+  let imageRef: HTMLImageElement | undefined
+  let canvasRef: HTMLCanvasElement | undefined
 
-  const parts = createMemo(() => {
-    const values = Object.values(sync().data.part).flatMap((items) => (Array.isArray(items) ? items : []))
-    return values.filter(
-      (part: any) => part?.type === "tool" && part?.tool === "browser" && part?.sessionID === props.sessionID,
-    )
-  })
+  const screenshotSrc = createMemo(() => `/experimental/browser/live/snapshot?t=${tick()}`)
+  const displayUrl = createMemo(() => status().currentURL || browserUrl() || "about:blank")
 
-  const latest = createMemo(() => {
-    return parts().reduce<any | undefined>((current, next: any) => {
-      const currentTime = current?.state?.time?.end ?? current?.state?.time?.start ?? 0
-      const nextTime = next?.state?.time?.end ?? next?.state?.time?.start ?? 0
-      return nextTime >= currentTime ? next : current
-    }, undefined)
-  })
+  const refreshStatus = async () => {
+    try {
+      const response = await fetch("/experimental/browser/live/status", { cache: "no-store" })
+      const body = await response.json().catch(() => ({}))
+      setStatus(body)
+      if (typeof body.currentURL === "string" && !browserUrl()) setBrowserUrl(body.currentURL)
+      setBrowserError(body.error)
+    } catch (error) {
+      setBrowserError(error instanceof Error ? error.message : String(error))
+    }
+  }
 
-  const latestUrl = createMemo(() => {
-    return [...parts()]
-      .reverse()
-      .map((part: any) => part?.state?.input?.url)
-      .find((value): value is string => typeof value === "string" && value.length > 0)
-  })
-  const displayUrl = createMemo(() => activeUrl() || latestUrl())
-
-  const metadata = createMemo(() => latest()?.state?.metadata ?? {})
-  const input = createMemo(() => latest()?.state?.input ?? {})
-  const output = createMemo(() => String(latest()?.state?.output ?? ""))
-  const image = createMemo(() => {
-    const url = metadata().screenshotDataURL
-    return typeof url === "string" && url.startsWith("data:image/") ? url : undefined
-  })
-  const liveScreenshot = createMemo(() => {
-    if (!props.sessionID || (!latest() && !browserActive())) return
-    return `/experimental/browser/${encodeURIComponent(props.sessionID)}/screenshot?t=${previewTick()}`
-  })
-  const screenshotPath = createMemo(() => {
-    const fromMetadata = metadata().screenshotPath
-    if (typeof fromMetadata === "string") return fromMetadata
-    return output().match(/([^\s()]+\.png)/)?.[1]
-  })
-
-  const runBrowserAction = async (action: string, extra: Record<string, unknown> = {}) => {
-    if (!props.sessionID || browserBusy()) return false
+  const runLiveInput = async (body: Record<string, unknown>) => {
+    if (browserBusy()) return false
     setBrowserBusy(true)
     setBrowserError(undefined)
     try {
-      const response = await fetch(`/experimental/browser/${encodeURIComponent(props.sessionID)}/action`, {
+      const response = await fetch("/experimental/browser/live/input", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action, ...extra }),
+        body: JSON.stringify(body),
       })
-      const body = await response.json().catch(() => ({}))
-      if (!response.ok) throw new Error(body?.error ?? "Browser action failed")
-      setBrowserActive(true)
-      if (typeof extra.url === "string") {
-        setActiveUrl(extra.url)
-        setBrowserUrl(extra.url)
-      }
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok || result?.ok === false) throw new Error(result?.error ?? "Browser action failed")
+      await refreshStatus()
       setPreviewReady(false)
-      setPreviewTick(Date.now())
+      setTick(Date.now())
       return true
     } catch (error) {
       setBrowserError(error instanceof Error ? error.message : String(error))
@@ -317,93 +308,225 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
   const submitBrowserUrl = () => {
     const url = browserUrl().trim()
     if (!url) return
-    void runBrowserAction(latest() || browserActive() ? "goto" : "open", { url })
+    void runLiveInput({ action: "goto", url })
   }
 
   const sendBrowserText = () => {
     const text = browserText()
     if (!text) return
     setBrowserText("")
-    void runBrowserAction("type", { text })
+    void runLiveInput({ action: "type", text })
   }
 
   const browserKey = (key: string) => {
     const aliases: Record<string, string> = {
-      ArrowLeft: "ArrowLeft",
-      ArrowRight: "ArrowRight",
-      ArrowUp: "ArrowUp",
-      ArrowDown: "ArrowDown",
-      Backspace: "Backspace",
+      ArrowLeft: "Left",
+      ArrowRight: "Right",
+      ArrowUp: "Up",
+      ArrowDown: "Down",
+      Backspace: "BackSpace",
       Delete: "Delete",
-      Enter: "Enter",
+      Enter: "Return",
       Escape: "Escape",
       Tab: "Tab",
     }
     return aliases[key] ?? key
   }
 
-  const handleViewportClick: JSX.EventHandler<HTMLImageElement, MouseEvent> = (event) => {
-    const image = event.currentTarget
-    if (!image.naturalWidth || !image.naturalHeight) return
+  const pointForEvent = (event: MouseEvent) => {
+    const image = imageRef
+    if (!image) return
     const rect = image.getBoundingClientRect()
-    const x = Math.round(((event.clientX - rect.left) / rect.width) * image.naturalWidth)
-    const y = Math.round(((event.clientY - rect.top) / rect.height) * image.naturalHeight)
-    void runBrowserAction("click-point", { x, y })
+    const x = Math.round(((event.clientX - rect.left) / rect.width) * 1440)
+    const y = Math.round(((event.clientY - rect.top) / rect.height) * 1000)
+    return { x, y }
+  }
+
+  const handleViewportClick: JSX.EventHandler<HTMLDivElement, MouseEvent> = (event) => {
+    if (annotating()) return
+    const point = pointForEvent(event)
+    if (!point) return
+    void runLiveInput({ action: "click", ...point })
   }
 
   const handleViewportWheel: JSX.EventHandler<HTMLDivElement, WheelEvent> = (event) => {
-    if (!browserActive() && !latest()) return
     event.preventDefault()
-    void runBrowserAction("scroll", { deltaX: event.deltaX, deltaY: event.deltaY })
+    void runLiveInput({ action: "scroll", deltaX: event.deltaX, deltaY: event.deltaY })
   }
 
   const handleViewportKeyDown: JSX.EventHandler<HTMLDivElement, KeyboardEvent> = (event) => {
     if (event.metaKey || event.ctrlKey || event.altKey || browserBusy()) return
-    if (!browserActive() && !latest()) return
-
     if (event.key.length === 1) {
       event.preventDefault()
-      void runBrowserAction("type", { text: event.key })
+      void runLiveInput({ action: "type", text: event.key })
       return
     }
 
     const allowed = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Backspace", "Delete", "Enter", "Escape", "Tab"])
     if (!allowed.has(event.key)) return
     event.preventDefault()
-    void runBrowserAction("press", { text: browserKey(event.key) })
+    void runLiveInput({ action: "key", key: browserKey(event.key) })
+  }
+
+  const resizeCanvas = () => {
+    const canvas = canvasRef
+    const image = imageRef
+    if (!canvas || !image) return
+    const rect = image.getBoundingClientRect()
+    const ratio = window.devicePixelRatio || 1
+    canvas.width = Math.max(1, Math.round(rect.width * ratio))
+    canvas.height = Math.max(1, Math.round(rect.height * ratio))
+    canvas.style.width = `${rect.width}px`
+    canvas.style.height = `${rect.height}px`
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return
+    ctx.scale(ratio, ratio)
+    ctx.lineCap = "round"
+    ctx.lineJoin = "round"
+    ctx.lineWidth = 3
+    ctx.strokeStyle = "#f97316"
+  }
+
+  const annotationPoint = (event: PointerEvent) => {
+    const canvas = canvasRef
+    if (!canvas) return
+    const rect = canvas.getBoundingClientRect()
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top }
+  }
+
+  const startAnnotation: JSX.EventHandler<HTMLCanvasElement, PointerEvent> = (event) => {
+    const canvas = canvasRef
+    const point = annotationPoint(event)
+    if (!canvas || !point) return
+    canvas.setPointerCapture(event.pointerId)
+    setDrawing(true)
+    const ctx = canvas.getContext("2d")
+    ctx?.beginPath()
+    ctx?.moveTo(point.x, point.y)
+  }
+
+  const drawAnnotation: JSX.EventHandler<HTMLCanvasElement, PointerEvent> = (event) => {
+    if (!drawing()) return
+    const point = annotationPoint(event)
+    const ctx = canvasRef?.getContext("2d")
+    if (!point || !ctx) return
+    ctx.lineTo(point.x, point.y)
+    ctx.stroke()
+  }
+
+  const stopAnnotation: JSX.EventHandler<HTMLCanvasElement, PointerEvent> = () => setDrawing(false)
+
+  const clearAnnotation = () => {
+    const canvas = canvasRef
+    const ctx = canvas?.getContext("2d")
+    if (!canvas || !ctx) return
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+  }
+
+  const captureAnnotatedDataURL = async () => {
+    const image = imageRef
+    const canvas = canvasRef
+    if (!image) return undefined
+    const out = document.createElement("canvas")
+    out.width = image.naturalWidth || 1280
+    out.height = image.naturalHeight || 889
+    const ctx = out.getContext("2d")
+    if (!ctx) return undefined
+    await image.decode().catch(() => undefined)
+    ctx.drawImage(image, 0, 0, out.width, out.height)
+    if (canvas) ctx.drawImage(canvas, 0, 0, out.width, out.height)
+    return out.toDataURL("image/png")
+  }
+
+  const saveScreenshot = async (attach: boolean) => {
+    if (!props.sessionID || browserBusy()) return
+    setBrowserBusy(true)
+    setBrowserError(undefined)
+    try {
+      const annotationDataURL = annotating() ? await captureAnnotatedDataURL() : undefined
+      const response = await fetch(`/experimental/browser/${encodeURIComponent(props.sessionID)}/live/screenshot`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ annotationDataURL, note: note().trim(), selector: selector().trim() }),
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok || body?.ok === false) throw new Error(body?.error ?? "Screenshot failed")
+      setLastArtifact({ url: body.url, name: body.name })
+      if (attach) {
+        const dataUrl = annotationDataURL || await captureAnnotatedDataURL()
+        if (dataUrl) {
+          window.dispatchEvent(new CustomEvent("opencode:add-image-attachment", {
+            detail: {
+              dataUrl,
+              filename: body.name || "browser-screenshot.png",
+              mime: "image/png",
+              sourcePath: body.path,
+            },
+          }))
+        }
+      }
+    } catch (error) {
+      setBrowserError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBrowserBusy(false)
+    }
+  }
+
+  const highlightSelector = async () => {
+    const value = selector().trim()
+    if (!value || browserBusy()) return
+    setBrowserBusy(true)
+    setBrowserError(undefined)
+    try {
+      const response = await fetch("/experimental/browser/live/selector", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ selector: value }),
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok || body?.ok === false) throw new Error(body?.error ?? "Selector not found")
+      setPreviewReady(false)
+      setTick(Date.now())
+    } catch (error) {
+      setBrowserError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBrowserBusy(false)
+    }
   }
 
   createEffect(() => {
-    const url = latestUrl()
-    if (!url || browserUrl()) return
-    setBrowserUrl(url)
+    void refreshStatus()
+    const interval = window.setInterval(() => {
+      void refreshStatus()
+      setTick(Date.now())
+    }, 2500)
+    onCleanup(() => window.clearInterval(interval))
+  })
+
+  createEffect(() => {
+    if (!annotating()) return
+    resizeCanvas()
+    const onResize = () => resizeCanvas()
+    window.addEventListener("resize", onResize)
+    onCleanup(() => window.removeEventListener("resize", onResize))
   })
 
   createEffect(() => {
     const launch = props.launch
-    if (!launch?.url || !props.sessionID) return
-    if (launch.nonce === consumedLaunch) return
+    if (!launch?.url || launch.nonce === consumedLaunch) return
     consumedLaunch = launch.nonce
     setBrowserUrl(launch.url)
-    void runBrowserAction(latest() || browserActive() ? "goto" : "open", { url: launch.url })
-  })
-
-  createEffect(() => {
-    if (!props.sessionID || (!latest() && !browserActive())) return
-    const interval = window.setInterval(() => setPreviewTick(Date.now()), 10000)
-    onCleanup(() => window.clearInterval(interval))
+    void runLiveInput({ action: "goto", url: launch.url })
   })
 
   return (
     <div class="h-full min-h-0 flex flex-col bg-background-base">
       <div class="h-10 shrink-0 flex items-center gap-3 px-3 border-b border-border-weaker-base">
         <div class="text-14-medium text-text-strong">Browser</div>
-        <Show when={metadata().browserSessionID}>
-          <div class="text-12-regular text-text-weak truncate">{metadata().browserSessionID}</div>
-        </Show>
+        <div class="text-12-regular text-text-weak truncate">{status().mode ?? "ct100-xvfb-chrome"}</div>
       </div>
-      <div class="flex-1 min-h-0 overflow-auto p-3">
-        <div class="mb-3 flex flex-col gap-2 rounded-md border border-border-weaker-base bg-background-stronger p-2">
+      <div class="flex-1 min-h-0 flex flex-col gap-2 p-3">
+        <div class="flex flex-col gap-2 rounded-md border border-border-weaker-base bg-background-stronger p-2">
           <form
             class="flex items-center gap-2"
             onSubmit={(event) => {
@@ -412,156 +535,133 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
             }}
           >
             <input
-              value={browserUrl()}
+              value={browserUrl() || status().currentURL || ""}
               onInput={(event) => setBrowserUrl(event.currentTarget.value)}
               class="h-8 min-w-0 flex-1 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
-              placeholder="https://example.com"
+              placeholder="Search or enter URL"
             />
-            <IconButton
-              icon="enter"
-              variant="ghost"
-              class="h-8 w-8"
-              disabled={browserBusy() || !props.sessionID}
-              onClick={submitBrowserUrl}
-              aria-label="Open URL"
-            />
+            <IconButton icon="enter" variant="ghost" class="h-8 w-8" disabled={browserBusy()} onClick={submitBrowserUrl} aria-label="Open URL" />
           </form>
-          <div class="flex items-center gap-1">
-            <IconButton
-              icon="arrow-left"
-              variant="ghost"
-              class="h-7 w-7"
-              disabled={browserBusy() || (!latest() && !browserActive())}
-              onClick={() => void runBrowserAction("go-back")}
-              aria-label="Back"
-            />
-            <IconButton
-              icon="arrow-right"
-              variant="ghost"
-              class="h-7 w-7"
-              disabled={browserBusy() || (!latest() && !browserActive())}
-              onClick={() => void runBrowserAction("go-forward")}
-              aria-label="Forward"
-            />
-            <IconButton
-              icon="reset"
-              variant="ghost"
-              class="h-7 w-7"
-              disabled={browserBusy() || (!latest() && !browserActive())}
-              onClick={() => void runBrowserAction("reload")}
-              aria-label="Reload"
-            />
-            <IconButton
-              icon="photo"
-              variant="ghost"
-              class="h-7 w-7"
-              disabled={browserBusy() || (!latest() && !browserActive())}
-              onClick={() => void runBrowserAction("screenshot")}
-              aria-label="Screenshot"
-            />
+          <div class="flex flex-wrap items-center gap-1">
+            <IconButton icon="arrow-left" variant="ghost" class="h-7 w-7" disabled={browserBusy()} onClick={() => void runLiveInput({ action: "back" })} aria-label="Back" />
+            <IconButton icon="arrow-right" variant="ghost" class="h-7 w-7" disabled={browserBusy()} onClick={() => void runLiveInput({ action: "forward" })} aria-label="Forward" />
+            <IconButton icon="reset" variant="ghost" class="h-7 w-7" disabled={browserBusy()} onClick={() => void runLiveInput({ action: "reload" })} aria-label="Reload" />
+            <IconButton icon="photo" variant="ghost" class="h-7 w-7" disabled={browserBusy()} onClick={() => void saveScreenshot(false)} aria-label="Save screenshot" />
+            <button class="h-7 rounded px-2 text-12-regular text-text-strong hover:bg-surface-raised-base-hover" onClick={() => setAnnotating(!annotating())} type="button">
+              {annotating() ? "Annotating" : "Annotate"}
+            </button>
+            <button class="h-7 rounded px-2 text-12-regular text-text-strong hover:bg-surface-raised-base-hover" onClick={() => void saveScreenshot(true)} type="button" disabled={browserBusy()}>
+              Send to chat
+            </button>
             <IconButton
               icon="window-cursor"
               variant="ghost"
               class="h-7 w-7"
               disabled={!displayUrl()}
-              onClick={() => {
-                const url = displayUrl()
-                if (url) window.open(url, "_blank", "noopener,noreferrer")
-              }}
+              onClick={() => window.open(displayUrl(), "_blank", "noopener,noreferrer")}
               aria-label="Open in external browser"
             />
           </div>
-          <form
-            class="flex items-center gap-2"
-            onSubmit={(event) => {
-              event.preventDefault()
-              sendBrowserText()
-            }}
-          >
-            <input
-              value={browserText()}
-              onInput={(event) => setBrowserText(event.currentTarget.value)}
-              class="h-8 min-w-0 flex-1 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
-              placeholder="Type into focused page"
-            />
-            <IconButton
-              icon="enter"
-              variant="ghost"
-              class="h-8 w-8"
-              disabled={browserBusy() || !browserText()}
-              onClick={sendBrowserText}
-              aria-label="Type into page"
-            />
-          </form>
+          <div class="grid gap-2 md:grid-cols-2">
+            <form
+              class="flex items-center gap-2"
+              onSubmit={(event) => {
+                event.preventDefault()
+                sendBrowserText()
+              }}
+            >
+              <input
+                value={browserText()}
+                onInput={(event) => setBrowserText(event.currentTarget.value)}
+                class="h-8 min-w-0 flex-1 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
+                placeholder="Type into focused page"
+              />
+              <IconButton icon="enter" variant="ghost" class="h-8 w-8" disabled={browserBusy() || !browserText()} onClick={sendBrowserText} aria-label="Type into page" />
+            </form>
+            <form
+              class="flex items-center gap-2"
+              onSubmit={(event) => {
+                event.preventDefault()
+                void highlightSelector()
+              }}
+            >
+              <input
+                value={selector()}
+                onInput={(event) => setSelector(event.currentTarget.value)}
+                class="h-8 min-w-0 flex-1 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
+                placeholder="CSS selector to highlight"
+              />
+              <IconButton icon="enter" variant="ghost" class="h-8 w-8" disabled={browserBusy() || !selector()} onClick={highlightSelector} aria-label="Highlight selector" />
+            </form>
+          </div>
+          <input
+            value={note()}
+            onInput={(event) => setNote(event.currentTarget.value)}
+            class="h-8 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
+            placeholder="Optional screenshot note"
+          />
           <Show when={browserError()}>
             {(error) => <div class="text-12-regular text-text-weak break-all">{error()}</div>}
           </Show>
+          <Show when={lastArtifact()}>
+            {(artifact) => (
+              <div class="text-12-regular text-text-weak">
+                Saved <a class="text-text-strong underline" href={artifact().url} target="_blank" rel="noreferrer">{artifact().name}</a>
+              </div>
+            )}
+          </Show>
         </div>
-        <Switch>
-          <Match when={latest() || browserActive()}>
-            <div class="flex flex-col gap-3">
-              <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
-                <div class="text-12-regular text-text-weak">Current URL</div>
-                <div class="text-14-regular text-text-strong break-all">{displayUrl() ?? "No URL recorded"}</div>
+        <div class="min-h-0 flex-1 overflow-hidden rounded-md border border-border-weaker-base bg-background-stronger">
+          <div class="flex items-center justify-between border-b border-border-weaker-base px-3 py-2">
+            <div class="min-w-0 truncate text-12-regular text-text-weak">{displayUrl()}</div>
+            <div class="shrink-0 text-11-regular text-text-weak">{browserBusy() ? "working" : previewReady() ? "live" : "connecting"}</div>
+          </div>
+          <div
+            class="relative size-full min-h-0 overflow-auto outline-none"
+            tabIndex={0}
+            onClick={handleViewportClick}
+            onWheel={handleViewportWheel}
+            onKeyDown={handleViewportKeyDown}
+          >
+            <Show when={!previewReady()}>
+              <div class="absolute inset-0 flex items-center justify-center text-center text-12-regular text-text-weak">
+                Starting live Chromium...
               </div>
-              <Show when={liveScreenshot()}>
-                {(src) => (
-                  <div class="overflow-hidden rounded-md border border-border-weaker-base bg-background-stronger">
-                    <div class="flex items-center justify-between border-b border-border-weaker-base px-3 py-2">
-                      <div class="text-12-regular text-text-weak">Interactive Chromium viewport</div>
-                      <div class="text-11-regular text-text-weak">{browserBusy() ? "working" : previewReady() ? "live" : "connecting"}</div>
-                    </div>
-                    <div
-                      class="relative min-h-64 outline-none"
-                      tabIndex={0}
-                      onWheel={handleViewportWheel}
-                      onKeyDown={handleViewportKeyDown}
-                    >
-                      <Show when={!previewReady()}>
-                        <div class="absolute inset-0 flex items-center justify-center text-center text-12-regular text-text-weak">
-                          Waiting for the session browser screenshot...
-                        </div>
-                      </Show>
-                      <img
-                        src={src()}
-                        alt="Live Chromium browser viewport"
-                        class="block w-full h-auto cursor-crosshair select-none"
-                        classList={{ invisible: !previewReady() }}
-                        onClick={handleViewportClick}
-                        onLoad={() => setPreviewReady(true)}
-                        onError={() => setPreviewReady(false)}
-                      />
-                    </div>
-                  </div>
-                )}
-              </Show>
-              <Show when={!liveScreenshot() && image()}>
-                {(src) => (
-                  <div class="overflow-hidden rounded-md border border-border-weaker-base bg-background-stronger">
-                    <img src={src()} alt="Latest browser screenshot" class="block w-full h-auto" />
-                  </div>
-                )}
-              </Show>
-              <Show when={!image() && screenshotPath()}>
-                <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
-                  <div class="text-12-regular text-text-weak">Latest screenshot</div>
-                  <div class="text-14-regular text-text-strong break-all">{screenshotPath()}</div>
-                </div>
-              </Show>
-              <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
-                <div class="text-12-regular text-text-weak">Last action</div>
-                <div class="text-14-regular text-text-strong">{input().action ?? metadata().action ?? "browser"}</div>
-              </div>
-            </div>
-          </Match>
-          <Match when={true}>
-            <div class="h-full flex items-center justify-center text-center">
-              <div class="text-12-regular text-text-weak max-w-64">
-                Browser activity will appear here after this session uses the browser tool.
-              </div>
-            </div>
-          </Match>
-        </Switch>
+            </Show>
+            <img
+              ref={(el) => (imageRef = el)}
+              src={screenshotSrc()}
+              alt="Live Chromium browser"
+              class="block w-full h-auto select-none"
+              classList={{ invisible: !previewReady() }}
+              onLoad={() => {
+                setPreviewReady(true)
+                if (annotating()) resizeCanvas()
+              }}
+              onError={() => setPreviewReady(false)}
+            />
+            <Show when={annotating()}>
+              <canvas
+                ref={(el) => (canvasRef = el)}
+                class="absolute left-0 top-0 cursor-crosshair touch-none"
+                onPointerDown={startAnnotation}
+                onPointerMove={drawAnnotation}
+                onPointerUp={stopAnnotation}
+                onPointerCancel={stopAnnotation}
+              />
+              <button
+                class="absolute right-3 top-3 rounded bg-background-base px-2 py-1 text-12-regular text-text-strong shadow"
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  clearAnnotation()
+                }}
+              >
+                Clear
+              </button>
+            </Show>
+          </div>
+        </div>
       </div>
     </div>
   )
@@ -872,36 +972,59 @@ function formatLoad(value?: number) {
 }
 
 function ArtifactsTabContent(props: { sessionID?: string }) {
+  const [selected, setSelected] = createSignal<any>()
   const artifacts = createPolledJson<any>(
     () => (props.sessionID ? `/experimental/browser/${encodeURIComponent(props.sessionID)}/artifacts` : undefined),
     8000,
   )
 
+  createEffect(() => {
+    const files = artifacts.data()?.files ?? []
+    const current = selected()
+    if (current && files.some((file: any) => file.name === current.name)) return
+    setSelected(files[0])
+  })
+
   return (
     <TabChrome title="Artifacts" iconTab={PANEL_ARTIFACTS_TAB} onRefresh={artifacts.refresh}>
-      <div class="flex flex-col gap-3">
+      <div class="flex h-full min-h-0 flex-col gap-3">
         <StatusRow label="Artifact directory" value={artifacts.data()?.artifactDir} />
-        <For each={artifacts.data()?.files ?? []}>
-          {(file: any) => (
-            <a
-              href={file.url}
-              target="_blank"
-              rel="noreferrer"
-              class="rounded-md border border-border-weaker-base bg-background-stronger p-3 flex items-center gap-3"
-            >
-              <PanelGlyph tab={PANEL_ARTIFACTS_TAB} />
-              <div class="min-w-0">
-                <div class="text-14-regular text-text-strong truncate">{file.name}</div>
-                <div class="text-12-regular text-text-weak">{file.size} bytes</div>
+        <div class="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(220px,32%)_minmax(0,1fr)]">
+          <div class="min-h-0 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger">
+            <For each={artifacts.data()?.files ?? []}>
+              {(file: any) => (
+                <button
+                  class="flex w-full items-center gap-3 border-b border-border-weaker-base p-3 text-left last:border-b-0 hover:bg-surface-raised-base-hover"
+                  classList={{ "bg-background-base": selected()?.name === file.name }}
+                  onClick={() => setSelected(file)}
+                >
+                  <PanelGlyph tab={PANEL_ARTIFACTS_TAB} />
+                  <div class="min-w-0 flex-1">
+                    <div class="truncate text-14-regular text-text-strong">{file.name}</div>
+                    <div class="text-12-regular text-text-weak">{file.size} bytes</div>
+                  </div>
+                </button>
+              )}
+            </For>
+            <Show when={(artifacts.data()?.files ?? []).length === 0}>
+              <div class="flex min-h-56 items-center justify-center p-6 text-center text-12-regular text-text-weak">
+                No session artifacts yet.
               </div>
-            </a>
-          )}
-        </For>
-        <Show when={(artifacts.data()?.files ?? []).length === 0}>
-          <div class="h-full flex items-center justify-center text-12-regular text-text-weak">
-            No session artifacts yet.
+            </Show>
           </div>
-        </Show>
+          <div class="min-h-0 overflow-hidden rounded-md border border-border-weaker-base bg-background-stronger">
+            <Show
+              when={selected()}
+              fallback={
+                <div class="flex h-full min-h-56 items-center justify-center p-6 text-center text-12-regular text-text-weak">
+                  Select an artifact to preview it here.
+                </div>
+              }
+            >
+              {(file) => <FilePreview file={file()} />}
+            </Show>
+          </div>
+        </div>
       </div>
     </TabChrome>
   )
@@ -1286,6 +1409,16 @@ export function SessionSidePanel(props: {
     tabs().setActive(tab)
   }
 
+  const changeActiveTab = (tab: string) => {
+    if (isPanelTab(tab) || tab === "review" || tab === "context" || tab === "empty") {
+      if (isPanelTab(tab)) tabs().open(tab)
+      tabs().setActive(tab)
+      if (tab === PANEL_TERMINAL_TAB && view().terminal.opened()) view().terminal.close()
+      return
+    }
+    openTab(tab)
+  }
+
   const [browserLaunch, setBrowserLaunch] = createSignal<BrowserLaunchRequest | undefined>()
 
   const launchOpenDesign = () => {
@@ -1388,7 +1521,7 @@ export function SessionSidePanel(props: {
                 >
                   <DragDropSensors />
                   <ConstrainDragYAxis />
-                  <Tabs value={activeTab()} onChange={openTab}>
+                  <Tabs value={activeTab()} onChange={changeActiveTab}>
                     <div class="sticky top-0 shrink-0 flex">
                       <Tabs.List
                         ref={(el: HTMLDivElement) => {
@@ -1420,7 +1553,10 @@ export function SessionSidePanel(props: {
                                   icon="close-small"
                                   variant="ghost"
                                   class="h-5 w-5"
-                                  onClick={() => tabs().close("context")}
+                                  onClick={(event) => {
+                                    event.stopPropagation()
+                                    tabs().close("context")
+                                  }}
                                   aria-label={language.t("common.closeTab")}
                                 />
                               </TooltipKeybind>

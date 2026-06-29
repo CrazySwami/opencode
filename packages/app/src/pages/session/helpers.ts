@@ -50,6 +50,7 @@ export const createSessionTabs = (input: TabsInput) => {
     if (active === "context") return active
     if (active === "review" && review()) return active
     if (active && input.pathFromTab(active)) return input.normalizeTab(active)
+    if (active && openedTabs().includes(active)) return active
 
     const first = openedTabs()[0]
     if (first) return first
@@ -60,6 +61,8 @@ export const createSessionTabs = (input: TabsInput) => {
   const activeFileTab = createMemo(() => {
     const active = activeTab()
     if (!openedTabs().includes(active)) return
+    const source = input.tabs().all().find((tab) => input.normalizeTab(tab) === active)
+    if (!source || !input.pathFromTab(source)) return
     return active
   })
   const closableTab = createMemo(() => {
