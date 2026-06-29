@@ -835,7 +835,7 @@ function OpenDesignTabContent() {
 function MacViewTabContent() {
   const status = createPolledJson<any>(() => "/experimental/mac-view/status")
   const [streamKey, setStreamKey] = createSignal(Date.now())
-  const [fps, setFps] = createSignal(12)
+  const [fps, setFps] = createSignal(30)
 
   createEffect(() => {
     const next = Number(status.data()?.fps)
@@ -853,7 +853,7 @@ function MacViewTabContent() {
         </div>
         <div class="flex items-center gap-1">
           <div class="hidden items-center gap-1 md:flex" aria-label="Mac View FPS">
-            <For each={status.data()?.fpsOptions ?? [6, 12, 20, 30]}>
+            <For each={status.data()?.fpsOptions ?? [6, 12, 20, 30, 45, 60]}>
               {(option: number) => (
                 <button
                   type="button"

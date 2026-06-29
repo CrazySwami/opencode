@@ -1248,10 +1248,10 @@ function macViewFeedURL() {
   return process.env.OPENCODE_MAC_VIEW_URL?.replace(/\/+$/, "")
 }
 
-function macViewFPS(value = process.env.OPENCODE_MAC_VIEW_FPS || 12) {
+function macViewFPS(value = process.env.OPENCODE_MAC_VIEW_FPS || 30) {
   const configured = Number(value)
-  if (!Number.isFinite(configured)) return 12
-  return Math.max(1, Math.min(30, configured))
+  if (!Number.isFinite(configured)) return 30
+  return Math.max(1, Math.min(60, configured))
 }
 
 function macViewFPSFromRequest(requestURL: string) {
@@ -1318,7 +1318,7 @@ async function macViewStatus() {
     mode: "read-only",
     feedURL,
     fps: macViewFPS(),
-    fpsOptions: [6, 12, 20, 30],
+    fpsOptions: [6, 12, 20, 30, 45, 60],
     health,
     snapshotURL: "/experimental/mac-view/snapshot",
     streamURL: "/experimental/mac-view/stream",
