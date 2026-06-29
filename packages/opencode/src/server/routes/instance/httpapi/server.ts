@@ -109,6 +109,7 @@ import { schemaErrorLayer as v2SchemaErrorLayer } from "@opencode-ai/server/midd
 import { workspaceHandlers } from "./handlers/workspace"
 import { instanceContextLayer } from "./middleware/instance-context"
 import { workspaceRoutingLayer } from "./middleware/workspace-routing"
+import { HttpApiProxy } from "./middleware/proxy"
 import { disposeMiddleware } from "./lifecycle"
 import { memoMap } from "@opencode-ai/core/effect/memo-map"
 import { compressionLayer } from "./middleware/compression"
@@ -262,6 +263,16 @@ const browserPreviewRoute = HttpRouter.use((router) =>
       }),
     )
 
+    yield* router.add("GET", "/experimental/browser/novnc/*", (request) =>
+      Effect.gen(function* () {
+        const target = liveBrowserNoVNCProxyURL(request.url)
+        if (request.headers["upgrade"]?.toLowerCase() === "websocket") {
+          return yield* HttpApiProxy.websocket(request, target)
+        }
+        return yield* Effect.promise(() => liveBrowserNoVNCProxyResponse(target))
+      }),
+    )
+
     yield* router.add("GET", "/experimental/browser/live/status", () =>
       Effect.promise(async () => HttpServerResponse.jsonUnsafe(await liveBrowserStatus())),
     )
@@ -363,7 +374,7 @@ const browserPreviewRoute = HttpRouter.use((router) =>
       Effect.promise(async () => HttpServerResponse.jsonUnsafe(await browserUseBridgeStatus())),
     )
   }),
-).pipe(Layer.provide(authOnlyRouterLayer))
+).pipe(Layer.provide([authOnlyRouterLayer, Socket.layerWebSocketConstructorGlobal]))
 
 const workspaceIndexRoute = HttpRouter.use((router) =>
   Effect.gen(function* () {
@@ -716,6 +727,28 @@ const liveBrowserHome = () =>
 const liveBrowserProfile = () => path.join(liveBrowserHome(), "profile")
 const liveBrowserArtifacts = () => path.join(liveBrowserHome(), "artifacts")
 const liveBrowserDebugPort = () => Number(process.env.OPENCODE_LIVE_BROWSER_DEBUG_PORT || 9224)
+const liveBrowserNoVNCURL = () => (process.env.OPENCODE_LIVE_BROWSER_NOVNC_URL || "http://127.0.0.1:6080").replace(/\/+$/, "")
+
+function liveBrowserNoVNCProxyURL(requestURL: string) {
+  const url = new URL(requestURL, "http://localhost")
+  const pathPart = url.pathname.replace(/^\/experimental\/browser\/novnc\/?/, "") || "vnc.html"
+  const target = new URL(liveBrowserNoVNCURL() + "/" + pathPart)
+  target.search = url.search
+  return target
+}
+
+async function liveBrowserNoVNCProxyResponse(target: URL) {
+  const response = await fetch(target)
+  const contentType = response.headers.get("content-type") ?? "application/octet-stream"
+  if (!response.ok) {
+    return HttpServerResponse.text(await response.text(), { status: response.status, contentType })
+  }
+  return HttpServerResponse.setHeader(
+    HttpServerResponse.uint8Array(new Uint8Array(await response.arrayBuffer()), { contentType }),
+    "cache-control",
+    "no-store",
+  )
+}
 
 async function liveBrowserStatus() {
   const browser = await ensureLiveBrowser().catch((error: unknown) => ({
@@ -734,6 +767,7 @@ async function liveBrowserStatus() {
     error: "error" in browser ? browser.error : undefined,
     screenshotURL: "/experimental/browser/live/snapshot",
     streamURL: "/experimental/browser/live/stream",
+    proxiedLiveURL: "/experimental/browser/novnc/vnc.html?autoconnect=true&resize=scale&reconnect=true&path=websockify",
     browserUse: await browserUseBridgeStatus().catch((error: unknown) => ({
       ok: false,
       error: error instanceof Error ? error.message : String(error),

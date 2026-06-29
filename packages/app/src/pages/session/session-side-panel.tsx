@@ -250,6 +250,7 @@ type LiveBrowserStatus = {
   display?: string
   error?: string
   streamURL?: string
+  proxiedLiveURL?: string
   browserUse?: {
     ok?: boolean
     liveURL?: string
@@ -281,7 +282,27 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
 
   const streamSrc = createMemo(() => `${status().streamURL ?? "/experimental/browser/live/stream"}?t=${streamKey()}`)
   const interactiveUrl = createMemo(() => {
-    const url = status().browserUse?.liveURL
+    const proxiedURL = status().proxiedLiveURL
+    const liveURL = status().browserUse?.liveURL
+
+    if (window.location.protocol === "http:" && liveURL) {
+      try {
+        const live = new URL(liveURL, window.location.href)
+        const params = new URLSearchParams({
+          autoconnect: "true",
+          resize: "scale",
+          reconnect: "true",
+          host: live.hostname,
+          port: live.port || (live.protocol === "https:" ? "443" : "80"),
+          path: "websockify",
+        })
+        return `/experimental/browser/novnc/vnc.html?${params.toString()}`
+      } catch {
+        // Fall through to the proxied URL.
+      }
+    }
+
+    const url = proxiedURL || liveURL
     if (!url) return undefined
     try {
       const parsed = new URL(url, window.location.href)
