@@ -1501,7 +1501,9 @@ function FileBrowserTabContent() {
     const all = browser.data()?.entries ?? []
     const needle = query().trim().toLowerCase()
     if (!needle) return all
-    return all.filter((entry: any) => `${entry.name} ${entry.path} ${entry.kind}`.toLowerCase().includes(needle))
+    return all.filter((entry: any) =>
+      `${entry.name} ${entry.kind} ${entry.contentType ?? ""}`.toLowerCase().includes(needle),
+    )
   })
   const details = createMemo(() => selected())
 
@@ -1716,7 +1718,7 @@ function FilePreview(props: { file: any }) {
             <iframe src={url()} title={file().name} class="h-full min-h-96 w-full border-0 bg-white" sandbox="allow-scripts allow-forms allow-same-origin" />
           </Match>
           <Match when={file().kind === "json" || file().kind === "text"}>
-            <iframe src={url()} title={file().name} class="h-full min-h-96 w-full border-0 bg-white" />
+            <FileTextPreview url={url() ?? ""} />
           </Match>
           <Match when={true}>
             <div class="flex h-full min-h-56 items-center justify-center p-6 text-center text-12-regular text-text-weak">
@@ -1726,6 +1728,48 @@ function FilePreview(props: { file: any }) {
         </Switch>
       </div>
     </div>
+  )
+}
+
+function FileTextPreview(props: { url: string }) {
+  const [content, setContent] = createSignal("Loading...")
+  const [error, setError] = createSignal<string>()
+
+  createEffect(() => {
+    const currentUrl = props.url
+    if (!currentUrl) {
+      setContent("")
+      setError("This file does not have a readable URL.")
+      return
+    }
+    let cancelled = false
+    setError(undefined)
+    setContent("Loading...")
+    fetch(currentUrl, { cache: "no-store" })
+      .then((response) => {
+        if (!response.ok) throw new Error(`File request failed: ${response.status}`)
+        return response.text()
+      })
+      .then((text) => {
+        if (!cancelled) setContent(text)
+      })
+      .catch((cause) => {
+        if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause))
+      })
+    onCleanup(() => {
+      cancelled = true
+    })
+  })
+
+  return (
+    <Show
+      when={!error()}
+      fallback={<div class="p-4 text-12-regular text-text-weak">{error()}</div>}
+    >
+      <pre class="min-h-full whitespace-pre-wrap break-words bg-background-base p-4 font-mono text-12-regular leading-5 text-text-strong">
+        {content()}
+      </pre>
+    </Show>
   )
 }
 
