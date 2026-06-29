@@ -280,7 +280,18 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
   let canvasRef: HTMLCanvasElement | undefined
 
   const streamSrc = createMemo(() => `${status().streamURL ?? "/experimental/browser/live/stream"}?t=${streamKey()}`)
-  const displayUrl = createMemo(() => status().currentURL || browserUrl() || "about:blank")
+  const interactiveUrl = createMemo(() => {
+    const url = status().browserUse?.liveURL
+    if (!url) return undefined
+    try {
+      const parsed = new URL(url, window.location.href)
+      if (window.location.protocol === "https:" && parsed.protocol !== "https:") return undefined
+      return parsed.toString()
+    } catch {
+      return undefined
+    }
+  })
+  const displayUrl = createMemo(() => status().currentURL || browserUrl() || interactiveUrl() || "about:blank")
 
   const refreshStatus = async () => {
     try {
@@ -551,7 +562,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
             <IconButton icon="enter" variant="ghost" class="h-7 w-7 shrink-0" disabled={browserBusy()} onClick={submitBrowserUrl} aria-label="Open URL" />
           </form>
           <div class="hidden min-w-0 items-center gap-1 md:flex">
-            <span class="max-w-40 truncate px-1 text-11-regular text-text-weak">{browserBusy() ? "working" : previewReady() ? "live" : "connecting"}</span>
+            <span class="max-w-40 truncate px-1 text-11-regular text-text-weak">{browserBusy() ? "working" : interactiveUrl() && !annotating() ? "interactive" : previewReady() ? "live" : "connecting"}</span>
             <span
               class="h-2 w-2 shrink-0 rounded-full"
               classList={{
@@ -630,29 +641,46 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
         </div>
       </div>
       <div
-        class="relative min-h-0 flex-1 overflow-auto bg-background-base outline-none"
+        class="relative min-h-0 flex-1 bg-background-base outline-none"
         tabIndex={0}
         onClick={handleViewportClick}
         onWheel={handleViewportWheel}
         onKeyDown={handleViewportKeyDown}
       >
-        <Show when={!previewReady()}>
+        <Show when={!previewReady() && (!interactiveUrl() || annotating())}>
           <div class="absolute inset-0 flex items-center justify-center text-center text-12-regular text-text-weak">
             Starting live Chromium...
           </div>
         </Show>
-        <img
-          ref={(el) => (imageRef = el)}
-          src={streamSrc()}
-          alt="Live Chromium browser"
-          class="block w-full h-auto select-none"
-          classList={{ invisible: !previewReady() }}
-          onLoad={() => {
-            setPreviewReady(true)
-            if (annotating()) resizeCanvas()
-          }}
-          onError={() => setPreviewReady(false)}
-        />
+        <Show
+          when={!annotating() ? interactiveUrl() : undefined}
+          fallback={
+            <div class="size-full overflow-auto">
+              <img
+                ref={(el) => (imageRef = el)}
+                src={streamSrc()}
+                alt="Live Chromium browser"
+                class="block w-full h-auto select-none"
+                classList={{ invisible: !previewReady() }}
+                onLoad={() => {
+                  setPreviewReady(true)
+                  if (annotating()) resizeCanvas()
+                }}
+                onError={() => setPreviewReady(false)}
+              />
+            </div>
+          }
+        >
+          {(url) => (
+            <iframe
+              src={url()}
+              title="Interactive Chromium browser"
+              class="block size-full border-0 bg-white"
+              allow="clipboard-read; clipboard-write"
+              onLoad={() => setPreviewReady(true)}
+            />
+          )}
+        </Show>
         <Show when={annotating()}>
           <canvas
             ref={(el) => (canvasRef = el)}
