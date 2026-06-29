@@ -224,7 +224,7 @@ function SessionTerminalTab() {
                         autoFocus
                         onConnect={() => terminal.trim(id)}
                         onCleanup={ops.update}
-                        onConnectError={() => void ops.clone(id)}
+                        onConnectError={() => undefined}
                       />
                     </div>
                   )}
