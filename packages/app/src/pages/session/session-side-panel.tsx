@@ -1554,8 +1554,9 @@ export function SessionSidePanel(props: {
                   <DragDropSensors />
                   <ConstrainDragYAxis />
                   <Tabs value={activeTab()} onChange={changeActiveTab}>
-                    <div class="sticky top-0 shrink-0 flex">
+                    <div class="sticky top-0 shrink-0 flex min-w-0 overflow-hidden">
                       <Tabs.List
+                        class="min-w-0"
                         ref={(el: HTMLDivElement) => {
                           const stop = createFileTabListSync({ el, contextOpen })
                           onCleanup(stop)
