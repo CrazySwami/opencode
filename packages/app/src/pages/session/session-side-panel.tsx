@@ -1,4 +1,5 @@
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, type JSX } from "solid-js"
+import { Portal } from "solid-js/web"
 import { createStore } from "solid-js/store"
 import { createMediaQuery } from "@solid-primitives/media"
 import { Tabs } from "@opencode-ai/ui/tabs"
@@ -1445,6 +1446,36 @@ export function SessionSidePanel(props: {
 
   const [browserLaunch, setBrowserLaunch] = createSignal<BrowserLaunchRequest | undefined>()
   const [panelMenuOpen, setPanelMenuOpen] = createSignal(false)
+  const [panelMenuPosition, setPanelMenuPosition] = createSignal({ left: 0, top: 0 })
+
+  const setPanelMenuAnchor = (element: HTMLElement) => {
+    const rect = element.getBoundingClientRect()
+    const menuWidth = 192
+    const edgePadding = 8
+    setPanelMenuPosition({
+      left: Math.max(edgePadding, Math.min(rect.left, window.innerWidth - menuWidth - edgePadding)),
+      top: rect.bottom + 4,
+    })
+  }
+
+  createEffect(() => {
+    if (!panelMenuOpen()) return
+
+    const closeMenu = () => setPanelMenuOpen(false)
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeMenu()
+    }
+
+    document.addEventListener("pointerdown", closeMenu)
+    document.addEventListener("keydown", closeOnEscape)
+    window.addEventListener("resize", closeMenu)
+
+    onCleanup(() => {
+      document.removeEventListener("pointerdown", closeMenu)
+      document.removeEventListener("keydown", closeOnEscape)
+      window.removeEventListener("resize", closeMenu)
+    })
+  })
 
   const launchOpenDesign = () => {
     openPanelTab(PANEL_BROWSER_TAB)
@@ -1547,7 +1578,7 @@ export function SessionSidePanel(props: {
                   <DragDropSensors />
                   <ConstrainDragYAxis />
                   <Tabs value={activeTab()} onChange={changeActiveTab}>
-                    <div class="sticky top-0 shrink-0 flex min-w-0 overflow-hidden">
+                    <div class="sticky top-0 z-40 shrink-0 flex min-w-0">
                       <Tabs.List
                         class="min-w-0"
                         ref={(el: HTMLDivElement) => {
@@ -1613,34 +1644,44 @@ export function SessionSidePanel(props: {
                             aria-expanded={panelMenuOpen()}
                             onClick={(event) => {
                               event.stopPropagation()
+                              if (!panelMenuOpen()) setPanelMenuAnchor(event.currentTarget)
                               setPanelMenuOpen((open) => !open)
                             }}
                           />
-                          <Show when={panelMenuOpen()}>
-                            <div
-                              class="absolute left-0 top-9 z-[100] w-48 rounded-lg border border-border-base bg-background-stronger p-1 shadow-lg"
-                              onClick={(event) => event.stopPropagation()}
-                            >
-                              <button
-                                type="button"
-                                class="flex h-8 w-full items-center rounded-md px-3 text-left text-13-regular text-text-base hover:bg-surface-base-hover"
-                                onClick={showFilePicker}
-                              >
-                                Files
-                              </button>
-                              <PanelMenuButton tab={PANEL_TERMINAL_TAB} onSelect={() => openPanelTab(PANEL_TERMINAL_TAB)} />
-                              <PanelMenuButton tab={PANEL_BROWSER_TAB} onSelect={() => openPanelTab(PANEL_BROWSER_TAB)} />
-                              <PanelMenuButton tab={PANEL_OPEN_DESIGN_TAB} onSelect={launchOpenDesign} />
-                              <PanelMenuButton tab={PANEL_MAC_VIEW_TAB} onSelect={() => openPanelTab(PANEL_MAC_VIEW_TAB)} />
-                              <PanelMenuButton tab={PANEL_ACCOUNTS_TAB} onSelect={() => openPanelTab(PANEL_ACCOUNTS_TAB)} />
-                              <PanelMenuButton tab={PANEL_RESOURCES_TAB} onSelect={() => openPanelTab(PANEL_RESOURCES_TAB)} />
-                              <PanelMenuButton tab={PANEL_ARTIFACTS_TAB} onSelect={() => openPanelTab(PANEL_ARTIFACTS_TAB)} />
-                              <PanelMenuButton tab={PANEL_FILE_BROWSER_TAB} onSelect={() => openPanelTab(PANEL_FILE_BROWSER_TAB)} />
-                            </div>
-                          </Show>
                         </div>
                       </Tabs.List>
                     </div>
+
+                    <Show when={panelMenuOpen()}>
+                      <Portal>
+                        <div
+                          class="fixed z-[1000] w-48 overflow-auto rounded-lg border border-border-base bg-background-stronger p-1 shadow-lg"
+                          style={{
+                            left: panelMenuPosition().left + "px",
+                            top: panelMenuPosition().top + "px",
+                            "max-height": "min(320px, calc(100vh - " + (panelMenuPosition().top + 8) + "px))",
+                          }}
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <button
+                            type="button"
+                            class="flex h-8 w-full items-center rounded-md px-3 text-left text-13-regular text-text-base hover:bg-surface-base-hover"
+                            onClick={showFilePicker}
+                          >
+                            Files
+                          </button>
+                          <PanelMenuButton tab={PANEL_TERMINAL_TAB} onSelect={() => openPanelTab(PANEL_TERMINAL_TAB)} />
+                          <PanelMenuButton tab={PANEL_BROWSER_TAB} onSelect={() => openPanelTab(PANEL_BROWSER_TAB)} />
+                          <PanelMenuButton tab={PANEL_OPEN_DESIGN_TAB} onSelect={launchOpenDesign} />
+                          <PanelMenuButton tab={PANEL_MAC_VIEW_TAB} onSelect={() => openPanelTab(PANEL_MAC_VIEW_TAB)} />
+                          <PanelMenuButton tab={PANEL_ACCOUNTS_TAB} onSelect={() => openPanelTab(PANEL_ACCOUNTS_TAB)} />
+                          <PanelMenuButton tab={PANEL_RESOURCES_TAB} onSelect={() => openPanelTab(PANEL_RESOURCES_TAB)} />
+                          <PanelMenuButton tab={PANEL_ARTIFACTS_TAB} onSelect={() => openPanelTab(PANEL_ARTIFACTS_TAB)} />
+                          <PanelMenuButton tab={PANEL_FILE_BROWSER_TAB} onSelect={() => openPanelTab(PANEL_FILE_BROWSER_TAB)} />
+                        </div>
+                      </Portal>
+                    </Show>
 
                     <Show when={reviewTab() && props.canReview()}>
                       <Tabs.Content value="review" class="flex flex-col h-full overflow-hidden contain-strict">
