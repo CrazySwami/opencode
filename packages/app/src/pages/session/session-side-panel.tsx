@@ -1618,7 +1618,7 @@ export function SessionSidePanel(props: {
                           />
                           <Show when={panelMenuOpen()}>
                             <div
-                              class="absolute right-3 top-9 z-[100] w-48 rounded-lg border border-border-base bg-background-stronger p-1 shadow-lg"
+                              class="absolute left-0 top-9 z-[100] w-48 rounded-lg border border-border-base bg-background-stronger p-1 shadow-lg"
                               onClick={(event) => event.stopPropagation()}
                             >
                               <button
