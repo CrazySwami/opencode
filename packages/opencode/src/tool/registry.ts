@@ -16,6 +16,13 @@ import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
 import { SkillTool } from "./skill"
+import { BrowserTool } from "./browser"
+import { OpenDesignTool } from "./open-design"
+import { MacViewTool } from "./mac-view"
+import { ResourceStatusTool } from "./resource-status"
+import { ArtifactTool } from "./artifact"
+import { FileBrowserTool } from "./file-browser"
+import { AccountStatusTool } from "./account-status"
 import * as Tool from "./tool"
 import { Config } from "@/config/config"
 import { type ToolContext as PluginToolContext, type ToolDefinition } from "@opencode-ai/plugin"
@@ -105,6 +112,13 @@ export const layer = Layer.effect(
     const greptool = yield* GrepTool
     const patchtool = yield* ApplyPatchTool
     const skilltool = yield* SkillTool
+    const browser = yield* BrowserTool
+    const openDesign = yield* OpenDesignTool
+    const macView = yield* MacViewTool
+    const resourceStatus = yield* ResourceStatusTool
+    const artifact = yield* ArtifactTool
+    const fileBrowser = yield* FileBrowserTool
+    const accountStatus = yield* AccountStatusTool
     const agent = yield* Agent.Service
 
     const state = yield* InstanceState.make<State>(
@@ -208,11 +222,26 @@ export const layer = Layer.effect(
           todo: Tool.init(todo),
           search: Tool.init(websearch),
           skill: Tool.init(skilltool),
+          browser: Tool.init(browser),
+          openDesign: Tool.init(openDesign),
+          macView: Tool.init(macView),
+          resourceStatus: Tool.init(resourceStatus),
+          artifact: Tool.init(artifact),
+          fileBrowser: Tool.init(fileBrowser),
+          accountStatus: Tool.init(accountStatus),
           patch: Tool.init(patchtool),
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
         })
+        const terminal: Tool.Def = {
+          ...tool.shell,
+          id: "terminal",
+          description: [
+            "Run terminal commands in the current project workspace. This is an alias for the Bash shell tool so the model can explicitly use terminal access when the user asks for it.",
+            tool.shell.description,
+          ].join("\n\n"),
+        }
 
         return {
           custom,
@@ -220,6 +249,7 @@ export const layer = Layer.effect(
             tool.invalid,
             ...(questionEnabled ? [tool.question] : []),
             tool.shell,
+            terminal,
             tool.read,
             tool.glob,
             tool.grep,
@@ -230,6 +260,13 @@ export const layer = Layer.effect(
             tool.todo,
             tool.search,
             tool.skill,
+            tool.browser,
+            tool.openDesign,
+            tool.macView,
+            tool.resourceStatus,
+            tool.artifact,
+            tool.fileBrowser,
+            tool.accountStatus,
             tool.patch,
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),

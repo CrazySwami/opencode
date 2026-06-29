@@ -25,6 +25,8 @@ import {
   ImageAttachmentPart,
   AgentPart,
   FileAttachmentPart,
+  ToolPart,
+  type ToolPartSource,
 } from "@/context/prompt"
 import { useLayout } from "@/context/layout"
 import { useSDK } from "@/context/sdk"
@@ -195,6 +197,49 @@ const EXAMPLES = [
   "prompt.example.24",
   "prompt.example.25",
 ] as const
+
+const BUILT_IN_TOOL_IDS = new Set([
+  "bash",
+  "edit",
+  "fetch",
+  "glob",
+  "grep",
+  "list",
+  "patch",
+  "read",
+  "todowrite",
+  "webfetch",
+  "write",
+])
+
+const classifyToolMention = (id: string): ToolPartSource => {
+  const normalized = id.toLowerCase()
+  if (normalized === "browser") return "browser"
+  if (normalized === "terminal" || normalized === "bash") return "terminal"
+  if (normalized === "open_design" || normalized.startsWith("open_design_")) return "open_design"
+  if (normalized === "mac_view" || normalized.startsWith("mac_view_")) return "mac_view"
+  if (normalized === "resource_status" || normalized.startsWith("resource_")) return "resource"
+  if (normalized === "artifact" || normalized.startsWith("artifact_")) return "artifact"
+  if (normalized === "file_browser" || normalized.startsWith("file_browser_")) return "file_browser"
+  if (normalized === "account_status" || normalized.startsWith("account_")) return "account"
+  if (normalized.startsWith("mcp") || normalized.includes("mcp") || !BUILT_IN_TOOL_IDS.has(normalized)) return "mcp"
+  return "tool"
+}
+
+const toolMentionName = (id: string) => id
+
+const optionForToolMention = (input: { id: string; description?: string; icon?: string }): AtOption => {
+  const name = toolMentionName(input.id)
+  return {
+    type: "tool",
+    id: input.id,
+    name,
+    display: `${name} ${input.id} ${input.description ?? ""}`,
+    source: classifyToolMention(input.id),
+    description: input.description,
+    icon: input.icon,
+  }
+}
 
 export const PromptInput: Component<PromptInputProps> = (props) => {
   const sdk = useSDK()
@@ -635,10 +680,75 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       .map((agent): AtOption => ({ type: "agent", name: agent.name, display: agent.name })),
   )
 
+  const [toolList] = createResource(
+    () => {
+      const model = props.controls.model.selection.current()
+      return {
+        directory: sdk().directory,
+        provider: model?.provider?.id,
+        model: model?.id,
+      }
+    },
+    async (input) => {
+      const sort = (items: AtOption[]) =>
+        items.sort((a, b) => {
+          if (a.type !== "tool" || b.type !== "tool") return 0
+          const rank = (item: AtOption) => {
+            if (item.type !== "tool") return 99
+            if (item.source === "browser") return 0
+            if (item.source === "terminal") return 1
+            if (item.source === "open_design") return 2
+            if (item.source === "mac_view") return 3
+            if (item.source === "resource") return 4
+            if (item.source === "artifact") return 5
+            if (item.source === "file_browser") return 6
+            if (item.source === "account") return 7
+            if (item.source === "mcp") return 8
+            return 9
+          }
+          return rank(a) - rank(b) || a.name.localeCompare(b.name)
+        })
+
+      if (input.provider && input.model) {
+        try {
+          const response = await sdk().client.tool.list({
+            directory: input.directory,
+            provider: input.provider,
+            model: input.model,
+          })
+          const options = (response.data ?? []).map((tool) =>
+            optionForToolMention({
+              id: tool.id,
+              description: tool.description,
+            }),
+          )
+          return sort(options)
+        } catch {
+          // Fall through to the model-independent list so @tool mentions still work while models load.
+        }
+      }
+
+      const response = await sdk().client.tool.ids({ directory: input.directory })
+      return sort((response.data ?? []).map((id) => optionForToolMention({ id })))
+    },
+  )
+
   const handleAtSelect = (option: AtOption | undefined) => {
     if (!option) return
     if (option.type === "agent") {
       addPart({ type: "agent", name: option.name, content: "@" + option.name, start: 0, end: 0 })
+    } else if (option.type === "tool") {
+      addPart({
+        type: "tool",
+        id: option.id,
+        name: option.name,
+        source: option.source,
+        description: option.description,
+        icon: option.icon,
+        content: "@" + option.name,
+        start: 0,
+        end: 0,
+      })
     } else {
       addPart({ type: "file", path: option.path, content: "@" + option.path, start: 0, end: 0 })
     }
@@ -646,7 +756,9 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
   const atKey = (x: AtOption | undefined) => {
     if (!x) return ""
-    return x.type === "agent" ? `agent:${x.name}` : `file:${x.path}`
+    if (x.type === "agent") return `agent:${x.name}`
+    if (x.type === "tool") return `tool:${x.id}`
+    return `file:${x.path}`
   }
 
   const {
@@ -658,29 +770,32 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   } = useFilteredList<AtOption>({
     items: async (query) => {
       const agents = agentList()
+      const tools = toolList() ?? []
       const open = recent()
       const seen = new Set(open)
       const pinned: AtOption[] = open.map((path) => ({ type: "file", path, display: path, recent: true }))
-      if (!query.trim()) return [...agents, ...pinned]
+      if (!query.trim()) return [...agents, ...tools, ...pinned]
       const paths = await files.searchFilesAndDirectories(query)
       const fileOptions: AtOption[] = paths
         .filter((path) => !seen.has(path))
         .map((path) => ({ type: "file", path, display: path }))
-      return [...agents, ...pinned, ...fileOptions]
+      return [...agents, ...tools, ...pinned, ...fileOptions]
     },
     key: atKey,
     filterKeys: ["display"],
     skipFilter: (item) => item.type === "file" && !item.recent,
     groupBy: (item) => {
       if (item.type === "agent") return "agent"
+      if (item.type === "tool") return "tool"
       if (item.recent) return "recent"
       return "file"
     },
     sortGroupsBy: (a, b) => {
       const rank = (category: string) => {
         if (category === "agent") return 0
-        if (category === "recent") return 1
-        return 2
+        if (category === "tool") return 1
+        if (category === "recent") return 2
+        return 3
       }
       return rank(a.category) - rank(b.category)
     },
@@ -742,12 +857,20 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     onSelect: handleSlashSelect,
   })
 
-  const createPill = (part: FileAttachmentPart | AgentPart) => {
+  const createPill = (part: FileAttachmentPart | AgentPart | ToolPart) => {
     const pill = document.createElement("span")
     pill.textContent = part.content
     pill.setAttribute("data-type", part.type)
     if (part.type === "file") pill.setAttribute("data-path", part.path)
     if (part.type === "agent") pill.setAttribute("data-name", part.name)
+    if (part.type === "tool") {
+      pill.setAttribute("data-id", part.id)
+      pill.setAttribute("data-name", part.name)
+      pill.setAttribute("data-source", part.source)
+      if (part.description) pill.setAttribute("data-description", part.description)
+      if (part.icon) pill.setAttribute("data-icon", part.icon)
+      pill.style.color = "#f97316"
+    }
     pill.setAttribute("contenteditable", "false")
     pill.style.userSelect = "text"
     pill.style.cursor = "default"
@@ -770,6 +893,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       const el = node as HTMLElement
       if (el.dataset.type === "file") return true
       if (el.dataset.type === "agent") return true
+      if (el.dataset.type === "tool") return true
       return el.tagName === "BR"
     })
 
@@ -780,7 +904,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         editorRef.appendChild(createTextFragment(part.content))
         continue
       }
-      if (part.type === "file" || part.type === "agent") {
+      if (part.type === "file" || part.type === "agent" || part.type === "tool") {
         editorRef.appendChild(createPill(part))
       }
     }
@@ -884,6 +1008,22 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       position += content.length
     }
 
+    const pushTool = (tool: HTMLElement) => {
+      const content = tool.textContent ?? ""
+      parts.push({
+        type: "tool",
+        id: tool.dataset.id!,
+        name: tool.dataset.name ?? tool.dataset.id!,
+        source: (tool.dataset.source as ToolPartSource | undefined) ?? classifyToolMention(tool.dataset.id!),
+        description: tool.dataset.description,
+        icon: tool.dataset.icon,
+        content,
+        start: position,
+        end: position + content.length,
+      })
+      position += content.length
+    }
+
     const visit = (node: Node) => {
       if (node.nodeType === Node.TEXT_NODE) {
         buffer += node.textContent ?? ""
@@ -900,6 +1040,11 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       if (el.dataset.type === "agent") {
         flushText()
         pushAgent(el)
+        return
+      }
+      if (el.dataset.type === "tool") {
+        flushText()
+        pushTool(el)
         return
       }
       if (el.tagName === "BR") {
@@ -993,7 +1138,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     const range = selection.getRangeAt(0)
     if (!editorRef.contains(range.startContainer)) return false
 
-    if (part.type === "file" || part.type === "agent") {
+    if (part.type === "file" || part.type === "agent" || part.type === "tool") {
       const cursorPosition = getCursorPosition(editorRef)
       const rawText = prompt
         .current()

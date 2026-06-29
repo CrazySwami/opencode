@@ -1,0 +1,5 @@
+Operate a per-session Chromium browser through Playwright CLI. Use this when the task needs a real browser surface: opening pages, clicking elements, filling forms, capturing DOM snapshots, highlighting elements, inspecting network/console activity, or taking screenshots.
+
+Each OpenCode session gets its own browser session name and persistent profile. Start with action=open for a new session, then use actions like goto, snapshot, click, fill, highlight, screenshot, requests, console, or tab-list. Screenshot results are attached back to the conversation when a PNG is produced.
+
+The browser is isolated per OpenCode session, but it is still a real browser with network access. Avoid entering or exposing secrets unless the user explicitly authorizes it.

@@ -2,7 +2,7 @@ import { getFilename } from "@opencode-ai/core/util/path"
 import { type AgentPartInput, type FilePartInput, type Part, type TextPartInput } from "@opencode-ai/sdk/v2/client"
 import type { FileSelection } from "@/context/file"
 import { encodeFilePath } from "@/context/file/path"
-import type { AgentPart, FileAttachmentPart, ImageAttachmentPart, Prompt } from "@/context/prompt"
+import type { AgentPart, FileAttachmentPart, ImageAttachmentPart, Prompt, ToolPart } from "@/context/prompt"
 import { Identifier } from "@/utils/id"
 import { createCommentMetadata, formatCommentNote } from "@/utils/comment-note"
 
@@ -51,6 +51,14 @@ const parseCommentMentions = (comment: string) => {
 
 const isFileAttachment = (part: Prompt[number]): part is FileAttachmentPart => part.type === "file"
 const isAgentAttachment = (part: Prompt[number]): part is AgentPart => part.type === "agent"
+const isToolAttachment = (part: Prompt[number]): part is ToolPart => part.type === "tool"
+
+const formatToolTag = (tool: ToolPart) => {
+  const description = tool.description?.trim()
+  const source = tool.source === "mcp" ? "MCP/tool" : `${tool.source} tool`
+  const details = description ? ` - ${description}` : ""
+  return `- @${tool.name}: ${source} id=${tool.id}${details}`
+}
 
 const toOptimisticPart = (part: PromptRequestPart, sessionID: string, messageID: string): Part => {
   if (part.type === "text") {
@@ -130,6 +138,31 @@ export function buildRequestParts(input: BuildRequestPartsInput) {
     } satisfies PromptRequestPart
   })
 
+  const tools = input.prompt.filter(isToolAttachment)
+  const toolContext = tools.length
+    ? [
+        {
+          id: Identifier.ascending("part"),
+          type: "text",
+          text: [
+            "Tagged tools for this request:",
+            ...tools.map(formatToolTag),
+            "Use these tagged tools when they are relevant to the user's request.",
+          ].join("\n"),
+          synthetic: true,
+          metadata: {
+            type: "tool-tags",
+            tools: tools.map((tool) => ({
+              id: tool.id,
+              name: tool.name,
+              source: tool.source,
+              description: tool.description,
+            })),
+          },
+        } satisfies PromptRequestPart,
+      ]
+    : []
+
   const used = new Set(files.map((part) => part.url))
   const context = input.context.flatMap((item) => {
     const path = absolute(input.sessionDirectory, item.path)
@@ -192,7 +225,7 @@ export function buildRequestParts(input: BuildRequestPartsInput) {
     } satisfies PromptRequestPart
   })
 
-  requestParts.push(...files, ...context, ...agents, ...images)
+  requestParts.push(...files, ...context, ...toolContext, ...agents, ...images)
 
   return {
     requestParts,

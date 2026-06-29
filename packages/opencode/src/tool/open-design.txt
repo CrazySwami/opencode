@@ -1,0 +1,3 @@
+Inspect or operate the configured Open Design daemon. Use this for Open Design project status, project file/artifact reads, search, and permission-gated daemon runs or file writes.
+
+The daemon URL and token come from server environment variables (`OD_DAEMON_URL` / `OD_API_TOKEN`, with OpenCode-prefixed fallbacks). Do not expose the token in responses. Read actions are safe for status and context. Mutating actions require OpenCode permission approval.

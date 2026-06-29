@@ -1,0 +1,1 @@
+Show non-secret OpenCode account, provider, MCP, and workspace tool status. Use this when the user asks what tools, MCPs, providers, or local surfaces are available.

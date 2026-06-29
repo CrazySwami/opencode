@@ -18,6 +18,7 @@ import stripAnsi from "strip-ansi"
 import type { ToolPart } from "@opencode-ai/sdk/v2"
 import type * as Tool from "@/tool/tool"
 import type { ApplyPatchTool } from "@/tool/apply_patch"
+import type { BrowserTool } from "@/tool/browser"
 import type { ShellTool as BashTool } from "@/tool/shell"
 import type { EditTool } from "@/tool/edit"
 import type { GlobTool } from "@/tool/glob"
@@ -108,6 +109,7 @@ type ToolDefs = {
   lsp: typeof LspTool
   webfetch: typeof WebFetchTool
   websearch: typeof WebSearchTool
+  browser: typeof BrowserTool
   skill: typeof SkillTool
   plan_exit: typeof PlanExitTool
 }
@@ -1208,6 +1210,25 @@ const TOOL_RULES = {
       start: scrollWebSearchStart,
     },
     permission: permWebSearch,
+  },
+  browser: {
+    view: {
+      output: true,
+      final: true,
+    },
+    run: (p) => ({
+      icon: "B",
+      title: `Browser ${text(p.input.action) || "action"}`,
+      description: [text(p.input.url), text(p.input.target)].filter(Boolean).join(" "),
+    }),
+    permission: (p) => ({
+      icon: "B",
+      title: `Browser ${text(p.input.action) || "action"}`,
+      lines: [
+        text(p.input.url) ? `URL ${text(p.input.url)}` : undefined,
+        text(p.input.target) ? `Target ${text(p.input.target)}` : undefined,
+      ].filter((line): line is string => !!line),
+    }),
   },
   skill: {
     view: {

@@ -1,0 +1,1 @@
+Report read-only CPU, memory, storage, uptime, and online status for the OpenCode server and Alfonso's Mac when reachable.

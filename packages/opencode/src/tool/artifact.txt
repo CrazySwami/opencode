@@ -1,0 +1,1 @@
+List artifacts produced by this OpenCode session, including browser screenshots and other registered session files. Use this to find viewable file paths without exposing secrets.

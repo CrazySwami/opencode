@@ -34,6 +34,27 @@ export interface AgentPart extends PartBase {
   name: string
 }
 
+export type ToolPartSource =
+  | "browser"
+  | "terminal"
+  | "open_design"
+  | "mac_view"
+  | "resource"
+  | "artifact"
+  | "file_browser"
+  | "account"
+  | "mcp"
+  | "tool"
+
+export interface ToolPart extends PartBase {
+  type: "tool"
+  id: string
+  name: string
+  source: ToolPartSource
+  description?: string
+  icon?: string
+}
+
 export interface ImageAttachmentPart {
   type: "image"
   id: string
@@ -43,7 +64,7 @@ export interface ImageAttachmentPart {
   dataUrl: string
 }
 
-export type ContentPart = TextPart | FileAttachmentPart | AgentPart | ImageAttachmentPart
+export type ContentPart = TextPart | FileAttachmentPart | AgentPart | ToolPart | ImageAttachmentPart
 export type Prompt = ContentPart[]
 
 export type FileContextItem = {
@@ -76,6 +97,8 @@ function isPartEqual(partA: ContentPart, partB: ContentPart) {
       return partB.type === "file" && partA.path === partB.path && isSelectionEqual(partA.selection, partB.selection)
     case "agent":
       return partB.type === "agent" && partA.name === partB.name
+    case "tool":
+      return partB.type === "tool" && partA.id === partB.id
     case "image":
       return partB.type === "image" && partA.id === partB.id
   }
@@ -98,6 +121,7 @@ function clonePart(part: ContentPart): ContentPart {
   if (part.type === "text") return { ...part }
   if (part.type === "image") return { ...part }
   if (part.type === "agent") return { ...part }
+  if (part.type === "tool") return { ...part }
   return {
     ...part,
     selection: cloneSelection(part.selection),
@@ -109,7 +133,6 @@ function clonePrompt(prompt: Prompt): Prompt {
 }
 
 function contextItemKey(item: ContextItem) {
-  if (item.type !== "file") return item.type
   const start = item.selection?.startLine
   const end = item.selection?.endLine
   const key = `${item.type}:${item.path}:${start}:${end}`

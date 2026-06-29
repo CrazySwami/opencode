@@ -1,0 +1,1 @@
+Inspect the configured read-only Mac screen feed. This tool does not click or type on the Mac; use Computer Use or another explicit control surface for actions.

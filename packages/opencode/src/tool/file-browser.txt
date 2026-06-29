@@ -1,0 +1,1 @@
+Browse the OpenCode server's allowlisted file roots. Use this to list folders, inspect file metadata, and find hosted viewer URLs for images, PDFs, videos, audio, text, and other files.

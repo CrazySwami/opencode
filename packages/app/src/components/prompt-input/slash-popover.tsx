@@ -2,10 +2,20 @@ import { Component, For, Match, Show, Switch } from "solid-js"
 import { FileIcon } from "@opencode-ai/ui/file-icon"
 import { Icon } from "@opencode-ai/ui/icon"
 import { getDirectory, getFilename } from "@opencode-ai/core/util/path"
+import type { ToolPartSource } from "@/context/prompt"
 
 export type AtOption =
   | { type: "agent"; name: string; display: string }
   | { type: "file"; path: string; display: string; recent?: boolean }
+  | {
+      type: "tool"
+      id: string
+      name: string
+      display: string
+      source: ToolPartSource
+      description?: string
+      icon?: string
+    }
 
 export interface SlashCommand {
   id: string
@@ -31,6 +41,57 @@ type PromptPopoverProps = {
   onSlashSelect: (item: SlashCommand) => void
   commandKeybind: (id: string) => string | undefined
   t: (key: string) => string
+}
+
+export const ToolMentionIcon: Component<{ source: ToolPartSource; icon?: string }> = (props) => {
+  const orange = "#f97316"
+
+  return (
+    <span
+      class="size-4 shrink-0 inline-flex items-center justify-center overflow-hidden rounded-[4px]"
+      style={{ color: orange }}
+    >
+      <Show
+        when={props.icon}
+        fallback={
+          <Switch>
+            <Match when={props.source === "browser"}>
+              <Icon name="window-cursor" size="small" />
+            </Match>
+            <Match when={props.source === "terminal"}>
+              <Icon name="terminal" size="small" />
+            </Match>
+            <Match when={props.source === "open_design"}>
+              <span class="text-[8px] leading-none font-semibold tracking-[0]">OD</span>
+            </Match>
+            <Match when={props.source === "mac_view"}>
+              <Icon name="eye" size="small" />
+            </Match>
+            <Match when={props.source === "resource"}>
+              <span class="text-[8px] leading-none font-semibold tracking-[0]">CPU</span>
+            </Match>
+            <Match when={props.source === "artifact"}>
+              <Icon name="photo" size="small" />
+            </Match>
+            <Match when={props.source === "file_browser"}>
+              <Icon name="folder" size="small" />
+            </Match>
+            <Match when={props.source === "account"}>
+              <Icon name="providers" size="small" />
+            </Match>
+            <Match when={props.source === "mcp"}>
+              <span class="text-[8px] leading-none font-semibold tracking-[0]">MCP</span>
+            </Match>
+            <Match when={true}>
+              <Icon name="mcp" size="small" />
+            </Match>
+          </Switch>
+        }
+      >
+        {(icon) => <img src={icon()} alt="" class="size-4 object-contain" />}
+      </Show>
+    </span>
+  )
 }
 
 export const PromptPopover: Component<PromptPopoverProps> = (props) => {
@@ -65,6 +126,25 @@ export const PromptPopover: Component<PromptPopoverProps> = (props) => {
                       >
                         <Icon name="brain" size="small" class="text-icon-info-active shrink-0" />
                         <span class="text-14-regular text-text-strong whitespace-nowrap">@{item.name}</span>
+                      </button>
+                    )
+                  }
+
+                  if (item.type === "tool") {
+                    return (
+                      <button
+                        class="w-full flex items-center gap-x-2 rounded-md px-2 py-0.5"
+                        classList={{ "bg-surface-raised-base-hover": props.atActive === key }}
+                        onClick={() => props.onAtSelect(item)}
+                        onMouseEnter={() => props.setAtActive(key)}
+                      >
+                        <ToolMentionIcon source={item.source} icon={item.icon} />
+                        <div class="flex items-center gap-2 min-w-0">
+                          <span class="text-14-regular text-text-strong whitespace-nowrap">@{item.name}</span>
+                          <Show when={item.description}>
+                            <span class="text-14-regular text-text-weak truncate">{item.description}</span>
+                          </Show>
+                        </div>
                       </button>
                     )
                   }

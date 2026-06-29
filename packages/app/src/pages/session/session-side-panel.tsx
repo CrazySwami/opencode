@@ -1,11 +1,13 @@
-import { For, Match, Show, Switch, createEffect, createMemo, onCleanup, type JSX } from "solid-js"
+import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { createMediaQuery } from "@solid-primitives/media"
 import { Tabs } from "@opencode-ai/ui/tabs"
 import { IconButton } from "@opencode-ai/ui/icon-button"
+import { Icon } from "@opencode-ai/ui/icon"
 import { TooltipKeybind } from "@opencode-ai/ui/tooltip"
 import { ResizeHandle } from "@opencode-ai/ui/resize-handle"
 import { Mark } from "@opencode-ai/ui/logo"
+import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
 import { DragDropProvider, DragDropSensors, DragOverlay, SortableProvider, closestCenter } from "@thisbeyond/solid-dnd"
 import type { DragEvent } from "@thisbeyond/solid-dnd"
 import type { SnapshotFileDiff, VcsFileDiff } from "@opencode-ai/sdk/v2"
@@ -13,6 +15,7 @@ import { ConstrainDragYAxis, getDraggableId } from "@/utils/solid-dnd"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 
 import FileTree from "@/components/file-tree"
+import { Terminal } from "@/components/terminal"
 import { SessionContextUsage } from "@/components/session-context-usage"
 import { SessionContextTab, SortableTab, FileVisual } from "@/components/session"
 import { useCommand } from "@/context/command"
@@ -21,8 +24,10 @@ import { useLanguage } from "@/context/language"
 import { useLayout } from "@/context/layout"
 import { useSettings } from "@/context/settings"
 import { useSync } from "@/context/sync"
+import { useTerminal } from "@/context/terminal"
 import { createFileTabListSync } from "@/pages/session/file-tab-scroll"
 import { FileTabContent } from "@/pages/session/file-tabs"
+import { terminalTabLabel } from "@/pages/session/terminal-label"
 import {
   createOpenSessionFileTab,
   createSessionTabs,
@@ -34,9 +39,963 @@ import { setSessionHandoff } from "@/pages/session/handoff"
 import { useSessionLayout } from "@/pages/session/session-layout"
 
 type RenderDiff = (SnapshotFileDiff & { file: string }) | VcsFileDiff
+const PANEL_TERMINAL_TAB = "panel://terminal"
+const PANEL_BROWSER_TAB = "panel://browser"
+const PANEL_OPEN_DESIGN_TAB = "panel://open-design"
+const PANEL_MAC_VIEW_TAB = "panel://mac-view"
+const PANEL_ACCOUNTS_TAB = "panel://accounts"
+const PANEL_RESOURCES_TAB = "panel://resources"
+const PANEL_ARTIFACTS_TAB = "panel://artifacts"
+const PANEL_FILE_BROWSER_TAB = "panel://file-browser"
+const PANEL_QUEUE_TAB = "panel://queue"
+const PANEL_TABS = new Set([
+  PANEL_TERMINAL_TAB,
+  PANEL_BROWSER_TAB,
+  PANEL_OPEN_DESIGN_TAB,
+  PANEL_MAC_VIEW_TAB,
+  PANEL_ACCOUNTS_TAB,
+  PANEL_RESOURCES_TAB,
+  PANEL_ARTIFACTS_TAB,
+  PANEL_FILE_BROWSER_TAB,
+  PANEL_QUEUE_TAB,
+])
 
 function renderDiff(value: SnapshotFileDiff | VcsFileDiff): value is RenderDiff {
   return typeof value.file === "string"
+}
+
+function isPanelTab(tab: string) {
+  return PANEL_TABS.has(tab)
+}
+
+function panelTabLabel(tab: string) {
+  if (tab === PANEL_TERMINAL_TAB) return "Terminal"
+  if (tab === PANEL_BROWSER_TAB) return "Browser"
+  if (tab === PANEL_OPEN_DESIGN_TAB) return "Open Design"
+  if (tab === PANEL_MAC_VIEW_TAB) return "Mac View"
+  if (tab === PANEL_ACCOUNTS_TAB) return "Accounts"
+  if (tab === PANEL_RESOURCES_TAB) return "Resources"
+  if (tab === PANEL_ARTIFACTS_TAB) return "Artifacts"
+  if (tab === PANEL_FILE_BROWSER_TAB) return "File Browser"
+  if (tab === PANEL_QUEUE_TAB) return "Queue"
+  return tab
+}
+
+function panelTabIcon(tab: string) {
+  if (tab === PANEL_TERMINAL_TAB) return <Icon name="terminal" size="small" />
+  if (tab === PANEL_BROWSER_TAB) return <Icon name="window-cursor" size="small" />
+  if (tab === PANEL_OPEN_DESIGN_TAB) return <span class="text-[10px] leading-none font-semibold tracking-[0]">OD</span>
+  if (tab === PANEL_MAC_VIEW_TAB) return <Icon name="eye" size="small" />
+  if (tab === PANEL_ACCOUNTS_TAB) return <Icon name="providers" size="small" />
+  if (tab === PANEL_RESOURCES_TAB) return <span class="text-[9px] leading-none font-semibold tracking-[0]">CPU</span>
+  if (tab === PANEL_ARTIFACTS_TAB) return <Icon name="photo" size="small" />
+  if (tab === PANEL_FILE_BROWSER_TAB) return <Icon name="folder" size="small" />
+  if (tab === PANEL_QUEUE_TAB) return <Icon name="checklist" size="small" />
+}
+
+function PanelGlyph(props: { tab: string }) {
+  return (
+    <span class="size-4 shrink-0 inline-flex items-center justify-center text-[#f97316]">{panelTabIcon(props.tab)}</span>
+  )
+}
+
+function PanelTab(props: { tab: string; onClose: (tab: string) => void }) {
+  const command = useCommand()
+  const language = useLanguage()
+  return (
+    <Tabs.Trigger
+      value={props.tab}
+      closeButton={
+        <TooltipKeybind
+          title={language.t("common.closeTab")}
+          keybind={command.keybind("tab.close")}
+          placement="bottom"
+          gutter={10}
+        >
+          <IconButton
+            icon="close-small"
+            variant="ghost"
+            class="h-5 w-5"
+            onClick={() => props.onClose(props.tab)}
+            aria-label={language.t("common.closeTab")}
+          />
+        </TooltipKeybind>
+      }
+      hideCloseButton
+      onMiddleClick={() => props.onClose(props.tab)}
+    >
+      <div class="flex items-center gap-2">
+        <PanelGlyph tab={props.tab} />
+        <span>{panelTabLabel(props.tab)}</span>
+      </div>
+    </Tabs.Trigger>
+  )
+}
+
+function PanelMenuItem(props: { tab: string; onSelect: () => void }) {
+  return (
+    <DropdownMenu.Item onSelect={props.onSelect}>
+      <DropdownMenu.ItemLabel>
+        <span class="flex items-center gap-2">
+          <PanelGlyph tab={props.tab} />
+          <span>{panelTabLabel(props.tab)}</span>
+        </span>
+      </DropdownMenu.ItemLabel>
+    </DropdownMenu.Item>
+  )
+}
+
+function SessionTerminalTab() {
+  const terminal = useTerminal()
+  const language = useLanguage()
+
+  createEffect(() => {
+    if (!terminal.ready()) return
+    if (terminal.all().length > 0) return
+    terminal.new()
+  })
+
+  return (
+    <div class="h-full min-h-0 flex flex-col bg-background-stronger">
+      <Show
+        when={terminal.ready()}
+        fallback={
+          <div class="flex-1 flex items-center justify-center text-12-regular text-text-weak">Loading terminal...</div>
+        }
+      >
+        <Tabs variant="alt" value={terminal.active()} onChange={(id) => terminal.open(id)} class="!h-auto !flex-none">
+          <Tabs.List class="h-10 border-b border-border-weaker-base">
+            <For each={terminal.all()}>
+              {(pty) => (
+                <Tabs.Trigger
+                  value={pty.id}
+                  closeButton={
+                    <IconButton
+                      icon="close-small"
+                      variant="ghost"
+                      class="h-5 w-5"
+                      onClick={() => void terminal.close(pty.id)}
+                      aria-label={language.t("terminal.close")}
+                    />
+                  }
+                  hideCloseButton
+                  onMiddleClick={() => void terminal.close(pty.id)}
+                >
+                  {terminalTabLabel({
+                    title: pty.title,
+                    titleNumber: pty.titleNumber,
+                    t: language.t as (key: string, vars?: Record<string, string | number | boolean>) => string,
+                  })}
+                </Tabs.Trigger>
+              )}
+            </For>
+            <div class="h-full flex items-center justify-center">
+              <IconButton
+                icon="plus-small"
+                variant="ghost"
+                iconSize="large"
+                onClick={terminal.new}
+                aria-label={language.t("command.terminal.new")}
+              />
+            </div>
+          </Tabs.List>
+        </Tabs>
+        <div class="flex-1 min-h-0 relative">
+          <Show when={terminal.active()} keyed>
+            {(id) => {
+              const ops = terminal.bind()
+              return (
+                <Show when={terminal.all().find((pty) => pty.id === id)}>
+                  {(pty) => (
+                    <div class="absolute inset-0">
+                      <Terminal
+                        pty={pty()}
+                        autoFocus
+                        onConnect={() => terminal.trim(id)}
+                        onCleanup={ops.update}
+                        onConnectError={() => void ops.clone(id)}
+                      />
+                    </div>
+                  )}
+                </Show>
+              )
+            }}
+          </Show>
+        </div>
+      </Show>
+    </div>
+  )
+}
+
+function BrowserTabContent(props: { sessionID?: string }) {
+  const sync = useSync()
+  const [previewTick, setPreviewTick] = createSignal(Date.now())
+  const [previewReady, setPreviewReady] = createSignal(false)
+  const [browserUrl, setBrowserUrl] = createSignal("")
+  const [browserBusy, setBrowserBusy] = createSignal(false)
+  const [browserError, setBrowserError] = createSignal<string | undefined>()
+  const [browserActive, setBrowserActive] = createSignal(false)
+
+  const parts = createMemo(() => {
+    const values = Object.values(sync().data.part).flatMap((items) => (Array.isArray(items) ? items : []))
+    return values.filter(
+      (part: any) => part?.type === "tool" && part?.tool === "browser" && part?.sessionID === props.sessionID,
+    )
+  })
+
+  const latest = createMemo(() => {
+    return parts().reduce<any | undefined>((current, next: any) => {
+      const currentTime = current?.state?.time?.end ?? current?.state?.time?.start ?? 0
+      const nextTime = next?.state?.time?.end ?? next?.state?.time?.start ?? 0
+      return nextTime >= currentTime ? next : current
+    }, undefined)
+  })
+
+  const latestUrl = createMemo(() => {
+    return [...parts()]
+      .reverse()
+      .map((part: any) => part?.state?.input?.url)
+      .find((value): value is string => typeof value === "string" && value.length > 0)
+  })
+
+  const metadata = createMemo(() => latest()?.state?.metadata ?? {})
+  const input = createMemo(() => latest()?.state?.input ?? {})
+  const output = createMemo(() => String(latest()?.state?.output ?? ""))
+  const image = createMemo(() => {
+    const url = metadata().screenshotDataURL
+    return typeof url === "string" && url.startsWith("data:image/") ? url : undefined
+  })
+  const liveScreenshot = createMemo(() => {
+    if (!props.sessionID || (!latest() && !browserActive())) return
+    return `/experimental/browser/${encodeURIComponent(props.sessionID)}/screenshot?t=${previewTick()}`
+  })
+  const screenshotPath = createMemo(() => {
+    const fromMetadata = metadata().screenshotPath
+    if (typeof fromMetadata === "string") return fromMetadata
+    return output().match(/([^\s()]+\.png)/)?.[1]
+  })
+
+  const runBrowserAction = async (action: string, extra: Record<string, unknown> = {}) => {
+    if (!props.sessionID || browserBusy()) return
+    setBrowserBusy(true)
+    setBrowserError(undefined)
+    try {
+      const response = await fetch(`/experimental/browser/${encodeURIComponent(props.sessionID)}/action`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action, ...extra }),
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(body?.error ?? "Browser action failed")
+      setBrowserActive(true)
+      setPreviewReady(false)
+      setPreviewTick(Date.now())
+    } catch (error) {
+      setBrowserError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBrowserBusy(false)
+    }
+  }
+
+  const submitBrowserUrl = () => {
+    const url = browserUrl().trim()
+    if (!url) return
+    void runBrowserAction(latest() || browserActive() ? "goto" : "open", { url })
+  }
+
+  createEffect(() => {
+    const url = latestUrl()
+    if (!url || browserUrl()) return
+    setBrowserUrl(url)
+  })
+
+  createEffect(() => {
+    if (!props.sessionID || (!latest() && !browserActive())) return
+    const interval = window.setInterval(() => setPreviewTick(Date.now()), 10000)
+    onCleanup(() => window.clearInterval(interval))
+  })
+
+  return (
+    <div class="h-full min-h-0 flex flex-col bg-background-base">
+      <div class="h-10 shrink-0 flex items-center gap-3 px-3 border-b border-border-weaker-base">
+        <div class="text-14-medium text-text-strong">Browser</div>
+        <Show when={metadata().browserSessionID}>
+          <div class="text-12-regular text-text-weak truncate">{metadata().browserSessionID}</div>
+        </Show>
+      </div>
+      <div class="flex-1 min-h-0 overflow-auto p-3">
+        <div class="mb-3 flex flex-col gap-2 rounded-md border border-border-weaker-base bg-background-stronger p-2">
+          <form
+            class="flex items-center gap-2"
+            onSubmit={(event) => {
+              event.preventDefault()
+              submitBrowserUrl()
+            }}
+          >
+            <input
+              value={browserUrl()}
+              onInput={(event) => setBrowserUrl(event.currentTarget.value)}
+              class="h-8 min-w-0 flex-1 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
+              placeholder="https://example.com"
+            />
+            <IconButton
+              icon="enter"
+              variant="ghost"
+              class="h-8 w-8"
+              disabled={browserBusy() || !props.sessionID}
+              onClick={submitBrowserUrl}
+              aria-label="Open URL"
+            />
+          </form>
+          <div class="flex items-center gap-1">
+            <IconButton
+              icon="arrow-left"
+              variant="ghost"
+              class="h-7 w-7"
+              disabled={browserBusy() || (!latest() && !browserActive())}
+              onClick={() => void runBrowserAction("go-back")}
+              aria-label="Back"
+            />
+            <IconButton
+              icon="arrow-right"
+              variant="ghost"
+              class="h-7 w-7"
+              disabled={browserBusy() || (!latest() && !browserActive())}
+              onClick={() => void runBrowserAction("go-forward")}
+              aria-label="Forward"
+            />
+            <IconButton
+              icon="reset"
+              variant="ghost"
+              class="h-7 w-7"
+              disabled={browserBusy() || (!latest() && !browserActive())}
+              onClick={() => void runBrowserAction("reload")}
+              aria-label="Reload"
+            />
+            <IconButton
+              icon="photo"
+              variant="ghost"
+              class="h-7 w-7"
+              disabled={browserBusy() || (!latest() && !browserActive())}
+              onClick={() => void runBrowserAction("screenshot")}
+              aria-label="Screenshot"
+            />
+          </div>
+          <Show when={browserError()}>
+            {(error) => <div class="text-12-regular text-text-weak break-all">{error()}</div>}
+          </Show>
+        </div>
+        <Switch>
+          <Match when={latest()}>
+            <div class="flex flex-col gap-3">
+              <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+                <div class="text-12-regular text-text-weak">Current URL</div>
+                <div class="text-14-regular text-text-strong break-all">{latestUrl() ?? "No URL recorded"}</div>
+              </div>
+              <Show when={liveScreenshot()}>
+                {(src) => (
+                  <div class="overflow-hidden rounded-md border border-border-weaker-base bg-background-stronger">
+                    <div class="flex items-center justify-between border-b border-border-weaker-base px-3 py-2">
+                      <div class="text-12-regular text-text-weak">Live Chromium viewport</div>
+                      <div class="text-11-regular text-text-weak">{previewReady() ? "refreshing" : "connecting"}</div>
+                    </div>
+                    <div class="relative min-h-64">
+                      <Show when={!previewReady()}>
+                        <div class="absolute inset-0 flex items-center justify-center text-center text-12-regular text-text-weak">
+                          Waiting for the session browser screenshot...
+                        </div>
+                      </Show>
+                      <img
+                        src={src()}
+                        alt="Live Chromium browser viewport"
+                        class="block w-full h-auto"
+                        classList={{ invisible: !previewReady() }}
+                        onLoad={() => setPreviewReady(true)}
+                        onError={() => setPreviewReady(false)}
+                      />
+                    </div>
+                  </div>
+                )}
+              </Show>
+              <Show when={!liveScreenshot() && image()}>
+                {(src) => (
+                  <div class="overflow-hidden rounded-md border border-border-weaker-base bg-background-stronger">
+                    <img src={src()} alt="Latest browser screenshot" class="block w-full h-auto" />
+                  </div>
+                )}
+              </Show>
+              <Show when={!image() && screenshotPath()}>
+                <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+                  <div class="text-12-regular text-text-weak">Latest screenshot</div>
+                  <div class="text-14-regular text-text-strong break-all">{screenshotPath()}</div>
+                </div>
+              </Show>
+              <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+                <div class="text-12-regular text-text-weak">Last action</div>
+                <div class="text-14-regular text-text-strong">{input().action ?? metadata().action ?? "browser"}</div>
+              </div>
+            </div>
+          </Match>
+          <Match when={true}>
+            <div class="h-full flex items-center justify-center text-center">
+              <div class="text-12-regular text-text-weak max-w-64">
+                Browser activity will appear here after this session uses the browser tool.
+              </div>
+            </div>
+          </Match>
+        </Switch>
+      </div>
+    </div>
+  )
+}
+
+function createPolledJson<T>(url: () => string | undefined, intervalMs = 10000) {
+  const [data, setData] = createSignal<T | undefined>()
+  const [error, setError] = createSignal<string | undefined>()
+  const refresh = async () => {
+    const current = url()
+    if (!current) return
+    try {
+      const response = await fetch(current, { cache: "no-store" })
+      const body = await response.json()
+      if (!response.ok) throw new Error(JSON.stringify(body))
+      setData(() => body as T)
+      setError(undefined)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+  createEffect(() => {
+    if (!url()) return
+    void refresh()
+    const timer = window.setInterval(() => void refresh(), intervalMs)
+    onCleanup(() => window.clearInterval(timer))
+  })
+  return { data, error, refresh }
+}
+
+function StatusRow(props: { label: string; value?: string | number | boolean | null }) {
+  return (
+    <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+      <div class="text-12-regular text-text-weak">{props.label}</div>
+      <div class="text-14-regular text-text-strong break-all">{String(props.value ?? "Not available")}</div>
+    </div>
+  )
+}
+
+function TabChrome(props: { title: string; iconTab: string; onRefresh?: () => void; children: JSX.Element }) {
+  return (
+    <div class="h-full min-h-0 flex flex-col bg-background-base">
+      <div class="h-10 shrink-0 flex items-center justify-between gap-3 px-3 border-b border-border-weaker-base">
+        <div class="flex items-center gap-2 text-14-medium text-text-strong">
+          <PanelGlyph tab={props.iconTab} />
+          <span>{props.title}</span>
+        </div>
+        <Show when={!!props.onRefresh}>
+          <IconButton icon="reset" variant="ghost" class="h-7 w-7" onClick={() => props.onRefresh?.()} aria-label="Refresh" />
+        </Show>
+      </div>
+      <div class="flex-1 min-h-0 overflow-auto p-3">{props.children}</div>
+    </div>
+  )
+}
+
+function OpenDesignTabContent() {
+  const status = createPolledJson<any>(() => "/experimental/open-design/status")
+  const launchUrl = createMemo(() =>
+    status.data()?.proxyReady
+      ? (status.data()?.proxyURL ?? "/experimental/open-design/proxy/")
+      : (status.data()?.publicURL ?? "https://design.hustletogether.com"),
+  )
+
+  const openExternal = () => window.open(launchUrl(), "_blank", "noopener,noreferrer")
+
+  return (
+    <TabChrome title="Open Design" iconTab={PANEL_OPEN_DESIGN_TAB} onRefresh={status.refresh}>
+      <div class="flex flex-col gap-3">
+        <Show when={status.error()}>
+          {(error) => <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">{error()}</div>}
+        </Show>
+        <StatusRow label="Launch URL" value={launchUrl()} />
+        <StatusRow label="Daemon" value={status.data()?.daemonURL} />
+        <StatusRow label="Proxy" value={status.data()?.proxyReady ? "enabled" : "disabled"} />
+        <StatusRow label="Health" value={status.data()?.health?.ok ? "healthy" : "not ready"} />
+        <StatusRow label="Projects" value={status.data()?.projects?.count} />
+        <div class="flex gap-2">
+          <button
+            class="h-8 px-3 rounded-md border border-border-weaker-base bg-background-stronger text-13-regular text-text-strong"
+            onClick={openExternal}
+          >
+            Open in external browser
+          </button>
+        </div>
+        <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+          <div class="text-12-regular text-text-weak mb-2">Projects</div>
+          <div class="flex flex-col gap-2">
+            <For each={status.data()?.projects?.projects ?? []}>
+              {(project: any) => (
+                <div class="flex items-center justify-between gap-3 text-13-regular">
+                  <span class="text-text-strong truncate">{project.name}</span>
+                  <span class="text-text-weak shrink-0">{project.status ?? "ready"}</span>
+                </div>
+              )}
+            </For>
+            <Show when={(status.data()?.projects?.projects ?? []).length === 0}>
+              <div class="text-13-regular text-text-weak">No projects reported by the daemon.</div>
+            </Show>
+          </div>
+        </div>
+        <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">
+          The model can use the native <span class="text-text-strong">@open_design</span> tool. The hosted UI remains on
+          safe 404 until Cloudflare Access is approved.
+        </div>
+      </div>
+    </TabChrome>
+  )
+}
+
+function MacViewTabContent() {
+  const status = createPolledJson<any>(() => "/experimental/mac-view/status")
+  const [tick, setTick] = createSignal(Date.now())
+  createEffect(() => {
+    if (!status.data()?.configured) return
+    const timer = window.setInterval(() => setTick(Date.now()), 3000)
+    onCleanup(() => window.clearInterval(timer))
+  })
+
+  return (
+    <TabChrome title="Mac View" iconTab={PANEL_MAC_VIEW_TAB} onRefresh={status.refresh}>
+      <div class="flex flex-col gap-3">
+        <StatusRow label="Mode" value={status.data()?.mode ?? "read-only"} />
+        <StatusRow label="Feed" value={status.data()?.configured ? "configured" : "not configured"} />
+        <StatusRow label="Health" value={status.data()?.health?.ok ? "healthy" : status.data()?.note} />
+        <Show when={status.data()?.configured}>
+          <div class="overflow-hidden rounded-md border border-border-weaker-base bg-background-stronger">
+            <img
+              src={`/experimental/mac-view/snapshot?t=${tick()}`}
+              alt="Mac View snapshot"
+              class="block w-full h-auto"
+            />
+          </div>
+        </Show>
+        <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">
+          Mac View is pixels only. Mac control stays routed through the existing Computer Use approval path.
+        </div>
+      </div>
+    </TabChrome>
+  )
+}
+
+function AccountsTabContent() {
+  const status = createPolledJson<any>(() => "/experimental/workspace-suite/status")
+  const workspace = createPolledJson<any>(() => "/__workspace-index", 15000)
+
+  return (
+    <TabChrome
+      title="Accounts"
+      iconTab={PANEL_ACCOUNTS_TAB}
+      onRefresh={() => {
+        void status.refresh()
+        void workspace.refresh()
+      }}
+    >
+      <div class="flex flex-col gap-3">
+        <StatusRow label="Hostname" value={status.data()?.hostname} />
+        <StatusRow label="Open Design token" value={status.data()?.openDesign?.configured ? "configured" : "not configured"} />
+        <StatusRow label="Mac View" value={status.data()?.macView?.configured ? "configured" : "not configured"} />
+        <StatusRow label="Workspace projects" value={workspace.data()?.projects?.length} />
+        <StatusRow label="Recent sessions" value={workspace.data()?.sessions?.length} />
+        <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+          <div class="text-12-regular text-text-weak mb-2">Native tools</div>
+          <div class="flex flex-wrap gap-2">
+            <For each={status.data()?.tools ?? []}>
+              {(tool: string) => <span class="rounded bg-background-base px-2 py-1 text-12-regular text-text-strong">@{tool}</span>}
+            </For>
+          </div>
+        </div>
+        <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+          <div class="text-12-regular text-text-weak mb-2">Projects</div>
+          <div class="flex flex-col gap-2">
+            <For each={(workspace.data()?.projects ?? []).slice(0, 8)}>
+              {(project: any) => (
+                <div class="flex items-center justify-between gap-3 text-13-regular">
+                  <span class="text-text-strong truncate">{project.name ?? project.worktree}</span>
+                  <span class="text-text-weak shrink-0">{project.activeSessions ?? 0} sessions</span>
+                </div>
+              )}
+            </For>
+            <Show when={(workspace.data()?.projects ?? []).length === 0}>
+              <div class="text-13-regular text-text-weak">No projects indexed yet.</div>
+            </Show>
+          </div>
+        </div>
+      </div>
+    </TabChrome>
+  )
+}
+
+function ResourcesTabContent() {
+  const resources = createPolledJson<any>(() => "/experimental/resources/status", 15000)
+
+  return (
+    <TabChrome title="Resources" iconTab={PANEL_RESOURCES_TAB} onRefresh={resources.refresh}>
+      <div class="flex flex-col gap-3">
+        <Show when={resources.error()}>
+          {(error) => (
+            <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">
+              {error()}
+            </div>
+          )}
+        </Show>
+        <div class="grid gap-3 xl:grid-cols-2">
+          <ResourceHostCard title="Server" status={resources.data()?.server} />
+          <ResourceHostCard title="MacBook" status={resources.data()?.mac} />
+        </div>
+        <StatusRow label="Last checked" value={resources.data()?.checkedAt} />
+      </div>
+    </TabChrome>
+  )
+}
+
+function ResourceHostCard(props: { title: string; status?: any }) {
+  const status = () => props.status
+  return (
+    <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+      <div class="mb-3 flex items-center justify-between gap-3">
+        <div class="flex items-center gap-2">
+          <PanelGlyph tab={PANEL_RESOURCES_TAB} />
+          <div class="text-14-regular text-text-strong">{props.title}</div>
+        </div>
+        <span
+          class="rounded px-2 py-1 text-12-regular"
+          classList={{
+            "bg-background-base text-text-strong": !!status()?.online,
+            "bg-background-base text-text-weak": !status()?.online,
+          }}
+        >
+          {status()?.online ? "online" : "offline"}
+        </span>
+      </div>
+      <div class="flex flex-col gap-2">
+        <StatusRow label="Hostname" value={status()?.hostname ?? status()?.error ?? "unavailable"} />
+        <StatusRow label="Uptime" value={formatDuration(status()?.uptimeSeconds)} />
+        <StatusRow label="CPU" value={formatCpu(status()?.cpu)} />
+        <ResourceMeter label="RAM" used={status()?.memory?.usedBytes} total={status()?.memory?.totalBytes} />
+        <For each={status()?.storage ?? []}>
+          {(disk: any) => <ResourceMeter label={`Storage ${disk.path}`} used={disk.usedBytes} total={disk.totalBytes} />}
+        </For>
+      </div>
+    </div>
+  )
+}
+
+function ResourceMeter(props: { label: string; used?: number; total?: number }) {
+  const pct = createMemo(() => {
+    if (!props.total) return 0
+    return Math.min(100, Math.max(0, Math.round((props.used ?? 0) / props.total * 100)))
+  })
+
+  return (
+    <div class="flex flex-col gap-1">
+      <div class="flex items-center justify-between gap-3 text-12-regular">
+        <span class="min-w-0 truncate text-text-weak">{props.label}</span>
+        <span class="shrink-0 text-text-strong">
+          {formatBytes(props.used)} / {formatBytes(props.total)}
+        </span>
+      </div>
+      <div class="h-1.5 overflow-hidden rounded bg-background-base">
+        <div class="h-full bg-[#f97316]" style={{ width: `${pct()}%` }} />
+      </div>
+    </div>
+  )
+}
+
+function formatBytes(value?: number) {
+  if (!Number.isFinite(value)) return "n/a"
+  const units = ["B", "KB", "MB", "GB", "TB"]
+  let amount = value ?? 0
+  let index = 0
+  while (amount >= 1024 && index < units.length - 1) {
+    amount /= 1024
+    index += 1
+  }
+  return `${amount >= 10 || index === 0 ? Math.round(amount) : amount.toFixed(1)} ${units[index]}`
+}
+
+function formatDuration(seconds?: number) {
+  if (!Number.isFinite(seconds)) return "n/a"
+  const days = Math.floor((seconds ?? 0) / 86400)
+  const hours = Math.floor(((seconds ?? 0) % 86400) / 3600)
+  const minutes = Math.floor(((seconds ?? 0) % 3600) / 60)
+  return days > 0 ? `${days}d ${hours}h` : `${hours}h ${minutes}m`
+}
+
+function formatCpu(cpu?: { cores?: number; load1?: number; load5?: number; load15?: number }) {
+  if (!cpu) return "n/a"
+  return `${cpu.cores ?? 0} cores, load ${formatLoad(cpu.load1)} / ${formatLoad(cpu.load5)} / ${formatLoad(cpu.load15)}`
+}
+
+function formatLoad(value?: number) {
+  return Number.isFinite(value) ? (value ?? 0).toFixed(2) : "0.00"
+}
+
+function ArtifactsTabContent(props: { sessionID?: string }) {
+  const artifacts = createPolledJson<any>(
+    () => (props.sessionID ? `/experimental/browser/${encodeURIComponent(props.sessionID)}/artifacts` : undefined),
+    8000,
+  )
+
+  return (
+    <TabChrome title="Artifacts" iconTab={PANEL_ARTIFACTS_TAB} onRefresh={artifacts.refresh}>
+      <div class="flex flex-col gap-3">
+        <StatusRow label="Artifact directory" value={artifacts.data()?.artifactDir} />
+        <For each={artifacts.data()?.files ?? []}>
+          {(file: any) => (
+            <a
+              href={file.url}
+              target="_blank"
+              rel="noreferrer"
+              class="rounded-md border border-border-weaker-base bg-background-stronger p-3 flex items-center gap-3"
+            >
+              <PanelGlyph tab={PANEL_ARTIFACTS_TAB} />
+              <div class="min-w-0">
+                <div class="text-14-regular text-text-strong truncate">{file.name}</div>
+                <div class="text-12-regular text-text-weak">{file.size} bytes</div>
+              </div>
+            </a>
+          )}
+        </For>
+        <Show when={(artifacts.data()?.files ?? []).length === 0}>
+          <div class="h-full flex items-center justify-center text-12-regular text-text-weak">
+            No session artifacts yet.
+          </div>
+        </Show>
+      </div>
+    </TabChrome>
+  )
+}
+
+function FileBrowserTabContent() {
+  const [currentPath, setCurrentPath] = createSignal<string | undefined>()
+  const [mode, setMode] = createSignal<"list" | "icons">("list")
+  const [selected, setSelected] = createSignal<any>()
+  const browser = createPolledJson<any>(
+    () =>
+      `/experimental/files/browse${currentPath() ? `?path=${encodeURIComponent(currentPath()!)}` : ""}`,
+    12000,
+  )
+
+  const openEntry = (entry: any) => {
+    if (entry.kind === "directory") {
+      setSelected(undefined)
+      setCurrentPath(entry.path)
+      return
+    }
+    setSelected(entry)
+  }
+
+  const preview = createMemo(() => selected())
+
+  return (
+    <TabChrome title="File Browser" iconTab={PANEL_FILE_BROWSER_TAB} onRefresh={browser.refresh}>
+      <div class="flex h-full min-h-0 flex-col gap-3">
+        <div class="flex items-center gap-2 rounded-md border border-border-weaker-base bg-background-stronger p-2">
+          <IconButton
+            icon="arrow-left"
+            variant="ghost"
+            class="h-7 w-7"
+            disabled={!browser.data()?.parent}
+            onClick={() => {
+              setSelected(undefined)
+              setCurrentPath(browser.data()?.parent)
+            }}
+            aria-label="Parent folder"
+          />
+          <div class="min-w-0 flex-1 truncate text-13-regular text-text-strong">{browser.data()?.path ?? "Loading..."}</div>
+          <IconButton
+            icon={mode() === "list" ? "dot-grid" : "bullet-list"}
+            variant="ghost"
+            class="h-7 w-7"
+            onClick={() => setMode(mode() === "list" ? "icons" : "list")}
+            aria-label="Toggle view"
+          />
+        </div>
+        <Show when={browser.error()}>
+          {(error) => <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">{error()}</div>}
+        </Show>
+        <div class="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(280px,40%)]">
+          <div class="min-h-0 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger">
+            <Switch>
+              <Match when={mode() === "icons"}>
+                <div class="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-2 p-2">
+                  <For each={browser.data()?.entries ?? []}>
+                    {(entry: any) => (
+                      <button
+                        class="min-h-24 rounded-md bg-background-base p-2 text-left hover:bg-surface-raised-base-hover"
+                        onClick={() => openEntry(entry)}
+                      >
+                        <div class="mb-2 flex justify-center text-[#f97316]">
+                          <Icon name={entry.kind === "directory" ? "folder" : entry.kind === "image" ? "photo" : "code"} size="large" />
+                        </div>
+                        <div class="break-words text-center text-12-regular text-text-strong">{entry.name}</div>
+                      </button>
+                    )}
+                  </For>
+                </div>
+              </Match>
+              <Match when={true}>
+                <div class="flex flex-col">
+                  <For each={browser.data()?.entries ?? []}>
+                    {(entry: any) => (
+                      <button
+                        class="flex items-center gap-3 border-b border-border-weaker-base px-3 py-2 text-left last:border-b-0 hover:bg-surface-raised-base-hover"
+                        onClick={() => openEntry(entry)}
+                      >
+                        <span class="text-[#f97316]">
+                          <Icon name={entry.kind === "directory" ? "folder" : entry.kind === "image" ? "photo" : "code"} size="small" />
+                        </span>
+                        <span class="min-w-0 flex-1 truncate text-13-regular text-text-strong">{entry.name}</span>
+                        <span class="shrink-0 text-12-regular text-text-weak">
+                          {entry.kind === "directory" ? "folder" : `${entry.size ?? 0} bytes`}
+                        </span>
+                      </button>
+                    )}
+                  </For>
+                </div>
+              </Match>
+            </Switch>
+          </div>
+          <div class="min-h-0 overflow-hidden rounded-md border border-border-weaker-base bg-background-stronger">
+            <Show
+              when={preview()}
+              fallback={
+                <div class="flex h-full min-h-56 items-center justify-center p-6 text-center text-12-regular text-text-weak">
+                  Select a file to preview it here.
+                </div>
+              }
+            >
+              {(file) => (
+                <FilePreview file={file()} />
+              )}
+            </Show>
+          </div>
+        </div>
+      </div>
+    </TabChrome>
+  )
+}
+
+function FilePreview(props: { file: any }) {
+  const file = () => props.file
+  const url = () => file().url
+  return (
+    <div class="flex h-full min-h-0 flex-col">
+      <div class="flex shrink-0 items-center justify-between gap-3 border-b border-border-weaker-base px-3 py-2">
+        <div class="min-w-0 truncate text-13-regular text-text-strong">{file().name}</div>
+        <a class="shrink-0 text-12-regular text-text-weak hover:text-text-strong" href={url()} target="_blank" rel="noreferrer">
+          Open
+        </a>
+      </div>
+      <div class="min-h-0 flex-1 overflow-auto">
+        <Switch>
+          <Match when={file().kind === "image"}>
+            <img src={url()} alt={file().name} class="block h-auto w-full" />
+          </Match>
+          <Match when={file().kind === "video"}>
+            <video src={url()} controls class="block h-auto w-full" />
+          </Match>
+          <Match when={file().kind === "audio"}>
+            <div class="p-3">
+              <audio src={url()} controls class="w-full" />
+            </div>
+          </Match>
+          <Match when={true}>
+            <iframe src={url()} title={file().name} class="h-full min-h-96 w-full border-0" />
+          </Match>
+        </Switch>
+      </div>
+    </div>
+  )
+}
+
+function QueueTabContent(props: { sessionID?: string }) {
+  const storageKey = createMemo(() => `opencode:message-queue:${props.sessionID ?? "draft"}`)
+  const [draft, setDraft] = createSignal("")
+  const [items, setItems] = createSignal<Array<{ id: string; text: string }>>([])
+
+  const load = () => {
+    try {
+      setItems(JSON.parse(window.localStorage.getItem(storageKey()) || "[]"))
+    } catch {
+      setItems([])
+    }
+  }
+  const save = (next: Array<{ id: string; text: string }>) => {
+    setItems(next)
+    window.localStorage.setItem(storageKey(), JSON.stringify(next))
+  }
+  const copy = (text: string) => {
+    void navigator.clipboard?.writeText(text)
+  }
+  createEffect(load)
+
+  const add = () => {
+    const text = draft().trim()
+    if (!text) return
+    save([...items(), { id: `${Date.now()}`, text }])
+    setDraft("")
+  }
+  const move = (id: string, direction: -1 | 1) => {
+    const next = [...items()]
+    const index = next.findIndex((item) => item.id === id)
+    const target = index + direction
+    if (index < 0 || target < 0 || target >= next.length) return
+    const [item] = next.splice(index, 1)
+    if (!item) return
+    next.splice(target, 0, item)
+    save(next)
+  }
+
+  return (
+    <TabChrome title="Queue" iconTab={PANEL_QUEUE_TAB}>
+      <div class="flex flex-col gap-3">
+        <textarea
+          value={draft()}
+          onInput={(event) => setDraft(event.currentTarget.value)}
+          class="min-h-24 rounded-md border border-border-weaker-base bg-background-stronger p-3 text-14-regular text-text-strong outline-none resize-y"
+          placeholder="Queue a steering message..."
+        />
+        <button
+          class="h-8 px-3 rounded-md border border-border-weaker-base bg-background-stronger text-13-regular text-text-strong"
+          onClick={add}
+        >
+          Add to queue
+        </button>
+        <For each={items()}>
+          {(item) => (
+            <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 flex gap-3">
+              <div class="flex-1 min-w-0 text-13-regular text-text-strong whitespace-pre-wrap">{item.text}</div>
+              <div class="flex flex-col gap-1">
+                <IconButton icon="arrow-up" variant="ghost" class="h-6 w-6" onClick={() => move(item.id, -1)} aria-label="Move up" />
+                <IconButton icon="arrow-down-to-line" variant="ghost" class="h-6 w-6" onClick={() => move(item.id, 1)} aria-label="Move down" />
+                <IconButton icon="copy" variant="ghost" class="h-6 w-6" onClick={() => copy(item.text)} aria-label="Copy" />
+                <IconButton
+                  icon="trash"
+                  variant="ghost"
+                  class="h-6 w-6"
+                  onClick={() => save(items().filter((next) => next.id !== item.id))}
+                  aria-label="Remove"
+                />
+              </div>
+            </div>
+          )}
+        </For>
+        <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">
+          MVP: queue and reorder steering messages per session. Direct injection into the composer/run loop is the next wiring step.
+        </div>
+      </div>
+    </TabChrome>
+  )
 }
 
 export function SessionSidePanel(props: {
@@ -54,7 +1013,6 @@ export function SessionSidePanel(props: {
 }) {
   const layout = useLayout()
   const settings = useSettings()
-  const sync = useSync()
   const file = useFile()
   const language = useLanguage()
   const command = useCommand()
@@ -153,7 +1111,19 @@ export function SessionSidePanel(props: {
   const contextOpen = tabState.contextOpen
   const openedTabs = tabState.openedTabs
   const activeTab = tabState.activeTab
-  const activeFileTab = tabState.activeFileTab
+  const openedPanelTabs = createMemo(() => openedTabs().filter(isPanelTab))
+  const openedFileTabs = createMemo(() => openedTabs().filter((tab) => !isPanelTab(tab)))
+  const activePanelTab = createMemo(() => {
+    const active = activeTab()
+    if (!active) return
+    return isPanelTab(active) ? active : undefined
+  })
+  const activeFileTab = createMemo(() => {
+    const active = activeTab()
+    if (!active) return
+    if (!openedFileTabs().includes(active)) return
+    return active
+  })
 
   const fileTreeTab = () => layout.fileTree.tab()
 
@@ -165,6 +1135,18 @@ export function SessionSidePanel(props: {
   const showAllFiles = () => {
     if (fileTreeTab() !== "changes") return
     layout.fileTree.setTab("all")
+  }
+
+  const showFilePicker = () => {
+    void import("@/components/dialog-select-file").then((x) => {
+      dialog.show(() => <x.DialogSelectFile mode="files" onOpenFile={showAllFiles} />)
+    })
+  }
+
+  const openPanelTab = (tab: string) => {
+    openReviewPanel()
+    tabs().open(tab)
+    tabs().setActive(tab)
   }
 
   const [store, setStore] = createStore({
@@ -299,28 +1281,39 @@ export function SessionSidePanel(props: {
                             </div>
                           </Tabs.Trigger>
                         </Show>
-                        <SortableProvider ids={openedTabs()}>
-                          <For each={openedTabs()}>{(tab) => <SortableTab tab={tab} onTabClose={tabs().close} />}</For>
+                        <For each={openedPanelTabs()}>{(tab) => <PanelTab tab={tab} onClose={tabs().close} />}</For>
+                        <SortableProvider ids={openedFileTabs()}>
+                          <For each={openedFileTabs()}>
+                            {(tab) => <SortableTab tab={tab} onTabClose={tabs().close} />}
+                          </For>
                         </SortableProvider>
                         <div class="bg-background-stronger h-full shrink-0 sticky right-0 z-10 flex items-center justify-center pr-3">
-                          <TooltipKeybind
-                            title={language.t("command.file.open")}
-                            keybind={command.keybind("file.open")}
-                            class="flex items-center"
-                          >
-                            <IconButton
+                          <DropdownMenu gutter={4} placement="bottom-end">
+                            <DropdownMenu.Trigger
+                              as={IconButton}
                               icon="plus-small"
                               variant="ghost"
                               iconSize="large"
                               class="!rounded-md"
-                              onClick={() => {
-                                void import("@/components/dialog-select-file").then((x) => {
-                                  dialog.show(() => <x.DialogSelectFile mode="files" onOpenFile={showAllFiles} />)
-                                })
-                              }}
-                              aria-label={language.t("command.file.open")}
+                              aria-label="Add tab"
                             />
-                          </TooltipKeybind>
+                            <DropdownMenu.Portal>
+                              <DropdownMenu.Content>
+                                <DropdownMenu.Item onSelect={showFilePicker}>
+                                  <DropdownMenu.ItemLabel>Files</DropdownMenu.ItemLabel>
+                                </DropdownMenu.Item>
+                                <PanelMenuItem tab={PANEL_TERMINAL_TAB} onSelect={() => openPanelTab(PANEL_TERMINAL_TAB)} />
+                                <PanelMenuItem tab={PANEL_BROWSER_TAB} onSelect={() => openPanelTab(PANEL_BROWSER_TAB)} />
+                                <PanelMenuItem tab={PANEL_OPEN_DESIGN_TAB} onSelect={() => openPanelTab(PANEL_OPEN_DESIGN_TAB)} />
+                                <PanelMenuItem tab={PANEL_MAC_VIEW_TAB} onSelect={() => openPanelTab(PANEL_MAC_VIEW_TAB)} />
+                                <PanelMenuItem tab={PANEL_ACCOUNTS_TAB} onSelect={() => openPanelTab(PANEL_ACCOUNTS_TAB)} />
+                                <PanelMenuItem tab={PANEL_RESOURCES_TAB} onSelect={() => openPanelTab(PANEL_RESOURCES_TAB)} />
+                                <PanelMenuItem tab={PANEL_ARTIFACTS_TAB} onSelect={() => openPanelTab(PANEL_ARTIFACTS_TAB)} />
+                                <PanelMenuItem tab={PANEL_FILE_BROWSER_TAB} onSelect={() => openPanelTab(PANEL_FILE_BROWSER_TAB)} />
+                                <PanelMenuItem tab={PANEL_QUEUE_TAB} onSelect={() => openPanelTab(PANEL_QUEUE_TAB)} />
+                              </DropdownMenu.Content>
+                            </DropdownMenu.Portal>
+                          </DropdownMenu>
                         </div>
                       </Tabs.List>
                     </div>
@@ -353,6 +1346,69 @@ export function SessionSidePanel(props: {
                         </Show>
                       </Tabs.Content>
                     </Show>
+
+                    <Tabs.Content
+                      value={PANEL_TERMINAL_TAB}
+                      class="flex flex-col h-full overflow-hidden contain-strict"
+                    >
+                      <Show when={activePanelTab() === PANEL_TERMINAL_TAB}>
+                        <SessionTerminalTab />
+                      </Show>
+                    </Tabs.Content>
+
+                    <Tabs.Content value={PANEL_BROWSER_TAB} class="flex flex-col h-full overflow-hidden contain-strict">
+                      <Show when={activePanelTab() === PANEL_BROWSER_TAB}>
+                        <BrowserTabContent sessionID={params.id} />
+                      </Show>
+                    </Tabs.Content>
+
+                    <Tabs.Content
+                      value={PANEL_OPEN_DESIGN_TAB}
+                      class="flex flex-col h-full overflow-hidden contain-strict"
+                    >
+                      <Show when={activePanelTab() === PANEL_OPEN_DESIGN_TAB}>
+                        <OpenDesignTabContent />
+                      </Show>
+                    </Tabs.Content>
+
+                    <Tabs.Content value={PANEL_MAC_VIEW_TAB} class="flex flex-col h-full overflow-hidden contain-strict">
+                      <Show when={activePanelTab() === PANEL_MAC_VIEW_TAB}>
+                        <MacViewTabContent />
+                      </Show>
+                    </Tabs.Content>
+
+                    <Tabs.Content value={PANEL_ACCOUNTS_TAB} class="flex flex-col h-full overflow-hidden contain-strict">
+                      <Show when={activePanelTab() === PANEL_ACCOUNTS_TAB}>
+                        <AccountsTabContent />
+                      </Show>
+                    </Tabs.Content>
+
+                    <Tabs.Content value={PANEL_RESOURCES_TAB} class="flex flex-col h-full overflow-hidden contain-strict">
+                      <Show when={activePanelTab() === PANEL_RESOURCES_TAB}>
+                        <ResourcesTabContent />
+                      </Show>
+                    </Tabs.Content>
+
+                    <Tabs.Content value={PANEL_ARTIFACTS_TAB} class="flex flex-col h-full overflow-hidden contain-strict">
+                      <Show when={activePanelTab() === PANEL_ARTIFACTS_TAB}>
+                        <ArtifactsTabContent sessionID={params.id} />
+                      </Show>
+                    </Tabs.Content>
+
+                    <Tabs.Content
+                      value={PANEL_FILE_BROWSER_TAB}
+                      class="flex flex-col h-full overflow-hidden contain-strict"
+                    >
+                      <Show when={activePanelTab() === PANEL_FILE_BROWSER_TAB}>
+                        <FileBrowserTabContent />
+                      </Show>
+                    </Tabs.Content>
+
+                    <Tabs.Content value={PANEL_QUEUE_TAB} class="flex flex-col h-full overflow-hidden contain-strict">
+                      <Show when={activePanelTab() === PANEL_QUEUE_TAB}>
+                        <QueueTabContent sessionID={params.id} />
+                      </Show>
+                    </Tabs.Content>
 
                     <Show when={activeFileTab()} keyed>
                       {(tab) => <FileTabContent tab={tab} />}
