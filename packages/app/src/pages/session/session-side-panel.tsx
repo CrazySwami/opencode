@@ -854,7 +854,6 @@ function PreviewTabContent() {
   const initial = readPreviewState().url ?? ""
   const [address, setAddress] = createSignal(initial)
   const [currentURL, setCurrentURL] = createSignal(initial)
-  const [frameKey, setFrameKey] = createSignal(Date.now())
 
   createEffect(() => writePreviewState({ url: currentURL() || address() }))
 
@@ -862,12 +861,21 @@ function PreviewTabContent() {
     const next = normalizePreviewURL(address())
     setAddress(next)
     setCurrentURL(next)
-    setFrameKey(Date.now())
+  }
+
+  const refreshPreview = () => {
+    const current = currentURL()
+    if (!current) return
+    setCurrentURL("")
+    queueMicrotask(() => setCurrentURL(current))
   }
 
   return (
-    <div class="h-full min-h-0 flex flex-col bg-background-base">
-      <div class="h-12 shrink-0 border-b border-border-weaker-base bg-background-stronger px-2 py-1.5">
+    <TabChrome
+      iconTab={PANEL_PREVIEW_TAB}
+      headerClass="h-12 shrink-0 border-b border-border-weaker-base bg-background-stronger px-2 py-1.5"
+      bodyClass="flex-1 min-h-0 overflow-hidden"
+      toolbar={
         <div class="flex h-full min-w-0 items-center gap-1 rounded-md border border-border-weaker-base bg-background-base px-1.5">
           <form
             class="flex min-w-0 flex-1 items-center"
@@ -884,7 +892,7 @@ function PreviewTabContent() {
             />
             <IconButton icon="enter" variant="ghost" class="h-7 w-7 shrink-0" disabled={!address().trim()} onClick={openAddress} aria-label="Open preview URL" />
           </form>
-          <IconButton icon="reset" variant="ghost" class="h-7 w-7 shrink-0" disabled={!currentURL()} onClick={() => setFrameKey(Date.now())} aria-label="Refresh preview" />
+          <IconButton icon="reset" variant="ghost" class="h-7 w-7 shrink-0" disabled={!currentURL()} onClick={refreshPreview} aria-label="Refresh preview" />
           <IconButton
             icon="square-arrow-top-right"
             variant="ghost"
@@ -894,7 +902,8 @@ function PreviewTabContent() {
             aria-label="Open preview externally"
           />
         </div>
-      </div>
+      }
+    >
       <Show
         when={currentURL()}
         fallback={
@@ -905,7 +914,6 @@ function PreviewTabContent() {
       >
         {(url) => (
           <iframe
-            key={frameKey()}
             src={url()}
             title="Preview"
             class="block size-full border-0 bg-white"
@@ -914,7 +922,7 @@ function PreviewTabContent() {
           />
         )}
       </Show>
-    </div>
+    </TabChrome>
   )
 }
 
@@ -957,28 +965,39 @@ function TabChrome(props: {
   iconTab: string
   onRefresh?: () => void
   actions?: JSX.Element
+  toolbar?: JSX.Element
+  headerClass?: string
   bodyClass?: string
   children: JSX.Element
 }) {
-  const hasHeader = createMemo(() => !!props.title || !!props.onRefresh || !!props.actions)
+  const hasHeader = createMemo(() => !!props.title || !!props.toolbar || !!props.onRefresh || !!props.actions)
   return (
     <div class="h-full min-h-0 flex flex-col bg-background-base">
       <Show when={hasHeader()}>
-        <div class="h-10 shrink-0 flex items-center justify-between gap-3 px-3 border-b border-border-weaker-base">
-          <Show when={props.title}>
-            {(title) => (
-              <div class="flex items-center gap-2 text-14-medium text-text-strong">
-                <PanelGlyph tab={props.iconTab} />
-                <span>{title()}</span>
-              </div>
-            )}
+        <div class={props.headerClass ?? "h-10 shrink-0 flex items-center justify-between gap-3 px-3 border-b border-border-weaker-base"}>
+          <Show
+            when={props.toolbar}
+            fallback={
+              <>
+                <Show when={props.title}>
+                  {(title) => (
+                    <div class="flex items-center gap-2 text-14-medium text-text-strong">
+                      <PanelGlyph tab={props.iconTab} />
+                      <span>{title()}</span>
+                    </div>
+                  )}
+                </Show>
+                <div class="ml-auto flex items-center gap-1">
+                  {props.actions}
+                  <Show when={!!props.onRefresh}>
+                    <IconButton icon="reset" variant="ghost" class="h-7 w-7" onClick={() => props.onRefresh?.()} aria-label="Refresh" />
+                  </Show>
+                </div>
+              </>
+            }
+          >
+            {(toolbar) => toolbar()}
           </Show>
-          <div class="ml-auto flex items-center gap-1">
-            {props.actions}
-            <Show when={!!props.onRefresh}>
-              <IconButton icon="reset" variant="ghost" class="h-7 w-7" onClick={() => props.onRefresh?.()} aria-label="Refresh" />
-            </Show>
-          </div>
         </div>
       </Show>
       <div class={props.bodyClass ?? "flex-1 min-h-0 overflow-auto p-3"}>{props.children}</div>
@@ -1083,35 +1102,41 @@ function MacViewTabContent() {
   })
 
   return (
-    <div class="h-full min-h-0 flex flex-col bg-background-base">
-      <div class="h-10 shrink-0 flex items-center justify-between gap-3 px-3 border-b border-border-weaker-base bg-background-stronger">
-        <div class="flex min-w-0 items-center gap-2 text-14-medium text-text-strong">
-          <PanelGlyph tab={PANEL_MAC_VIEW_TAB} />
-          <span>Mac View</span>
-          <span class="truncate text-12-regular text-text-weak">{status.data()?.health?.ok ? "live" : (status.data()?.note ?? "checking")}</span>
-        </div>
-        <div class="flex items-center gap-1">
-          <div class="hidden items-center gap-1 md:flex" aria-label="Mac View FPS">
-            <For each={status.data()?.fpsOptions ?? [6, 12, 20, 30, 45, 60]}>
-              {(option: number) => (
-                <button
-                  type="button"
-                  class="h-7 rounded px-2 text-11-regular"
-                  classList={{
-                    "bg-background-base text-text-strong": fps() === option,
-                    "text-text-weak hover:bg-surface-raised-base-hover hover:text-text-strong": fps() !== option,
-                  }}
-                  onClick={() => { setFps(option); setStreamKey(Date.now()) }}
-                >
-                  {option} fps
-                </button>
-              )}
-            </For>
+    <TabChrome
+      iconTab={PANEL_MAC_VIEW_TAB}
+      headerClass="h-10 shrink-0 flex items-center justify-between gap-3 px-3 border-b border-border-weaker-base bg-background-stronger"
+      bodyClass="flex-1 min-h-0 overflow-hidden"
+      toolbar={
+        <>
+          <div class="flex min-w-0 items-center gap-2 text-14-medium text-text-strong">
+            <PanelGlyph tab={PANEL_MAC_VIEW_TAB} />
+            <span>Mac View</span>
+            <span class="truncate text-12-regular text-text-weak">{status.data()?.health?.ok ? "live" : (status.data()?.note ?? "checking")}</span>
           </div>
-          <IconButton icon="reset" variant="ghost" class="h-7 w-7" onClick={() => { void status.refresh(); setStreamKey(Date.now()) }} aria-label="Refresh Mac View" />
-          <Show when={status.data()?.feedURL}>{(feedURL) => <IconButton icon="square-arrow-top-right" variant="ghost" class="h-7 w-7" onClick={() => window.open(feedURL(), "_blank", "noopener,noreferrer")} aria-label="Open feed externally" />}</Show>
-        </div>
-      </div>
+          <div class="flex items-center gap-1">
+            <div class="hidden items-center gap-1 md:flex" aria-label="Mac View FPS">
+              <For each={status.data()?.fpsOptions ?? [6, 12, 20, 30, 45, 60]}>
+                {(option: number) => (
+                  <button
+                    type="button"
+                    class="h-7 rounded px-2 text-11-regular"
+                    classList={{
+                      "bg-background-base text-text-strong": fps() === option,
+                      "text-text-weak hover:bg-surface-raised-base-hover hover:text-text-strong": fps() !== option,
+                    }}
+                    onClick={() => { setFps(option); setStreamKey(Date.now()) }}
+                  >
+                    {option} fps
+                  </button>
+                )}
+              </For>
+            </div>
+            <IconButton icon="reset" variant="ghost" class="h-7 w-7" onClick={() => { void status.refresh(); setStreamKey(Date.now()) }} aria-label="Refresh Mac View" />
+            <Show when={status.data()?.feedURL}>{(feedURL) => <IconButton icon="square-arrow-top-right" variant="ghost" class="h-7 w-7" onClick={() => window.open(feedURL(), "_blank", "noopener,noreferrer")} aria-label="Open feed externally" />}</Show>
+          </div>
+        </>
+      }
+    >
       <Show
         when={status.data()?.configured}
         fallback={
@@ -1129,7 +1154,7 @@ function MacViewTabContent() {
           />
         </div>
       </Show>
-    </div>
+    </TabChrome>
   )
 }
 
@@ -1603,9 +1628,12 @@ function FileBrowserTabContent() {
   const details = createMemo(() => selected())
 
   return (
-    <TabChrome iconTab={PANEL_FILE_BROWSER_TAB} bodyClass="flex-1 min-h-0 overflow-hidden">
-      <div class="flex h-full min-h-0 flex-col gap-3">
-        <div class="flex flex-wrap items-center gap-2 border-b border-border-weaker-base bg-background-base p-2">
+    <TabChrome
+      iconTab={PANEL_FILE_BROWSER_TAB}
+      headerClass="min-h-12 shrink-0 flex flex-wrap items-center gap-2 border-b border-border-weaker-base bg-background-base p-2"
+      bodyClass="flex-1 min-h-0 overflow-hidden p-3"
+      toolbar={
+        <>
           <IconButton
             icon="arrow-left"
             variant="ghost"
@@ -1640,7 +1668,10 @@ function FileBrowserTabContent() {
             onClick={() => browser.refresh()}
             aria-label="Refresh"
           />
-        </div>
+        </>
+      }
+    >
+      <div class="flex h-full min-h-0 flex-col gap-3">
         <Show when={browser.error()}>
           {(error) => <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">{error()}</div>}
         </Show>
@@ -1770,24 +1801,27 @@ function FileDetails(props: { file: any; onOpen?: () => void }) {
   )
 }
 
-function FilePreview(props: { file: any }) {
+function FilePreview(props: { file: any; showHeader?: boolean }) {
   const file = () => props.file
   const url = () => file().url ?? (file().path ? `/experimental/files/view?path=${encodeURIComponent(file().path)}` : undefined)
+  const showHeader = () => props.showHeader !== false
   return (
     <div class="flex h-full min-h-0 flex-col">
-      <div class="flex shrink-0 items-center justify-between gap-3 border-b border-border-weaker-base px-3 py-2">
-        <div class="flex min-w-0 items-center gap-2">
-          <span class="text-[#f97316]"><FileKindGlyph kind={file().kind} size="small" /></span>
-          <div class="min-w-0 truncate text-13-regular text-text-strong">{file().name}</div>
+      <Show when={showHeader()}>
+        <div class="flex shrink-0 items-center justify-between gap-3 border-b border-border-weaker-base px-3 py-2">
+          <div class="flex min-w-0 items-center gap-2">
+            <span class="text-[#f97316]"><FileKindGlyph kind={file().kind} size="small" /></span>
+            <div class="min-w-0 truncate text-13-regular text-text-strong">{file().name}</div>
+          </div>
+          <Show when={url()}>
+            {(href) => (
+              <a class="shrink-0 text-12-regular text-text-weak hover:text-text-strong" href={href()} target="_blank" rel="noreferrer">
+                Open raw
+              </a>
+            )}
+          </Show>
         </div>
-        <Show when={url()}>
-          {(href) => (
-            <a class="shrink-0 text-12-regular text-text-weak hover:text-text-strong" href={href()} target="_blank" rel="noreferrer">
-              Open raw
-            </a>
-          )}
-        </Show>
-      </div>
+      </Show>
       <div class="min-h-0 flex-1 overflow-auto">
         <Switch>
           <Match when={!url()}>
@@ -1870,8 +1904,31 @@ function FileTextPreview(props: { url: string }) {
 
 function ArtifactViewerTabContent(props: { tab: string }) {
   const file = createMemo(() => artifactFromTab(props.tab))
+  const url = createMemo(() => {
+    const current = file()
+    return current?.url ?? (current?.path ? `/experimental/files/view?path=${encodeURIComponent(current.path)}` : undefined)
+  })
   return (
-    <TabChrome iconTab={props.tab} bodyClass="flex-1 min-h-0 overflow-hidden">
+    <TabChrome
+      iconTab={props.tab}
+      headerClass="h-10 shrink-0 flex items-center justify-between gap-3 px-3 border-b border-border-weaker-base bg-background-base"
+      bodyClass="flex-1 min-h-0 overflow-hidden"
+      toolbar={
+        <>
+          <div class="flex min-w-0 items-center gap-2">
+            <span class="text-[#f97316]"><FileKindGlyph kind={file()?.kind} size="small" /></span>
+            <div class="min-w-0 truncate text-13-regular text-text-strong">{file()?.name ?? "Artifact"}</div>
+          </div>
+          <Show when={url()}>
+            {(href) => (
+              <a class="shrink-0 text-12-regular text-text-weak hover:text-text-strong" href={href()} target="_blank" rel="noreferrer">
+                Open raw
+              </a>
+            )}
+          </Show>
+        </>
+      }
+    >
       <Show
         when={file()}
         fallback={
@@ -1880,7 +1937,7 @@ function ArtifactViewerTabContent(props: { tab: string }) {
           </div>
         }
       >
-        {(artifact) => <FilePreview file={artifact()} />}
+        {(artifact) => <FilePreview file={artifact()} showHeader={false} />}
       </Show>
     </TabChrome>
   )
