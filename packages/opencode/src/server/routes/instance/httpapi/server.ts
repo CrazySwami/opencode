@@ -491,6 +491,35 @@ const fileViewerRoute = HttpRouter.use((router) =>
   }),
 ).pipe(Layer.provide(authOnlyRouterLayer))
 
+async function codexMultiAuthStatus() {
+  const script = process.env.OPENCODE_CODEX_MULTI_AUTH_SCRIPT || "/home/dev/repos/LLM-Experiments/scripts/opencode-codex-multi-auth-profile.mjs"
+  if (!existsSync(script)) return { ok: false, configured: false, error: "Codex multi-auth status script not found" }
+  return new Promise((resolve) => {
+    execFile(
+      "node",
+      [script, "status"],
+      { cwd: path.dirname(path.dirname(script)), timeout: 8000, maxBuffer: 256_000 },
+      (error, stdout, stderr) => {
+        const output = [stdout?.toString(), stderr?.toString()].filter(Boolean).join("\n").trim()
+        if (error) {
+          resolve({ ok: false, configured: true, command: script + " status", error: cleanStatusOutput(output || error.message) })
+          return
+        }
+        resolve({ ok: true, configured: true, command: script + " status", output: cleanStatusOutput(output) })
+      },
+    )
+  })
+}
+
+function cleanStatusOutput(value: string) {
+  return value
+    .split("\n")
+    .filter((line) => !line.startsWith("npm error config prefix cannot be changed"))
+    .join("\n")
+    .replace(/([A-Za-z0-9_-]{24,})/g, "[redacted]")
+    .slice(0, 2000)
+}
+
 const workspaceSuiteRoute = HttpRouter.use((router) =>
   Effect.gen(function* () {
     yield* router.add("GET", "/experimental/workspace-suite/status", () =>
@@ -516,6 +545,7 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
             route: "/experimental/resources/status",
             macHost: process.env.OPENCODE_MAC_RESOURCE_HOST || "alfonso-mac",
           },
+          codexAccounts: await codexMultiAuthStatus(),
           artifactRootConfigured: !!process.env.OPENCODE_BROWSER_HOME,
         }),
       ),
@@ -557,10 +587,10 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
       }),
     )
 
-    yield* router.add("GET", "/experimental/mac-view/stream", () =>
+    yield* router.add("GET", "/experimental/mac-view/stream", (request) =>
       Effect.succeed(
         HttpServerResponse.setHeader(
-          HttpServerResponse.stream(macViewStream(), {
+          HttpServerResponse.stream(macViewStream(macViewFPSFromRequest(request.url)), {
             contentType: `multipart/x-mixed-replace; boundary=${macViewStreamBoundary}`,
           }),
           "cache-control",
@@ -1218,19 +1248,24 @@ function macViewFeedURL() {
   return process.env.OPENCODE_MAC_VIEW_URL?.replace(/\/+$/, "")
 }
 
-function macViewFPS() {
-  const configured = Number(process.env.OPENCODE_MAC_VIEW_FPS || 6)
-  if (!Number.isFinite(configured)) return 6
-  return Math.max(1, Math.min(12, configured))
+function macViewFPS(value = process.env.OPENCODE_MAC_VIEW_FPS || 12) {
+  const configured = Number(value)
+  if (!Number.isFinite(configured)) return 12
+  return Math.max(1, Math.min(30, configured))
 }
 
-function macViewStream() {
+function macViewFPSFromRequest(requestURL: string) {
+  const value = new URL(requestURL, "http://localhost").searchParams.get("fps")
+  return macViewFPS(value || undefined)
+}
+
+function macViewStream(fps = macViewFPS()) {
   return Stream.fromAsyncIterable(
     (async function* () {
       while (true) {
         const frame = await captureMacViewFrame()
         yield multipartMacViewFrame(frame.bytes, frame.contentType)
-        await delay(Math.round(1000 / macViewFPS()))
+        await delay(Math.round(1000 / fps))
       }
     })(),
     (error) => error,
@@ -1283,6 +1318,7 @@ async function macViewStatus() {
     mode: "read-only",
     feedURL,
     fps: macViewFPS(),
+    fpsOptions: [6, 12, 20, 30],
     health,
     snapshotURL: "/experimental/mac-view/snapshot",
     streamURL: "/experimental/mac-view/stream",

@@ -835,6 +835,13 @@ function OpenDesignTabContent() {
 function MacViewTabContent() {
   const status = createPolledJson<any>(() => "/experimental/mac-view/status")
   const [streamKey, setStreamKey] = createSignal(Date.now())
+  const [fps, setFps] = createSignal(12)
+
+  createEffect(() => {
+    const next = Number(status.data()?.fps)
+    if (!Number.isFinite(next)) return
+    setFps(next)
+  })
 
   return (
     <div class="h-full min-h-0 flex flex-col bg-background-base">
@@ -845,6 +852,23 @@ function MacViewTabContent() {
           <span class="truncate text-12-regular text-text-weak">{status.data()?.health?.ok ? "live" : (status.data()?.note ?? "checking")}</span>
         </div>
         <div class="flex items-center gap-1">
+          <div class="hidden items-center gap-1 md:flex" aria-label="Mac View FPS">
+            <For each={status.data()?.fpsOptions ?? [6, 12, 20, 30]}>
+              {(option: number) => (
+                <button
+                  type="button"
+                  class="h-7 rounded px-2 text-11-regular"
+                  classList={{
+                    "bg-background-base text-text-strong": fps() === option,
+                    "text-text-weak hover:bg-surface-raised-base-hover hover:text-text-strong": fps() !== option,
+                  }}
+                  onClick={() => { setFps(option); setStreamKey(Date.now()) }}
+                >
+                  {option} fps
+                </button>
+              )}
+            </For>
+          </div>
           <IconButton icon="reset" variant="ghost" class="h-7 w-7" onClick={() => { void status.refresh(); setStreamKey(Date.now()) }} aria-label="Refresh Mac View" />
           <Show when={status.data()?.feedURL}>{(feedURL) => <IconButton icon="square-arrow-top-right" variant="ghost" class="h-7 w-7" onClick={() => window.open(feedURL(), "_blank", "noopener,noreferrer")} aria-label="Open feed externally" />}</Show>
         </div>
@@ -859,7 +883,7 @@ function MacViewTabContent() {
       >
         <div class="min-h-0 flex-1 overflow-auto bg-background-base">
           <img
-            src={`/experimental/mac-view/stream?t=${streamKey()}`}
+            src={`/experimental/mac-view/stream?fps=${fps()}&t=${streamKey()}`}
             alt="Live Mac screen"
             class="block h-auto w-full select-none"
             onError={() => void status.refresh()}
@@ -889,6 +913,17 @@ function AccountsTabContent() {
         <StatusRow label="Mac View" value={status.data()?.macView?.configured ? "configured" : "not configured"} />
         <StatusRow label="Workspace projects" value={workspace.data()?.projects?.length} />
         <StatusRow label="Recent sessions" value={workspace.data()?.sessions?.length} />
+        <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+          <div class="mb-2 flex items-center justify-between gap-3">
+            <div class="text-12-regular text-text-weak">Codex accounts</div>
+            <span class="rounded bg-background-base px-2 py-1 text-11-regular" classList={{ "text-text-strong": !!status.data()?.codexAccounts?.ok, "text-text-weak": !status.data()?.codexAccounts?.ok }}>
+              {status.data()?.codexAccounts?.ok ? "connected" : status.data()?.codexAccounts?.configured ? "needs setup" : "not configured"}
+            </span>
+          </div>
+          <div class="whitespace-pre-wrap break-words text-12-regular text-text-weak">
+            {status.data()?.codexAccounts?.output ?? status.data()?.codexAccounts?.error ?? "No Codex account status reported yet."}
+          </div>
+        </div>
         <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
           <div class="text-12-regular text-text-weak mb-2">Native tools</div>
           <div class="flex flex-wrap gap-2">
@@ -935,6 +970,9 @@ function ResourcesTabContent() {
           <ResourceHostCard title="Server" status={resources.data()?.server} />
           <ResourceHostCard title="MacBook" status={resources.data()?.mac} />
         </div>
+        <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">
+          Server metrics are local to CT100. Mac metrics require SSH from CT100 to the Mac; Mac View can still be live through the separate ScreenCaptureKit/Tailscale feed.
+        </div>
         <StatusRow label="Last checked" value={resources.data()?.checkedAt} />
       </div>
     </TabChrome>
@@ -957,11 +995,12 @@ function ResourceHostCard(props: { title: string; status?: any }) {
             "bg-background-base text-text-weak": !status()?.online,
           }}
         >
-          {status()?.online ? "online" : "offline"}
+          {!status() ? "checking" : status()?.online ? "online" : "unavailable"}
         </span>
       </div>
       <div class="flex flex-col gap-2">
-        <StatusRow label="Hostname" value={status()?.hostname ?? status()?.error ?? "unavailable"} />
+        <StatusRow label={status()?.online ? "Hostname" : "Status"} value={status()?.hostname ?? status()?.error ?? "checking"} />
+        <StatusRow label="Last checked" value={status()?.checkedAt} />
         <StatusRow label="Uptime" value={formatDuration(status()?.uptimeSeconds)} />
         <StatusRow label="CPU" value={formatCpu(status()?.cpu)} />
         <ResourceMeter label="RAM" used={status()?.memory?.usedBytes} total={status()?.memory?.totalBytes} />
@@ -1441,11 +1480,12 @@ export function SessionSidePanel(props: {
   const contextOpen = tabState.contextOpen
   const openedTabs = tabState.openedTabs
   const activeTab = tabState.activeTab
-  const openedPanelTabs = createMemo(() => openedTabs().filter(isPanelTab))
+  const openedPanelTabs = createMemo(() => openedTabs().filter((tab) => isPanelTab(tab) && tab !== PANEL_QUEUE_TAB))
   const openedFileTabs = createMemo(() => openedTabs().filter((tab) => !isPanelTab(tab)))
   const activePanelTab = createMemo(() => {
     const active = activeTab()
     if (!active) return
+    if (active === PANEL_QUEUE_TAB) return undefined
     return isPanelTab(active) ? active : undefined
   })
   const activeFileTab = createMemo(() => {
@@ -1453,6 +1493,12 @@ export function SessionSidePanel(props: {
     if (!active) return
     if (!openedFileTabs().includes(active)) return
     return active
+  })
+
+  createEffect(() => {
+    if (activeTab() !== PANEL_QUEUE_TAB) return
+    tabs().close(PANEL_QUEUE_TAB)
+    tabs().setActive("review")
   })
 
   const fileTreeTab = () => layout.fileTree.tab()
@@ -1818,11 +1864,6 @@ export function SessionSidePanel(props: {
                       </Show>
                     </Tabs.Content>
 
-                    <Tabs.Content value={PANEL_QUEUE_TAB} class="flex flex-col h-full overflow-hidden contain-strict">
-                      <Show when={activePanelTab() === PANEL_QUEUE_TAB}>
-                        <QueueTabContent sessionID={params.id} />
-                      </Show>
-                    </Tabs.Content>
 
                     <Show when={activeFileTab()} keyed>
                       {(tab) => <FileTabContent tab={tab} />}
