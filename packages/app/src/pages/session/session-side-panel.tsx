@@ -329,15 +329,15 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
 
   const browserKey = (key: string) => {
     const aliases: Record<string, string> = {
-      ArrowLeft: "arrowleft",
-      ArrowRight: "arrowright",
-      ArrowUp: "arrowup",
-      ArrowDown: "arrowdown",
-      Backspace: "backspace",
-      Delete: "delete",
-      Enter: "enter",
-      Escape: "escape",
-      Tab: "tab",
+      ArrowLeft: "ArrowLeft",
+      ArrowRight: "ArrowRight",
+      ArrowUp: "ArrowUp",
+      ArrowDown: "ArrowDown",
+      Backspace: "Backspace",
+      Delete: "Delete",
+      Enter: "Enter",
+      Escape: "Escape",
+      Tab: "Tab",
     }
     return aliases[key] ?? key
   }

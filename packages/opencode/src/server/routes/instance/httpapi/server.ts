@@ -464,8 +464,8 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
         const sessionID = match?.[1] ? decodeURIComponent(match[1]) : ""
         const name = match?.[2] ? decodeURIComponent(match[2]) : ""
         if (!sessionID || !name) return HttpServerResponse.text("Missing artifact", { status: 400 })
-        if (name.includes("/") || name.includes("..")) return HttpServerResponse.text("Invalid artifact", { status: 400 })
-        const file = path.join(sessionPaths(sessionID).artifactDir, name)
+        const file = resolveArtifactFile(sessionPaths(sessionID).artifactDir, name)
+        if (!file) return HttpServerResponse.text("Invalid artifact", { status: 400 })
         const stat = statSync(file, { throwIfNoEntry: false })
         if (!stat?.isFile()) return HttpServerResponse.text("Artifact not found", { status: 404 })
         return HttpServerResponse.setHeader(
@@ -484,23 +484,35 @@ function decodeParam(rawURL: string, pattern: RegExp) {
   return match?.[1] ? decodeURIComponent(match[1]) : undefined
 }
 
-function listArtifactFiles(dir: string) {
+function listArtifactFiles(dir: string, root = dir): Array<{ name: string; size: number; mtime: string; kind: string }> {
   if (!existsSync(dir)) return []
-  return readdirSync(dir)
-    .flatMap((name) => {
-      const file = path.join(dir, name)
+  return readdirSync(dir, { withFileTypes: true })
+    .flatMap((entry) => {
+      const file = path.join(dir, entry.name)
+      if (entry.isDirectory()) return listArtifactFiles(file, root)
       const stat = statSync(file, { throwIfNoEntry: false })
       if (!stat?.isFile()) return []
+      const relative = path.relative(root, file)
       return [
         {
-          name,
+          name: relative,
           size: stat.size,
           mtime: stat.mtime.toISOString(),
-          kind: name.toLowerCase().endsWith(".png") ? "image" : "file",
+          kind: relative.toLowerCase().endsWith(".png") ? "image" : "file",
         },
       ]
     })
     .sort((a, b) => b.mtime.localeCompare(a.mtime))
+}
+
+function resolveArtifactFile(artifactDir: string, name: string) {
+  if (path.isAbsolute(name)) return undefined
+  if (name.split(/[\\/]/).includes("..")) return undefined
+
+  const root = path.resolve(artifactDir)
+  const file = path.resolve(root, name)
+  if (file !== root && !file.startsWith(root + path.sep)) return undefined
+  return file
 }
 
 function contentTypeForFile(name: string) {
