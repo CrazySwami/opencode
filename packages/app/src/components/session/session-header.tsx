@@ -19,8 +19,6 @@ import { usePlatform } from "@/context/platform"
 import { useServer } from "@/context/server"
 import { useSettings } from "@/context/settings"
 import { useSync } from "@/context/sync"
-import { useTerminal } from "@/context/terminal"
-import { focusTerminalById } from "@/pages/session/helpers"
 import { useSessionLayout } from "@/pages/session/session-layout"
 import { messageAgentColor } from "@/utils/agent"
 import { decode64 } from "@/utils/base64"
@@ -143,8 +141,7 @@ export function SessionHeader() {
   const language = useLanguage()
   const settings = useSettings()
   const sync = useSync()
-  const terminal = useTerminal()
-  const { params, view } = useSessionLayout()
+  const { params, tabs, view } = useSessionLayout()
 
   const projectDirectory = createMemo(() => decode64(params.dir) ?? "")
   const project = createMemo(() => {
@@ -210,13 +207,10 @@ export function SessionHeader() {
   })
 
   const toggleTerminal = () => {
-    const next = !view().terminal.opened()
-    view().terminal.toggle()
-    if (!next) return
-
-    const id = terminal.active()
-    if (!id) return
-    focusTerminalById(id)
+    view().reviewPanel.open()
+    view().terminal.close()
+    tabs().open("panel://terminal")
+    tabs().setActive("panel://terminal")
   }
 
   const [prefs, setPrefs] = persisted(Persist.global("open.app"), createStore({ app: "finder" as OpenApp }))
@@ -457,10 +451,10 @@ export function SessionHeader() {
                         class="group/terminal-toggle titlebar-icon w-8 h-6 p-0 box-border shrink-0"
                         onClick={toggleTerminal}
                         aria-label={language.t("command.terminal.toggle")}
-                        aria-expanded={view().terminal.opened()}
-                        aria-controls="terminal-panel"
+                        aria-expanded={tabs().active() === "panel://terminal"}
+                        aria-controls="review-panel"
                       >
-                        <Icon size="small" name={view().terminal.opened() ? "terminal-active" : "terminal"} />
+                        <Icon size="small" name={tabs().active() === "panel://terminal" ? "terminal-active" : "terminal"} />
                       </Button>
                     </TooltipKeybind>
 

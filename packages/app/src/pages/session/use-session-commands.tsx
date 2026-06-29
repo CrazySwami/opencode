@@ -265,8 +265,11 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
   }
 
   const openTerminal = () => {
-    if (terminal.all().length > 0) terminal.new()
-    view().terminal.open()
+    if (terminal.all().length === 0) terminal.new()
+    view().reviewPanel.open()
+    view().terminal.close()
+    tabs().open("panel://terminal")
+    tabs().setActive("panel://terminal")
   }
 
   const chooseMcp = () => {
@@ -491,7 +494,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       title: language.t("command.terminal.toggle"),
       keybind: "ctrl+`",
       slash: "terminal",
-      onSelect: () => view().terminal.toggle(),
+      onSelect: openTerminal,
     }),
     viewCommand({
       id: "review.toggle",
