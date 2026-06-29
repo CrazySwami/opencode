@@ -732,8 +732,17 @@ function ChannelIndicator() {
           ? "LOCAL"
           : channel?.toUpperCase() || "SERVER"
 
+    const color = label === "LIVE"
+      ? "#16a34a"
+      : label === "STAGING"
+        ? "#ea580c"
+        : label === "LOCAL"
+          ? "#525252"
+          : "var(--icon-interactive-base)"
+
     return {
       label,
+      color,
       title: `${label} · ${url}${channel ? ` · ${channel} build` : ""}`,
     }
   })
@@ -741,12 +750,7 @@ function ChannelIndicator() {
   return (
     <div
       class="text-[#FFF] font-medium px-2 rounded-sm uppercase font-mono"
-      classList={{
-        "bg-green-600": info().label === "LIVE",
-        "bg-orange-600": info().label === "STAGING",
-        "bg-neutral-600": info().label === "LOCAL",
-        "bg-icon-interactive-base": !["LIVE", "STAGING", "LOCAL"].includes(info().label),
-      }}
+      style={{ "background-color": info().color }}
       title={info().title}
     >
       {info().label}
