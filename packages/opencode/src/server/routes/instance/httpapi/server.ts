@@ -265,6 +265,10 @@ const browserPreviewRoute = HttpRouter.use((router) =>
 
     yield* router.add("GET", "/experimental/browser/novnc/*", (request) =>
       Effect.gen(function* () {
+        if (!liveBrowserExposureEnabled()) return liveBrowserExposureBlockedResponse("text")
+        if (new URL(request.url, "http://localhost").pathname.endsWith("/opencode-lite.html")) {
+          return liveBrowserNoVNCLiteResponse(request.url)
+        }
         const target = liveBrowserNoVNCProxyURL(request.url)
         if (request.headers["upgrade"]?.toLowerCase() === "websocket") {
           return yield* HttpApiProxy.websocket(request, target)
@@ -274,43 +278,52 @@ const browserPreviewRoute = HttpRouter.use((router) =>
     )
 
     yield* router.add("GET", "/experimental/browser/live/status", () =>
-      Effect.promise(async () => HttpServerResponse.jsonUnsafe(await liveBrowserStatus())),
+      Effect.promise(async () =>
+        liveBrowserExposureEnabled()
+          ? HttpServerResponse.jsonUnsafe(await liveBrowserStatus())
+          : liveBrowserExposureBlockedResponse("json"),
+      ),
     )
 
     yield* router.add("GET", "/experimental/browser/live/stream", () =>
-      Effect.succeed(
-        HttpServerResponse.setHeader(
-          HttpServerResponse.stream(liveBrowserStream(), {
-            contentType: `multipart/x-mixed-replace; boundary=${liveBrowserStreamBoundary}`,
-          }),
-          "cache-control",
-          "no-store",
-        ),
-      ),
+      liveBrowserExposureEnabled()
+        ? Effect.succeed(
+            HttpServerResponse.setHeader(
+              HttpServerResponse.stream(liveBrowserStream(), {
+                contentType: `multipart/x-mixed-replace; boundary=${liveBrowserStreamBoundary}`,
+              }),
+              "cache-control",
+              "no-store",
+            ),
+          )
+        : Effect.succeed(liveBrowserExposureBlockedResponse("text")),
     )
 
     yield* router.add("GET", "/experimental/browser/live/snapshot", () =>
-      Effect.promise(async () => {
-        await ensureLiveBrowser()
-        const image = await captureLiveBrowserImage()
-        return HttpServerResponse.setHeader(
-          HttpServerResponse.uint8Array(new Uint8Array(image), { contentType: "image/png" }),
-          "cache-control",
-          "no-store",
-        )
-      }).pipe(
-        Effect.catch((error: unknown) =>
-          Effect.succeed(
-            HttpServerResponse.text(error instanceof Error ? error.message : String(error), {
-              status: 502,
-            }),
-          ),
-        ),
-      ),
+      liveBrowserExposureEnabled()
+        ? Effect.promise(async () => {
+            await ensureLiveBrowser()
+            const image = await captureLiveBrowserImage()
+            return HttpServerResponse.setHeader(
+              HttpServerResponse.uint8Array(new Uint8Array(image), { contentType: "image/png" }),
+              "cache-control",
+              "no-store",
+            )
+          }).pipe(
+            Effect.catch((error: unknown) =>
+              Effect.succeed(
+                HttpServerResponse.text(error instanceof Error ? error.message : String(error), {
+                  status: 502,
+                }),
+              ),
+            ),
+          )
+        : Effect.succeed(liveBrowserExposureBlockedResponse("text")),
     )
 
     yield* router.add("POST", "/experimental/browser/live/input", (request) =>
       Effect.gen(function* () {
+        if (!liveBrowserExposureEnabled()) return liveBrowserExposureBlockedResponse("json")
         const raw = yield* Effect.orDie(request.text)
         let body: LiveBrowserInput
         try {
@@ -330,6 +343,7 @@ const browserPreviewRoute = HttpRouter.use((router) =>
 
     yield* router.add("POST", "/experimental/browser/live/selector", (request) =>
       Effect.gen(function* () {
+        if (!liveBrowserExposureEnabled()) return liveBrowserExposureBlockedResponse("json")
         const raw = yield* Effect.orDie(request.text)
         let body: { selector?: string }
         try {
@@ -350,6 +364,7 @@ const browserPreviewRoute = HttpRouter.use((router) =>
 
     yield* router.add("POST", "/experimental/browser/:sessionID/live/screenshot", (request) =>
       Effect.gen(function* () {
+        if (!liveBrowserExposureEnabled()) return liveBrowserExposureBlockedResponse("json")
         const sessionID = decodeParam(request.url, /^\/experimental\/browser\/([^/]+)\/live\/screenshot$/)
         if (!sessionID) return HttpServerResponse.text("Missing session ID", { status: 400 })
 
@@ -779,6 +794,24 @@ const liveBrowserProfile = () => path.join(liveBrowserHome(), "profile")
 const liveBrowserArtifacts = () => path.join(liveBrowserHome(), "artifacts")
 const liveBrowserDebugPort = () => Number(process.env.OPENCODE_LIVE_BROWSER_DEBUG_PORT || 9224)
 const liveBrowserNoVNCURL = () => (process.env.OPENCODE_LIVE_BROWSER_NOVNC_URL || "http://127.0.0.1:6080").replace(/\/+$/, "")
+const liveBrowserExposureEnabled = () => process.env.OPENCODE_LIVE_BROWSER_EXPOSE === "1"
+
+function liveBrowserExposureBlockedResponse(format: "json" | "text") {
+  const message =
+    "Live browser viewing and control are disabled until code.hustletogether.com is protected by the approved access boundary. Set OPENCODE_LIVE_BROWSER_EXPOSE=1 only after Cloudflare Access is verified."
+  if (format === "json") {
+    return HttpServerResponse.jsonUnsafe(
+      {
+        ok: false,
+        exposureBlocked: true,
+        error: message,
+        requiredAccessBoundary: "Cloudflare Access GitHub login for code.hustletogether.com",
+      },
+      { status: 403 },
+    )
+  }
+  return HttpServerResponse.text(message, { status: 403 })
+}
 
 function liveBrowserNoVNCProxyURL(requestURL: string) {
   const url = new URL(requestURL, "http://localhost")
@@ -786,6 +819,71 @@ function liveBrowserNoVNCProxyURL(requestURL: string) {
   const target = new URL(liveBrowserNoVNCURL() + "/" + pathPart)
   target.search = url.search
   return target
+}
+
+function liveBrowserNoVNCLiteResponse(requestURL: string) {
+  const url = new URL(requestURL, "http://localhost")
+  const params = new URLSearchParams(url.search)
+  const pathParam = params.get("path") || "websockify"
+  const pathValue = pathParam.startsWith("/") ? pathParam.slice(1) : pathParam
+  const websocketPath = `/experimental/browser/novnc/${pathValue}`
+  const html = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>OpenCode Browser</title>
+    <style>
+      :root { color-scheme: dark light; background: #050505; }
+      html, body, #screen { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #050505; }
+      #screen { display: flex; align-items: stretch; justify-content: stretch; }
+      #screen canvas { width: 100% !important; height: 100% !important; object-fit: contain; background: #fff; }
+      #status {
+        position: fixed;
+        left: 12px;
+        bottom: 10px;
+        z-index: 2;
+        border-radius: 999px;
+        background: rgba(0, 0, 0, 0.64);
+        color: rgba(255, 255, 255, 0.88);
+        font: 12px/1.4 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        padding: 5px 9px;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="screen"></div>
+    <div id="status">connecting</div>
+    <script type="module">
+      import RFB from "/experimental/browser/novnc/core/rfb.js";
+
+      const status = document.getElementById("status");
+      const target = document.getElementById("screen");
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const url = protocol + "//" + window.location.host + "${websocketPath}";
+      const rfb = new RFB(target, url, { shared: true });
+
+      rfb.viewOnly = false;
+      rfb.scaleViewport = true;
+      rfb.resizeSession = false;
+      rfb.focusOnClick = true;
+
+      rfb.addEventListener("connect", () => { status.textContent = "interactive"; });
+      rfb.addEventListener("disconnect", (event) => {
+        status.textContent = event.detail?.clean ? "disconnected" : "connection lost";
+      });
+      rfb.addEventListener("credentialsrequired", () => { status.textContent = "credentials required"; });
+
+      window.addEventListener("beforeunload", () => rfb.disconnect());
+    </script>
+  </body>
+</html>`
+  return HttpServerResponse.setHeader(
+    HttpServerResponse.text(html, { contentType: "text/html" }),
+    "cache-control",
+    "no-store",
+  )
 }
 
 async function liveBrowserNoVNCProxyResponse(target: URL) {
@@ -818,7 +916,7 @@ async function liveBrowserStatus() {
     error: "error" in browser ? browser.error : undefined,
     screenshotURL: "/experimental/browser/live/snapshot",
     streamURL: "/experimental/browser/live/stream",
-    proxiedLiveURL: "/experimental/browser/novnc/vnc.html?autoconnect=true&resize=scale&reconnect=true&path=websockify",
+    proxiedLiveURL: "/experimental/browser/novnc/opencode-lite.html?path=websockify",
     browserUse: await browserUseBridgeStatus().catch((error: unknown) => ({
       ok: false,
       error: error instanceof Error ? error.message : String(error),
