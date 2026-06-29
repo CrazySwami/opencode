@@ -282,6 +282,8 @@ type LiveBrowserStatus = {
   mode?: string
   display?: string
   error?: string
+  exposureBlocked?: boolean
+  requiredAccessBoundary?: string
   streamURL?: string
   proxiedLiveURL?: string
   browserUse?: {
@@ -314,8 +316,11 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
   let imageRef: HTMLImageElement | undefined
   let canvasRef: HTMLCanvasElement | undefined
 
+  const browserExposureBlocked = createMemo(() => !!status().exposureBlocked)
+  const controlsDisabled = createMemo(() => browserBusy() || browserExposureBlocked())
   const streamSrc = createMemo(() => `${status().streamURL ?? "/experimental/browser/live/stream"}?t=${streamKey()}`)
   const interactiveUrl = createMemo(() => {
+    if (browserExposureBlocked()) return undefined
     if (!useNoVNC()) return undefined
 
     const proxiedURL = status().proxiedLiveURL
@@ -356,6 +361,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
       const body = await response.json().catch(() => ({}))
       setStatus(body)
       if (typeof body.currentURL === "string" && !browserUrl()) setBrowserUrl(body.currentURL)
+      if (body.exposureBlocked) setPreviewReady(false)
       setBrowserError(body.error)
     } catch (error) {
       setBrowserError(error instanceof Error ? error.message : String(error))
@@ -363,6 +369,10 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
   }
 
   const runLiveInput = async (body: Record<string, unknown>) => {
+    if (browserExposureBlocked()) {
+      setBrowserError(status().error)
+      return false
+    }
     if (browserBusy()) return false
     setBrowserBusy(true)
     setBrowserError(undefined)
@@ -600,9 +610,9 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
     <div class="h-full min-h-0 flex flex-col bg-background-base">
       <div class="h-12 shrink-0 border-b border-border-weaker-base bg-background-stronger px-2 py-1.5">
         <div class="flex h-full min-w-0 items-center gap-1 rounded-md border border-border-weaker-base bg-background-base px-1.5">
-          <IconButton icon="arrow-left" variant="ghost" class="h-7 w-7 shrink-0" disabled={browserBusy()} onClick={() => void runLiveInput({ action: "back" })} aria-label="Back" />
-          <IconButton icon="arrow-right" variant="ghost" class="h-7 w-7 shrink-0" disabled={browserBusy()} onClick={() => void runLiveInput({ action: "forward" })} aria-label="Forward" />
-          <IconButton icon="reset" variant="ghost" class="h-7 w-7 shrink-0" disabled={browserBusy()} onClick={() => void runLiveInput({ action: "reload" })} aria-label="Reload page" />
+          <IconButton icon="arrow-left" variant="ghost" class="h-7 w-7 shrink-0" disabled={controlsDisabled()} onClick={() => void runLiveInput({ action: "back" })} aria-label="Back" />
+          <IconButton icon="arrow-right" variant="ghost" class="h-7 w-7 shrink-0" disabled={controlsDisabled()} onClick={() => void runLiveInput({ action: "forward" })} aria-label="Forward" />
+          <IconButton icon="reset" variant="ghost" class="h-7 w-7 shrink-0" disabled={controlsDisabled()} onClick={() => void runLiveInput({ action: "reload" })} aria-label="Reload page" />
           <form
             class="flex min-w-0 flex-1 items-center"
             onSubmit={(event) => {
@@ -616,22 +626,22 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
               class="h-8 min-w-0 flex-1 bg-transparent px-2 text-13-regular text-text-strong outline-none"
               placeholder="Search or enter URL"
             />
-            <IconButton icon="enter" variant="ghost" class="h-7 w-7 shrink-0" disabled={browserBusy()} onClick={submitBrowserUrl} aria-label="Open URL" />
+            <IconButton icon="enter" variant="ghost" class="h-7 w-7 shrink-0" disabled={controlsDisabled()} onClick={submitBrowserUrl} aria-label="Open URL" />
           </form>
           <div class="hidden min-w-0 items-center gap-1 md:flex">
-            <span class="max-w-40 truncate px-1 text-11-regular text-text-weak">{browserBusy() ? "working" : useNoVNC() && interactiveUrl() && !annotating() ? "noVNC" : previewReady() ? "live" : "connecting"}</span>
+            <span class="max-w-40 truncate px-1 text-11-regular text-text-weak">{browserExposureBlocked() ? "blocked" : browserBusy() ? "working" : useNoVNC() && interactiveUrl() && !annotating() ? "noVNC" : previewReady() ? "live" : "connecting"}</span>
             <span
               class="h-2 w-2 shrink-0 rounded-full"
               classList={{
-                "bg-[#f97316]": !!status().browserUse?.ok,
-                "bg-text-disabled": !status().browserUse?.ok,
+                "bg-[#f97316]": !!status().browserUse?.ok && !browserExposureBlocked(),
+                "bg-text-disabled": !status().browserUse?.ok || browserExposureBlocked(),
               }}
-              title={status().browserUse?.ok ? "Browser Use ready" : "Browser Use unavailable"}
+              title={browserExposureBlocked() ? "Browser exposure blocked" : status().browserUse?.ok ? "Browser Use ready" : "Browser Use unavailable"}
             />
           </div>
-          <IconButton icon="photo" variant="ghost" class="h-7 w-7 shrink-0" disabled={browserBusy()} onClick={() => void saveScreenshot(false)} aria-label="Save screenshot" />
-          <IconButton icon="pencil-line" variant="ghost" class="h-7 w-7 shrink-0" disabled={browserBusy()} onClick={() => setAnnotating(!annotating())} aria-label={annotating() ? "Stop annotating" : "Annotate screenshot"} />
-          <IconButton icon="share" variant="ghost" class="h-7 w-7 shrink-0" disabled={browserBusy()} onClick={() => void saveScreenshot(true)} aria-label="Send screenshot to chat" />
+          <IconButton icon="photo" variant="ghost" class="h-7 w-7 shrink-0" disabled={controlsDisabled()} onClick={() => void saveScreenshot(false)} aria-label="Save screenshot" />
+          <IconButton icon="pencil-line" variant="ghost" class="h-7 w-7 shrink-0" disabled={controlsDisabled()} onClick={() => setAnnotating(!annotating())} aria-label={annotating() ? "Stop annotating" : "Annotate screenshot"} />
+          <IconButton icon="share" variant="ghost" class="h-7 w-7 shrink-0" disabled={controlsDisabled()} onClick={() => void saveScreenshot(true)} aria-label="Send screenshot to chat" />
           <details class="group relative shrink-0" data-prevent-autofocus>
             <summary class="flex h-7 w-7 cursor-pointer list-none items-center justify-center rounded text-text-weak hover:bg-surface-raised-base-hover hover:text-text-strong [&::-webkit-details-marker]:hidden">
               <Icon name="sliders" size="small" />
@@ -651,7 +661,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
                   class="h-8 min-w-0 flex-1 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
                   placeholder="Type into focused page"
                 />
-                <IconButton icon="enter" variant="ghost" class="h-8 w-8" disabled={browserBusy() || !browserText()} onClick={sendBrowserText} aria-label="Type into page" />
+                <IconButton icon="enter" variant="ghost" class="h-8 w-8" disabled={controlsDisabled() || !browserText()} onClick={sendBrowserText} aria-label="Type into page" />
               </form>
               <form
                 class="flex items-center gap-2"
@@ -667,7 +677,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
                   class="h-8 min-w-0 flex-1 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
                   placeholder="CSS selector to highlight"
                 />
-                <IconButton icon="enter" variant="ghost" class="h-8 w-8" disabled={browserBusy() || !selector()} onClick={highlightSelector} aria-label="Highlight selector" />
+                <IconButton icon="enter" variant="ghost" class="h-8 w-8" disabled={controlsDisabled() || !selector()} onClick={highlightSelector} aria-label="Highlight selector" />
               </form>
               <input
                 value={note()}
@@ -683,8 +693,9 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
                 <Show when={status().browserUse?.activeSessions !== undefined}><span>{status().browserUse?.activeSessions} sessions</span></Show>
                 <Show when={status().proxiedLiveURL || status().browserUse?.liveURL}>
                   <button
-                    class="ml-auto rounded px-2 py-0.5 text-text-strong hover:bg-surface-raised-base-hover"
+                    class="ml-auto rounded px-2 py-0.5 text-text-strong hover:bg-surface-raised-base-hover disabled:text-text-disabled"
                     type="button"
+                    disabled={browserExposureBlocked()}
                     onClick={() => {
                       setPreviewReady(false)
                       setUseNoVNC(!useNoVNC())
@@ -693,7 +704,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
                     {useNoVNC() ? "Use stream" : "Use noVNC"}
                   </button>
                 </Show>
-                <Show when={status().browserUse?.liveURL}>{(url) => <button class="rounded px-2 py-0.5 text-text-strong hover:bg-surface-raised-base-hover" type="button" onClick={() => window.open(url(), "_blank", "noopener,noreferrer")}>Open noVNC</button>}</Show>
+                <Show when={status().browserUse?.liveURL}>{(url) => <button class="rounded px-2 py-0.5 text-text-strong hover:bg-surface-raised-base-hover disabled:text-text-disabled" type="button" disabled={browserExposureBlocked()} onClick={() => window.open(url(), "_blank", "noopener,noreferrer")}>Open noVNC</button>}</Show>
               </div>
               <Show when={browserError()}>{(error) => <div class="text-12-regular text-text-weak break-all">{error()}</div>}</Show>
               <Show when={lastArtifact()}>{(artifact) => <div class="text-12-regular text-text-weak">Saved <a class="text-text-strong underline" href={artifact().url} target="_blank" rel="noreferrer">{artifact().name}</a></div>}</Show>
@@ -716,59 +727,77 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
         onWheel={handleViewportWheel}
         onKeyDown={handleViewportKeyDown}
       >
-        <Show when={!previewReady() && (!interactiveUrl() || annotating())}>
-          <div class="absolute inset-0 flex items-center justify-center text-center text-12-regular text-text-weak">
-            Starting live Chromium...
-          </div>
-        </Show>
         <Show
-          when={!annotating() ? interactiveUrl() : undefined}
+          when={!browserExposureBlocked()}
           fallback={
-            <div class="size-full overflow-auto">
-              <img
-                ref={(el) => (imageRef = el)}
-                src={streamSrc()}
-                alt="Live Chromium browser"
-                class="block w-full h-auto select-none"
-                classList={{ invisible: !previewReady() }}
-                onLoad={() => {
-                  setPreviewReady(true)
-                  if (annotating()) resizeCanvas()
-                }}
-                onError={() => setPreviewReady(false)}
-              />
+            <div class="flex size-full items-center justify-center p-6 text-center">
+              <div class="max-w-md rounded-md border border-border-weaker-base bg-background-stronger p-4">
+                <div class="mx-auto mb-3 flex h-9 w-9 items-center justify-center rounded-full bg-[#f97316]/15 text-11-medium text-[#f97316]">LOCK</div>
+                <div class="text-14-medium text-text-strong">Browser exposure is blocked</div>
+                <div class="mt-2 text-13-regular text-text-weak">
+                  {status().error ?? "Live browser viewing and control are disabled until code.hustletogether.com is protected by Cloudflare Access."}
+                </div>
+                <div class="mt-3 text-12-regular text-text-weak">
+                  {status().requiredAccessBoundary ?? "Cloudflare Access GitHub login for code.hustletogether.com"}
+                </div>
+              </div>
             </div>
           }
         >
-          {(url) => (
-            <iframe
-              src={url()}
-              title="Interactive Chromium browser"
-              class="block size-full border-0 bg-white"
-              allow="clipboard-read; clipboard-write"
-              onLoad={() => setPreviewReady(true)}
-            />
-          )}
-        </Show>
-        <Show when={annotating()}>
-          <canvas
-            ref={(el) => (canvasRef = el)}
-            class="absolute left-0 top-0 cursor-crosshair touch-none"
-            onPointerDown={startAnnotation}
-            onPointerMove={drawAnnotation}
-            onPointerUp={stopAnnotation}
-            onPointerCancel={stopAnnotation}
-          />
-          <button
-            class="absolute right-3 top-3 rounded bg-background-base px-2 py-1 text-12-regular text-text-strong shadow"
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation()
-              clearAnnotation()
-            }}
+          <Show when={!previewReady() && (!interactiveUrl() || annotating())}>
+            <div class="absolute inset-0 flex items-center justify-center text-center text-12-regular text-text-weak">
+              Starting live Chromium...
+            </div>
+          </Show>
+          <Show
+            when={!annotating() ? interactiveUrl() : undefined}
+            fallback={
+              <div class="size-full overflow-auto">
+                <img
+                  ref={(el) => (imageRef = el)}
+                  src={streamSrc()}
+                  alt="Live Chromium browser"
+                  class="block h-auto w-full select-none"
+                  classList={{ invisible: !previewReady() }}
+                  onLoad={() => {
+                    setPreviewReady(true)
+                    if (annotating()) resizeCanvas()
+                  }}
+                  onError={() => setPreviewReady(false)}
+                />
+              </div>
+            }
           >
-            Clear
-          </button>
+            {(url) => (
+              <iframe
+                src={url()}
+                title="Interactive Chromium browser"
+                class="block size-full border-0 bg-white"
+                allow="clipboard-read; clipboard-write"
+                onLoad={() => setPreviewReady(true)}
+              />
+            )}
+          </Show>
+          <Show when={annotating()}>
+            <canvas
+              ref={(el) => (canvasRef = el)}
+              class="absolute left-0 top-0 cursor-crosshair touch-none"
+              onPointerDown={startAnnotation}
+              onPointerMove={drawAnnotation}
+              onPointerUp={stopAnnotation}
+              onPointerCancel={stopAnnotation}
+            />
+            <button
+              class="absolute right-3 top-3 rounded bg-background-base px-2 py-1 text-12-regular text-text-strong shadow"
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation()
+                clearAnnotation()
+              }}
+            >
+              Clear
+            </button>
+          </Show>
         </Show>
       </div>
     </div>
