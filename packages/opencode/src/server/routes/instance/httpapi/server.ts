@@ -413,7 +413,8 @@ const fileViewerRoute = HttpRouter.use((router) =>
         const url = new URL(request.url, "http://localhost")
         const requested = url.searchParams.get("path")
         const directory = path.resolve(requested || fileBrowserDefaultPath())
-        if (!fileViewerAllowed(directory)) return HttpServerResponse.text("Directory is outside allowed roots", { status: 403 })
+        if (!fileViewerAllowed(directory))
+          return HttpServerResponse.text("Directory is outside allowed roots", { status: 403 })
 
         const stat = statSync(directory, { throwIfNoEntry: false })
         if (!stat?.isDirectory()) return HttpServerResponse.text("Directory not found", { status: 404 })
@@ -463,7 +464,8 @@ const fileViewerRoute = HttpRouter.use((router) =>
         if (!path.isAbsolute(rawPath)) return HttpServerResponse.text("File path must be absolute", { status: 400 })
 
         const file = path.resolve(rawPath)
-        if (!fileViewerAllowed(file)) return HttpServerResponse.text("File is outside allowed viewer roots", { status: 403 })
+        if (!fileViewerAllowed(file))
+          return HttpServerResponse.text("File is outside allowed viewer roots", { status: 403 })
 
         const stat = statSync(file, { throwIfNoEntry: false })
         if (!stat?.isFile()) return HttpServerResponse.text("File not found", { status: 404 })
@@ -602,7 +604,10 @@ function decodeParam(rawURL: string, pattern: RegExp) {
   return match?.[1] ? decodeURIComponent(match[1]) : undefined
 }
 
-function listArtifactFiles(dir: string, root = dir): Array<{ name: string; size: number; mtime: string; kind: string }> {
+function listArtifactFiles(
+  dir: string,
+  root = dir,
+): Array<{ name: string; size: number; mtime: string; kind: string }> {
   if (!existsSync(dir)) return []
   return readdirSync(dir, { withFileTypes: true })
     .flatMap((entry) => {
@@ -655,7 +660,8 @@ function contentTypeForFile(name: string) {
 function fileViewerRoots() {
   const explicit = process.env.OPENCODE_FILE_VIEW_ROOTS?.split(path.delimiter).filter(Boolean) ?? []
   const browserHome =
-    process.env.OPENCODE_BROWSER_HOME || path.join(process.env.HOME ?? "/home/dev", ".local", "share", "opencode-browser")
+    process.env.OPENCODE_BROWSER_HOME ||
+    path.join(process.env.HOME ?? "/home/dev", ".local", "share", "opencode-browser")
   return [...explicit, browserHome, process.env.OPENCODE_DEV_ROOT ?? "/home/dev/repos"]
     .map((root) => path.resolve(root))
     .filter((root, index, list) => list.indexOf(root) === index)
@@ -688,7 +694,6 @@ function fileKind(contentType: string) {
   if (contentType.startsWith("text/") || contentType === "application/json") return "text"
   return "file"
 }
-
 
 type LiveBrowserInput =
   | { action: "status" }
@@ -786,16 +791,24 @@ async function runLiveBrowserInput(input: LiveBrowserInput) {
       const url = normalizeBrowserURL(input.url)
       if (!url) return { ok: false, error: "Missing URL" }
       await cdpEvaluate(`location.href = ${JSON.stringify(url)}`)
+      await delay(900)
+      await raiseLiveBrowserWindow()
       return { ok: true, currentURL: url }
     }
     case "back":
       await cdpEvaluate("history.back()")
+      await delay(400)
+      await raiseLiveBrowserWindow()
       return { ok: true }
     case "forward":
       await cdpEvaluate("history.forward()")
+      await delay(400)
+      await raiseLiveBrowserWindow()
       return { ok: true }
     case "reload":
       await cdpEvaluate("location.reload()")
+      await delay(600)
+      await raiseLiveBrowserWindow()
       return { ok: true }
     case "click": {
       const x = Math.max(0, Math.round(input.x ?? 0))
@@ -858,6 +871,7 @@ function multipartBrowserFrame(image: Buffer) {
 
 async function captureLiveBrowserImage(options: { transient?: boolean } = {}) {
   await ensureLiveBrowser()
+  await raiseLiveBrowserWindow()
   const file = options.transient
     ? path.join(liveBrowserHome(), `live-frame-${process.pid}.png`)
     : path.join(liveBrowserArtifacts(), `snapshot-${Date.now()}.png`)
@@ -940,6 +954,48 @@ async function currentLiveBrowserURL() {
   return { url: page.url, title: page.title }
 }
 
+async function raiseLiveBrowserWindow() {
+  const current = await currentLiveBrowserURL().catch(() => undefined)
+  const windows = await visibleChromeWindows()
+  if (!windows.length) return
+
+  const title = current?.title?.trim()
+  const host = (() => {
+    try {
+      return current?.url ? new URL(current.url).hostname.replace(/^www\./, "") : undefined
+    } catch {
+      return undefined
+    }
+  })()
+  const match =
+    windows.find((window) => title && window.title.includes(title)) ??
+    windows.find((window) => host && window.title.toLowerCase().includes(host.split(".")[0]?.toLowerCase() ?? host)) ??
+    windows[0]
+  if (!match) return
+
+  await execText("xdotool", ["windowraise", match.id, "windowfocus", match.id], liveBrowserDisplay()).catch(
+    () => undefined,
+  )
+  await delay(150)
+}
+
+async function visibleChromeWindows() {
+  const raw = await execText("xdotool", ["search", "--onlyvisible", "--class", "chrome"], liveBrowserDisplay()).catch(
+    () => "",
+  )
+  const ids = raw
+    .split(/\s+/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+
+  const windows: Array<{ id: string; title: string }> = []
+  for (const id of ids) {
+    const title = await execText("xdotool", ["getwindowname", id], liveBrowserDisplay()).catch(() => "")
+    windows.push({ id, title: title.trim() })
+  }
+  return windows
+}
+
 async function cdpEvaluate(expression: string) {
   const page = await liveBrowserPage()
   const ws = page.webSocketDebuggerUrl
@@ -982,8 +1038,15 @@ async function liveBrowserPage() {
   await ensureLiveBrowser()
   const response = await fetch(`http://127.0.0.1:${liveBrowserDebugPort()}/json/list`)
   if (!response.ok) throw new Error(`Live browser CDP returned HTTP ${response.status}`)
-  const pages = (await response.json()) as Array<{ type?: string; url?: string; title?: string; webSocketDebuggerUrl?: string }>
-  const page = pages.find((item) => item.type === "page" && item.webSocketDebuggerUrl) ?? pages.find((item) => item.webSocketDebuggerUrl)
+  const pages = (await response.json()) as Array<{
+    type?: string
+    url?: string
+    title?: string
+    webSocketDebuggerUrl?: string
+  }>
+  const page =
+    pages.find((item) => item.type === "page" && item.webSocketDebuggerUrl) ??
+    pages.find((item) => item.webSocketDebuggerUrl)
   if (!page?.webSocketDebuggerUrl) throw new Error("No live browser page target found")
   return {
     url: page.url || "about:blank",
@@ -1022,13 +1085,18 @@ function normalizeBrowserURL(raw?: string) {
 
 function execText(command: string, args: string[], display?: string) {
   return new Promise<string>((resolve, reject) => {
-    execFile(command, args, { env: display ? { ...process.env, DISPLAY: display } : process.env }, (error, stdout, stderr) => {
-      if (error) {
-        reject(new Error(stderr || stdout || error.message))
-        return
-      }
-      resolve(stdout.toString())
-    })
+    execFile(
+      command,
+      args,
+      { env: display ? { ...process.env, DISPLAY: display } : process.env },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(stderr || stdout || error.message))
+          return
+        }
+        resolve(stdout.toString())
+      },
+    )
   })
 }
 
