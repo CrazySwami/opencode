@@ -862,6 +862,7 @@ function OpenDesignTabContent() {
       ? (status.data()?.proxyURL ?? "/experimental/open-design/proxy/")
       : (status.data()?.publicURL ?? "https://design.hustletogether.com"),
   )
+  const canEmbed = createMemo(() => !!status.data()?.proxyReady)
 
   const openExternal = () => window.open(launchUrl(), "_blank", "noopener,noreferrer")
 
@@ -883,6 +884,32 @@ function OpenDesignTabContent() {
           >
             Open in external browser
           </button>
+        </div>
+        <div class="min-h-[360px] overflow-hidden rounded-md border border-border-weaker-base bg-background-stronger">
+          <Show
+            when={canEmbed()}
+            fallback={
+              <div class="flex h-full min-h-[360px] items-center justify-center p-5 text-center">
+                <div class="max-w-md">
+                  <div class="mx-auto mb-3 flex h-9 w-9 items-center justify-center rounded-full bg-[#f97316]/15 text-11-medium text-[#f97316]">OD</div>
+                  <div class="text-14-medium text-text-strong">Open Design interactive view is held</div>
+                  <div class="mt-2 text-13-regular text-text-weak">
+                    The daemon is reachable, but the same-origin Open Design proxy is disabled until Cloudflare Access and token routing are approved.
+                  </div>
+                  <Show when={status.data()?.routeNote}>
+                    {(note) => <div class="mt-3 text-12-regular text-text-weak">{note()}</div>}
+                  </Show>
+                </div>
+              </div>
+            }
+          >
+            <iframe
+              src={launchUrl()}
+              title="Open Design"
+              class="block h-[520px] w-full border-0 bg-white"
+              allow="clipboard-read; clipboard-write"
+            />
+          </Show>
         </div>
         <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
           <div class="text-12-regular text-text-weak mb-2">Projects</div>
@@ -1841,7 +1868,7 @@ export function SessionSidePanel(props: {
     openTab(tab)
   }
 
-  const [browserLaunch, setBrowserLaunch] = createSignal<BrowserLaunchRequest | undefined>()
+  const [browserLaunch] = createSignal<BrowserLaunchRequest | undefined>()
   const [panelMenuOpen, setPanelMenuOpen] = createSignal(false)
   const [panelMenuPosition, setPanelMenuPosition] = createSignal({ left: 0, top: 0 })
 
@@ -1880,17 +1907,7 @@ export function SessionSidePanel(props: {
   })
 
   const launchOpenDesign = () => {
-    openPanelTab(PANEL_BROWSER_TAB)
-    void fetch("/experimental/open-design/status", { cache: "no-store" })
-      .then((response) => response.json())
-      .then((status) => {
-        const url =
-          status?.proxyReady && status?.proxyURL
-            ? status.proxyURL
-            : status?.publicURL || "https://design.hustletogether.com"
-        setBrowserLaunch({ url, nonce: Date.now() })
-      })
-      .catch(() => setBrowserLaunch({ url: "https://design.hustletogether.com", nonce: Date.now() }))
+    openPanelTab(PANEL_OPEN_DESIGN_TAB)
   }
 
   const [store, setStore] = createStore({
