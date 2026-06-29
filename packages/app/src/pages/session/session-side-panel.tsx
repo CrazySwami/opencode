@@ -104,13 +104,14 @@ function readFileBrowserState() {
       currentPath?: string
       mode?: "list" | "icons"
       query?: string
+      selectedPath?: string
     }
   } catch {
     return {}
   }
 }
 
-function writeFileBrowserState(state: { currentPath?: string; mode: "list" | "icons"; query: string }) {
+function writeFileBrowserState(state: { currentPath?: string; mode: "list" | "icons"; query: string; selectedPath?: string }) {
   if (typeof window === "undefined") return
   window.localStorage.setItem(FILE_BROWSER_STATE_KEY, JSON.stringify(state))
 }
@@ -1672,13 +1673,14 @@ function FileBrowserTabContent() {
   const [currentPath, setCurrentPath] = createSignal<string | undefined>(initialState.currentPath)
   const [mode, setMode] = createSignal<"list" | "icons">(initialState.mode ?? "list")
   const [query, setQuery] = createSignal(initialState.query ?? "")
+  const [selectedPath, setSelectedPath] = createSignal<string | undefined>(initialState.selectedPath)
   const [selected, setSelected] = createSignal<any>()
   const browser = createPolledJson<any>(
     () =>
       `/experimental/files/browse${currentPath() ? `?path=${encodeURIComponent(currentPath()!)}` : ""}`,
     12000,
   )
-  createEffect(() => writeFileBrowserState({ currentPath: currentPath(), mode: mode(), query: query() }))
+  createEffect(() => writeFileBrowserState({ currentPath: currentPath(), mode: mode(), query: query(), selectedPath: selectedPath() }))
 
   const opensInViewer = (entry: any) =>
     ["image", "video", "audio", "pdf", "html", "json", "text"].includes(entry.kind)
@@ -1689,10 +1691,16 @@ function FileBrowserTabContent() {
     void fileContext.load(entry.path)
   }
 
-  const openEntry = (entry: any) => {
+  const selectEntry = (entry: any) => {
     setSelected(entry)
+    setSelectedPath(entry.path)
+  }
+
+  const openEntry = (entry: any) => {
+    selectEntry(entry)
     if (entry.kind === "directory") {
       setSelected(undefined)
+      setSelectedPath(undefined)
       setCurrentPath(entry.path)
       return
     }
@@ -1713,6 +1721,18 @@ function FileBrowserTabContent() {
       `${entry.name} ${entry.kind} ${entry.contentType ?? ""}`.toLowerCase().includes(needle),
     )
   })
+
+  createEffect(() => {
+    const path = selectedPath()
+    if (!path) {
+      setSelected(undefined)
+      return
+    }
+    const match = entries().find((entry: any) => entry.path === path)
+    if (match) setSelected(match)
+    else if (browser.data()) setSelected(undefined)
+  })
+
   const details = createMemo(() => selected())
 
   return (
@@ -1729,6 +1749,7 @@ function FileBrowserTabContent() {
             disabled={!browser.data()?.parent}
             onClick={() => {
               setSelected(undefined)
+              setSelectedPath(undefined)
               setCurrentPath(browser.data()?.parent)
             }}
             aria-label="Parent folder"
@@ -1773,7 +1794,8 @@ function FileBrowserTabContent() {
                       <button
                         class="min-h-24 rounded-md bg-background-base p-2 text-left hover:bg-surface-raised-base-hover"
                         classList={{ "ring-1 ring-[#f97316]": selected()?.path === entry.path }}
-                        onClick={() => openEntry(entry)}
+                        onClick={() => selectEntry(entry)}
+                        onDblClick={() => openEntry(entry)}
                       >
                         <div class="mb-2 flex justify-center text-[#f97316]">
                           <Icon name={entry.kind === "directory" ? "folder" : entry.kind === "image" ? "photo" : "code"} size="large" />
@@ -1791,7 +1813,8 @@ function FileBrowserTabContent() {
                       <button
                         class="flex items-center gap-3 border-b border-border-weaker-base px-3 py-2 text-left last:border-b-0 hover:bg-surface-raised-base-hover"
                         classList={{ "bg-background-base": selected()?.path === entry.path }}
-                        onClick={() => openEntry(entry)}
+                        onClick={() => selectEntry(entry)}
+                        onDblClick={() => openEntry(entry)}
                       >
                         <span class="text-[#f97316]">
                           <Icon name={entry.kind === "directory" ? "folder" : entry.kind === "image" ? "photo" : "code"} size="small" />
@@ -1842,6 +1865,11 @@ function FileKindGlyph(props: { kind?: string; size?: "small" | "large" }) {
 
 function FileDetails(props: { file: any; onOpen?: () => void }) {
   const file = () => props.file
+  const actionLabel = createMemo(() => {
+    if (file().kind === "directory") return "Open folder"
+    if (["image", "video", "audio", "pdf", "html", "json", "text"].includes(file().kind)) return "Open viewer"
+    return "Open code file"
+  })
   const extension = createMemo(() => {
     const match = String(file().name ?? "").match(/\.([^.]+)$/)
     return match?.[1]?.toUpperCase() ?? "None"
@@ -1879,12 +1907,35 @@ function FileDetails(props: { file: any; onOpen?: () => void }) {
         </Show>
         <button
           class="h-8 rounded-md border border-border-weaker-base bg-background-stronger px-3 text-13-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-50"
-          disabled={file().kind === "directory"}
           onClick={() => props.onOpen?.()}
         >
-          Open viewer
+          {actionLabel()}
         </button>
       </div>
+    </div>
+  )
+}
+
+function FileViewerBar(props: { file: any; url?: string }) {
+  const file = () => props.file
+  return (
+    <div class="flex h-full min-w-0 items-center gap-2">
+      <span class="flex size-7 shrink-0 items-center justify-center rounded-md border border-border-weaker-base bg-background-stronger text-[#f97316]">
+        <FileKindGlyph kind={file()?.kind} size="small" />
+      </span>
+      <div class="min-w-0 flex-1">
+        <div class="truncate text-13-regular text-text-strong">{file()?.name ?? "Artifact"}</div>
+        <div class="truncate text-11-regular text-text-weak">
+          {[file()?.contentType ?? file()?.kind, formatBytes(file()?.size)].filter(Boolean).join(" · ")}
+        </div>
+      </div>
+      <Show when={props.url}>
+        {(href) => (
+          <a class="shrink-0 rounded-md px-2 py-1 text-12-regular text-text-weak hover:bg-surface-base-hover hover:text-text-strong" href={href()} target="_blank" rel="noreferrer">
+            Open raw
+          </a>
+        )}
+      </Show>
     </div>
   )
 }
@@ -1897,17 +1948,7 @@ function FilePreview(props: { file: any; showHeader?: boolean }) {
     <div class="flex h-full min-h-0 flex-col">
       <Show when={showHeader()}>
         <div class="flex shrink-0 items-center justify-between gap-3 border-b border-border-weaker-base px-3 py-2">
-          <div class="flex min-w-0 items-center gap-2">
-            <span class="text-[#f97316]"><FileKindGlyph kind={file().kind} size="small" /></span>
-            <div class="min-w-0 truncate text-13-regular text-text-strong">{file().name}</div>
-          </div>
-          <Show when={url()}>
-            {(href) => (
-              <a class="shrink-0 text-12-regular text-text-weak hover:text-text-strong" href={href()} target="_blank" rel="noreferrer">
-                Open raw
-              </a>
-            )}
-          </Show>
+          <FileViewerBar file={file()} url={url()} />
         </div>
       </Show>
       <div class="min-h-0 flex-1 overflow-auto">
@@ -2002,19 +2043,7 @@ function ArtifactViewerTabContent(props: { tab: string }) {
       headerClass="h-10 shrink-0 flex items-center justify-between gap-3 px-3 border-b border-border-weaker-base bg-background-base"
       bodyClass="flex-1 min-h-0 overflow-hidden"
       toolbar={
-        <>
-          <div class="flex min-w-0 items-center gap-2">
-            <span class="text-[#f97316]"><FileKindGlyph kind={file()?.kind} size="small" /></span>
-            <div class="min-w-0 truncate text-13-regular text-text-strong">{file()?.name ?? "Artifact"}</div>
-          </div>
-          <Show when={url()}>
-            {(href) => (
-              <a class="shrink-0 text-12-regular text-text-weak hover:text-text-strong" href={href()} target="_blank" rel="noreferrer">
-                Open raw
-              </a>
-            )}
-          </Show>
-        </>
+        <FileViewerBar file={file()} url={url()} />
       }
     >
       <Show

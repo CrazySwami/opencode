@@ -135,6 +135,8 @@ function fileKind(contentType: string) {
   if (contentType.startsWith("video/")) return "video"
   if (contentType.startsWith("audio/")) return "audio"
   if (contentType === "application/pdf") return "pdf"
-  if (contentType.startsWith("text/") || contentType === "application/json") return "text"
+  if (contentType === "text/html") return "html"
+  if (contentType === "application/json") return "json"
+  if (contentType.startsWith("text/")) return "text"
   return "file"
 }
