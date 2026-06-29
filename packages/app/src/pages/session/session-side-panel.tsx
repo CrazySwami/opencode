@@ -273,6 +273,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
   const [browserBusy, setBrowserBusy] = createSignal(false)
   const [browserError, setBrowserError] = createSignal<string | undefined>()
   const [previewReady, setPreviewReady] = createSignal(false)
+  const [useNoVNC, setUseNoVNC] = createSignal(false)
   const [annotating, setAnnotating] = createSignal(false)
   const [drawing, setDrawing] = createSignal(false)
   const [lastArtifact, setLastArtifact] = createSignal<{ url: string; name: string } | undefined>()
@@ -282,6 +283,8 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
 
   const streamSrc = createMemo(() => `${status().streamURL ?? "/experimental/browser/live/stream"}?t=${streamKey()}`)
   const interactiveUrl = createMemo(() => {
+    if (!useNoVNC()) return undefined
+
     const proxiedURL = status().proxiedLiveURL
     const liveURL = status().browserUse?.liveURL
 
@@ -312,7 +315,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
       return undefined
     }
   })
-  const displayUrl = createMemo(() => status().currentURL || browserUrl() || interactiveUrl() || "about:blank")
+  const displayUrl = createMemo(() => status().currentURL || browserUrl() || "about:blank")
 
   const refreshStatus = async () => {
     try {
@@ -583,7 +586,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
             <IconButton icon="enter" variant="ghost" class="h-7 w-7 shrink-0" disabled={browserBusy()} onClick={submitBrowserUrl} aria-label="Open URL" />
           </form>
           <div class="hidden min-w-0 items-center gap-1 md:flex">
-            <span class="max-w-40 truncate px-1 text-11-regular text-text-weak">{browserBusy() ? "working" : interactiveUrl() && !annotating() ? "interactive" : previewReady() ? "live" : "connecting"}</span>
+            <span class="max-w-40 truncate px-1 text-11-regular text-text-weak">{browserBusy() ? "working" : useNoVNC() && interactiveUrl() && !annotating() ? "noVNC" : previewReady() ? "live" : "connecting"}</span>
             <span
               class="h-2 w-2 shrink-0 rounded-full"
               classList={{
@@ -645,7 +648,19 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
                 <Show when={status().browserUse?.health?.browserUseVersion}>{(version) => <span>v{version()}</span>}</Show>
                 <Show when={status().browserUse?.health?.model}>{(model) => <span>{model()}</span>}</Show>
                 <Show when={status().browserUse?.activeSessions !== undefined}><span>{status().browserUse?.activeSessions} sessions</span></Show>
-                <Show when={status().browserUse?.liveURL}>{(url) => <button class="ml-auto rounded px-2 py-0.5 text-text-strong hover:bg-surface-raised-base-hover" type="button" onClick={() => window.open(url(), "_blank", "noopener,noreferrer")}>Open noVNC</button>}</Show>
+                <Show when={status().proxiedLiveURL || status().browserUse?.liveURL}>
+                  <button
+                    class="ml-auto rounded px-2 py-0.5 text-text-strong hover:bg-surface-raised-base-hover"
+                    type="button"
+                    onClick={() => {
+                      setPreviewReady(false)
+                      setUseNoVNC(!useNoVNC())
+                    }}
+                  >
+                    {useNoVNC() ? "Use stream" : "Use noVNC"}
+                  </button>
+                </Show>
+                <Show when={status().browserUse?.liveURL}>{(url) => <button class="rounded px-2 py-0.5 text-text-strong hover:bg-surface-raised-base-hover" type="button" onClick={() => window.open(url(), "_blank", "noopener,noreferrer")}>Open noVNC</button>}</Show>
               </div>
               <Show when={browserError()}>{(error) => <div class="text-12-regular text-text-weak break-all">{error()}</div>}</Show>
               <Show when={lastArtifact()}>{(artifact) => <div class="text-12-regular text-text-weak">Saved <a class="text-text-strong underline" href={artifact().url} target="_blank" rel="noreferrer">{artifact().name}</a></div>}</Show>
