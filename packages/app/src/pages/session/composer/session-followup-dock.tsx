@@ -10,6 +10,8 @@ export function SessionFollowupDock(props: {
   sending?: string
   onSend: (id: string) => void
   onEdit: (id: string) => void
+  onMove: (id: string, direction: -1 | 1) => void
+  onRemove: (id: string) => void
 }) {
   const language = useLanguage()
   const [store, setStore] = createStore({
@@ -78,9 +80,27 @@ export function SessionFollowupDock(props: {
       <Show when={!store.collapsed}>
         <div class="px-3 pb-7 flex flex-col gap-1.5 max-h-42 overflow-y-auto no-scrollbar">
           <For each={props.items}>
-            {(item) => (
+            {(item, index) => (
               <div class="flex items-center gap-2 min-w-0 py-1">
                 <span class="min-w-0 flex-1 truncate text-13-regular text-text-strong">{item.text}</span>
+                <IconButton
+                  icon="arrow-up"
+                  size="normal"
+                  variant="ghost"
+                  class="shrink-0"
+                  disabled={!!props.sending || index() === 0}
+                  onClick={() => props.onMove(item.id, -1)}
+                  aria-label="Move queued message up"
+                />
+                <IconButton
+                  icon="arrow-down-to-line"
+                  size="normal"
+                  variant="ghost"
+                  class="shrink-0"
+                  disabled={!!props.sending || index() === props.items.length - 1}
+                  onClick={() => props.onMove(item.id, 1)}
+                  aria-label="Move queued message down"
+                />
                 <Button
                   size="small"
                   variant="secondary"
@@ -99,6 +119,15 @@ export function SessionFollowupDock(props: {
                 >
                   {language.t("session.followupDock.edit")}
                 </Button>
+                <IconButton
+                  icon="trash"
+                  size="normal"
+                  variant="ghost"
+                  class="shrink-0"
+                  disabled={!!props.sending}
+                  onClick={() => props.onRemove(item.id)}
+                  aria-label="Remove queued message"
+                />
               </div>
             )}
           </For>

@@ -148,6 +148,11 @@ function PanelMenuItem(props: { tab: string; onSelect: () => void }) {
 function SessionTerminalTab() {
   const terminal = useTerminal()
   const language = useLanguage()
+  const { view } = useSessionLayout()
+
+  createEffect(() => {
+    if (view().terminal.opened()) view().terminal.close()
+  })
 
   createEffect(() => {
     if (!terminal.ready()) return
@@ -227,14 +232,19 @@ function SessionTerminalTab() {
   )
 }
 
-function BrowserTabContent(props: { sessionID?: string }) {
+type BrowserLaunchRequest = { url: string; nonce: number }
+
+function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRequest }) {
   const sync = useSync()
   const [previewTick, setPreviewTick] = createSignal(Date.now())
   const [previewReady, setPreviewReady] = createSignal(false)
   const [browserUrl, setBrowserUrl] = createSignal("")
+  const [browserText, setBrowserText] = createSignal("")
+  const [activeUrl, setActiveUrl] = createSignal("")
   const [browserBusy, setBrowserBusy] = createSignal(false)
   const [browserError, setBrowserError] = createSignal<string | undefined>()
   const [browserActive, setBrowserActive] = createSignal(false)
+  let consumedLaunch = 0
 
   const parts = createMemo(() => {
     const values = Object.values(sync().data.part).flatMap((items) => (Array.isArray(items) ? items : []))
@@ -257,6 +267,7 @@ function BrowserTabContent(props: { sessionID?: string }) {
       .map((part: any) => part?.state?.input?.url)
       .find((value): value is string => typeof value === "string" && value.length > 0)
   })
+  const displayUrl = createMemo(() => activeUrl() || latestUrl())
 
   const metadata = createMemo(() => latest()?.state?.metadata ?? {})
   const input = createMemo(() => latest()?.state?.input ?? {})
@@ -276,7 +287,7 @@ function BrowserTabContent(props: { sessionID?: string }) {
   })
 
   const runBrowserAction = async (action: string, extra: Record<string, unknown> = {}) => {
-    if (!props.sessionID || browserBusy()) return
+    if (!props.sessionID || browserBusy()) return false
     setBrowserBusy(true)
     setBrowserError(undefined)
     try {
@@ -288,10 +299,16 @@ function BrowserTabContent(props: { sessionID?: string }) {
       const body = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(body?.error ?? "Browser action failed")
       setBrowserActive(true)
+      if (typeof extra.url === "string") {
+        setActiveUrl(extra.url)
+        setBrowserUrl(extra.url)
+      }
       setPreviewReady(false)
       setPreviewTick(Date.now())
+      return true
     } catch (error) {
       setBrowserError(error instanceof Error ? error.message : String(error))
+      return false
     } finally {
       setBrowserBusy(false)
     }
@@ -303,10 +320,72 @@ function BrowserTabContent(props: { sessionID?: string }) {
     void runBrowserAction(latest() || browserActive() ? "goto" : "open", { url })
   }
 
+  const sendBrowserText = () => {
+    const text = browserText()
+    if (!text) return
+    setBrowserText("")
+    void runBrowserAction("type", { text })
+  }
+
+  const browserKey = (key: string) => {
+    const aliases: Record<string, string> = {
+      ArrowLeft: "arrowleft",
+      ArrowRight: "arrowright",
+      ArrowUp: "arrowup",
+      ArrowDown: "arrowdown",
+      Backspace: "backspace",
+      Delete: "delete",
+      Enter: "enter",
+      Escape: "escape",
+      Tab: "tab",
+    }
+    return aliases[key] ?? key
+  }
+
+  const handleViewportClick: JSX.EventHandler<HTMLImageElement, MouseEvent> = (event) => {
+    const image = event.currentTarget
+    if (!image.naturalWidth || !image.naturalHeight) return
+    const rect = image.getBoundingClientRect()
+    const x = Math.round(((event.clientX - rect.left) / rect.width) * image.naturalWidth)
+    const y = Math.round(((event.clientY - rect.top) / rect.height) * image.naturalHeight)
+    void runBrowserAction("click-point", { x, y })
+  }
+
+  const handleViewportWheel: JSX.EventHandler<HTMLDivElement, WheelEvent> = (event) => {
+    if (!browserActive() && !latest()) return
+    event.preventDefault()
+    void runBrowserAction("scroll", { deltaX: event.deltaX, deltaY: event.deltaY })
+  }
+
+  const handleViewportKeyDown: JSX.EventHandler<HTMLDivElement, KeyboardEvent> = (event) => {
+    if (event.metaKey || event.ctrlKey || event.altKey || browserBusy()) return
+    if (!browserActive() && !latest()) return
+
+    if (event.key.length === 1) {
+      event.preventDefault()
+      void runBrowserAction("type", { text: event.key })
+      return
+    }
+
+    const allowed = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Backspace", "Delete", "Enter", "Escape", "Tab"])
+    if (!allowed.has(event.key)) return
+    event.preventDefault()
+    void runBrowserAction("press", { text: browserKey(event.key) })
+  }
+
   createEffect(() => {
     const url = latestUrl()
     if (!url || browserUrl()) return
     setBrowserUrl(url)
+  })
+
+  createEffect(() => {
+    const launch = props.launch
+    if (!launch?.url || !props.sessionID) return
+    if (launch.nonce === consumedLaunch) return
+    consumedLaunch = launch.nonce
+    setBrowserUrl(launch.url)
+    void runBrowserAction(latest() || browserActive() ? "goto" : "open", { url: launch.url })
   })
 
   createEffect(() => {
@@ -380,26 +459,64 @@ function BrowserTabContent(props: { sessionID?: string }) {
               onClick={() => void runBrowserAction("screenshot")}
               aria-label="Screenshot"
             />
+            <IconButton
+              icon="window-cursor"
+              variant="ghost"
+              class="h-7 w-7"
+              disabled={!displayUrl()}
+              onClick={() => {
+                const url = displayUrl()
+                if (url) window.open(url, "_blank", "noopener,noreferrer")
+              }}
+              aria-label="Open in external browser"
+            />
           </div>
+          <form
+            class="flex items-center gap-2"
+            onSubmit={(event) => {
+              event.preventDefault()
+              sendBrowserText()
+            }}
+          >
+            <input
+              value={browserText()}
+              onInput={(event) => setBrowserText(event.currentTarget.value)}
+              class="h-8 min-w-0 flex-1 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
+              placeholder="Type into focused page"
+            />
+            <IconButton
+              icon="enter"
+              variant="ghost"
+              class="h-8 w-8"
+              disabled={browserBusy() || !browserText()}
+              onClick={sendBrowserText}
+              aria-label="Type into page"
+            />
+          </form>
           <Show when={browserError()}>
             {(error) => <div class="text-12-regular text-text-weak break-all">{error()}</div>}
           </Show>
         </div>
         <Switch>
-          <Match when={latest()}>
+          <Match when={latest() || browserActive()}>
             <div class="flex flex-col gap-3">
               <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
                 <div class="text-12-regular text-text-weak">Current URL</div>
-                <div class="text-14-regular text-text-strong break-all">{latestUrl() ?? "No URL recorded"}</div>
+                <div class="text-14-regular text-text-strong break-all">{displayUrl() ?? "No URL recorded"}</div>
               </div>
               <Show when={liveScreenshot()}>
                 {(src) => (
                   <div class="overflow-hidden rounded-md border border-border-weaker-base bg-background-stronger">
                     <div class="flex items-center justify-between border-b border-border-weaker-base px-3 py-2">
-                      <div class="text-12-regular text-text-weak">Live Chromium viewport</div>
-                      <div class="text-11-regular text-text-weak">{previewReady() ? "refreshing" : "connecting"}</div>
+                      <div class="text-12-regular text-text-weak">Interactive Chromium viewport</div>
+                      <div class="text-11-regular text-text-weak">{browserBusy() ? "working" : previewReady() ? "live" : "connecting"}</div>
                     </div>
-                    <div class="relative min-h-64">
+                    <div
+                      class="relative min-h-64 outline-none"
+                      tabIndex={0}
+                      onWheel={handleViewportWheel}
+                      onKeyDown={handleViewportKeyDown}
+                    >
                       <Show when={!previewReady()}>
                         <div class="absolute inset-0 flex items-center justify-center text-center text-12-regular text-text-weak">
                           Waiting for the session browser screenshot...
@@ -408,8 +525,9 @@ function BrowserTabContent(props: { sessionID?: string }) {
                       <img
                         src={src()}
                         alt="Live Chromium browser viewport"
-                        class="block w-full h-auto"
+                        class="block w-full h-auto cursor-crosshair select-none"
                         classList={{ invisible: !previewReady() }}
+                        onClick={handleViewportClick}
                         onLoad={() => setPreviewReady(true)}
                         onError={() => setPreviewReady(false)}
                       />
@@ -568,6 +686,9 @@ function MacViewTabContent() {
       <div class="flex flex-col gap-3">
         <StatusRow label="Mode" value={status.data()?.mode ?? "read-only"} />
         <StatusRow label="Feed" value={status.data()?.configured ? "configured" : "not configured"} />
+        <Show when={status.data()?.feedURL}>
+          {(feedURL) => <StatusRow label="Feed URL" value={feedURL()} />}
+        </Show>
         <StatusRow label="Health" value={status.data()?.health?.ok ? "healthy" : status.data()?.note} />
         <Show when={status.data()?.configured}>
           <div class="overflow-hidden rounded-md border border-border-weaker-base bg-background-stronger">
@@ -578,8 +699,19 @@ function MacViewTabContent() {
             />
           </div>
         </Show>
+        <Show when={status.data()?.feedURL}>
+          {(feedURL) => (
+            <button
+              class="h-8 w-fit px-3 rounded-md border border-border-weaker-base bg-background-stronger text-13-regular text-text-strong"
+              onClick={() => window.open(feedURL(), "_blank", "noopener,noreferrer")}
+            >
+              Open feed in external browser
+            </button>
+          )}
+        </Show>
         <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">
-          Mac View is pixels only. Mac control stays routed through the existing Computer Use approval path.
+          Mac View needs the Mac ScreenCaptureKit helper running and OPENCODE_MAC_VIEW_URL set on this OpenCode service.
+          Control stays routed through the existing Computer Use approval path.
         </div>
       </div>
     </TabChrome>
@@ -1145,8 +1277,25 @@ export function SessionSidePanel(props: {
 
   const openPanelTab = (tab: string) => {
     openReviewPanel()
+    if (tab === PANEL_TERMINAL_TAB && view().terminal.opened()) view().terminal.close()
     tabs().open(tab)
     tabs().setActive(tab)
+  }
+
+  const [browserLaunch, setBrowserLaunch] = createSignal<BrowserLaunchRequest | undefined>()
+
+  const launchOpenDesign = () => {
+    openPanelTab(PANEL_BROWSER_TAB)
+    void fetch("/experimental/open-design/status", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((status) => {
+        const url =
+          status?.proxyReady && status?.proxyURL
+            ? status.proxyURL
+            : status?.publicURL || "https://design.hustletogether.com"
+        setBrowserLaunch({ url, nonce: Date.now() })
+      })
+      .catch(() => setBrowserLaunch({ url: "https://design.hustletogether.com", nonce: Date.now() }))
   }
 
   const [store, setStore] = createStore({
@@ -1304,7 +1453,7 @@ export function SessionSidePanel(props: {
                                 </DropdownMenu.Item>
                                 <PanelMenuItem tab={PANEL_TERMINAL_TAB} onSelect={() => openPanelTab(PANEL_TERMINAL_TAB)} />
                                 <PanelMenuItem tab={PANEL_BROWSER_TAB} onSelect={() => openPanelTab(PANEL_BROWSER_TAB)} />
-                                <PanelMenuItem tab={PANEL_OPEN_DESIGN_TAB} onSelect={() => openPanelTab(PANEL_OPEN_DESIGN_TAB)} />
+                                <PanelMenuItem tab={PANEL_OPEN_DESIGN_TAB} onSelect={launchOpenDesign} />
                                 <PanelMenuItem tab={PANEL_MAC_VIEW_TAB} onSelect={() => openPanelTab(PANEL_MAC_VIEW_TAB)} />
                                 <PanelMenuItem tab={PANEL_ACCOUNTS_TAB} onSelect={() => openPanelTab(PANEL_ACCOUNTS_TAB)} />
                                 <PanelMenuItem tab={PANEL_RESOURCES_TAB} onSelect={() => openPanelTab(PANEL_RESOURCES_TAB)} />
@@ -1358,7 +1507,7 @@ export function SessionSidePanel(props: {
 
                     <Tabs.Content value={PANEL_BROWSER_TAB} class="flex flex-col h-full overflow-hidden contain-strict">
                       <Show when={activePanelTab() === PANEL_BROWSER_TAB}>
-                        <BrowserTabContent sessionID={params.id} />
+                        <BrowserTabContent sessionID={params.id} launch={browserLaunch()} />
                       </Show>
                     </Tabs.Content>
 

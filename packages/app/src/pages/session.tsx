@@ -1399,6 +1399,32 @@ export default function Page() {
     })
   }
 
+  const moveFollowup = (id: string, direction: -1 | 1) => {
+    const sessionID = params.id
+    if (!sessionID) return
+    if (followupBusy(sessionID)) return
+
+    setFollowup("items", sessionID, (items) => {
+      const next = [...(items ?? [])]
+      const index = next.findIndex((entry) => entry.id === id)
+      const target = index + direction
+      if (index < 0 || target < 0 || target >= next.length) return items
+      const [item] = next.splice(index, 1)
+      if (!item) return items
+      next.splice(target, 0, item)
+      return next
+    })
+  }
+
+  const removeFollowup = (id: string) => {
+    const sessionID = params.id
+    if (!sessionID) return
+    if (followupBusy(sessionID)) return
+
+    setFollowup("items", sessionID, (items) => (items ?? []).filter((entry) => entry.id !== id))
+    setFollowup("failed", sessionID, (value) => (value === id ? undefined : value))
+  }
+
   const clearFollowupEdit = () => {
     const id = params.id
     if (!id) return
@@ -1598,6 +1624,8 @@ export default function Page() {
               sending: sendingFollowup(),
               onSend: (id) => void sendFollowup(params.id!, id, { manual: true }),
               onEdit: editFollowup,
+              onMove: moveFollowup,
+              onRemove: removeFollowup,
             }
           : undefined,
       revert: () =>
