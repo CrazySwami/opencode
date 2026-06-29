@@ -427,15 +427,19 @@ const fileViewerRoute = HttpRouter.use((router) =>
         if (!fileViewerAllowed(directory))
           return HttpServerResponse.text("Directory is outside allowed roots", { status: 403 })
 
-        const stat = statSync(directory, { throwIfNoEntry: false })
+        const stat = safeStat(directory)
         if (!stat?.isDirectory()) return HttpServerResponse.text("Directory not found", { status: 404 })
 
+        const skipped: Array<{ name: string; reason: string }> = []
         const entries = readdirSync(directory, { withFileTypes: true })
           .flatMap((entry) => {
             if (entry.name === "." || entry.name === "..") return []
             const file = path.join(directory, entry.name)
-            const fileStat = statSync(file, { throwIfNoEntry: false })
-            if (!fileStat) return []
+            const fileStat = safeStat(file)
+            if (!fileStat) {
+              skipped.push({ name: entry.name, reason: "unreadable" })
+              return []
+            }
             const isDirectory = entry.isDirectory()
             const contentType = isDirectory ? null : contentTypeForFile(file)
             return [
@@ -463,6 +467,7 @@ const fileViewerRoute = HttpRouter.use((router) =>
           parent: parentDirectory(directory),
           roots: fileViewerRoots(),
           entries,
+          skipped,
         })
       }),
     )
@@ -478,7 +483,7 @@ const fileViewerRoute = HttpRouter.use((router) =>
         if (!fileViewerAllowed(file))
           return HttpServerResponse.text("File is outside allowed viewer roots", { status: 403 })
 
-        const stat = statSync(file, { throwIfNoEntry: false })
+        const stat = safeStat(file)
         if (!stat?.isFile()) return HttpServerResponse.text("File not found", { status: 404 })
 
         return HttpServerResponse.setHeader(
@@ -549,6 +554,10 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
           artifactRootConfigured: !!process.env.OPENCODE_BROWSER_HOME,
         }),
       ),
+    )
+
+    yield* router.add("GET", "/experimental/workspace-suite/environments", () =>
+      Effect.promise(async () => HttpServerResponse.jsonUnsafe(await liveOnlyEnvironmentStatus())),
     )
 
     yield* router.add("GET", "/experimental/resources/status", (request) =>
@@ -709,6 +718,14 @@ function fileViewerRoots() {
 function fileViewerAllowed(file: string) {
   const resolved = path.resolve(file)
   return fileViewerRoots().some((root) => resolved === root || resolved.startsWith(root + path.sep))
+}
+
+function safeStat(file: string) {
+  try {
+    return statSync(file, { throwIfNoEntry: false })
+  } catch {
+    return undefined
+  }
 }
 
 function fileBrowserDefaultPath() {
@@ -1147,6 +1164,162 @@ function normalizeBrowserURL(raw?: string) {
   return `https://www.google.com/search?q=${encodeURIComponent(value)}`
 }
 
+async function liveOnlyEnvironmentStatus() {
+  const hostname = process.env.OPENCODE_HOSTNAME || "code.hustletogether.com"
+  const releaseRoot = "/opt/opencode-workspace-suite/releases"
+  const currentSymlink = "/opt/opencode-workspace-suite/current"
+  const currentRelease = await execText("readlink", ["-f", currentSymlink]).then((value) => value.trim()).catch(() => null)
+  const releases = latestWorkspaceSuiteReleases(releaseRoot)
+  const [opencodeRepo, experimentsRepo] = await Promise.all([
+    gitRepositoryStatus({
+      label: "OpenCode workspace suite",
+      path: "/home/dev/repos/opencode",
+      pushRemote: "fork",
+    }),
+    gitRepositoryStatus({
+      label: "LLM-Experiments",
+      path: "/home/dev/repos/LLM-Experiments",
+      pushRemote: "origin",
+    }),
+  ])
+
+  const appPasswordConfigured = Boolean(process.env.OPENCODE_SERVER_PASSWORD)
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    mode: "live-only",
+    desiredInvariant: "Only code.hustletogether.com should be the public OpenCode entrypoint.",
+    routes: {
+      liveURL: `https://${hostname}/`,
+      healthURL: `https://${hostname}/__health`,
+      resetURL: `https://${hostname}/__reset`,
+      internalOpenCode: "127.0.0.1:8299",
+      publicProxy: "0.0.0.0:8300",
+      disabledDirectRuntime: "0.0.0.0:8310",
+      legacyHostname: "opencode.hustletogether.com",
+      legacyHostnameState:
+        "Removed from active CT100 and Proxmox Cloudflare tunnel configs; external DNS/Access object may still exist.",
+    },
+    release: {
+      currentSymlink,
+      currentRelease,
+      releaseRoot,
+      releases,
+      rollbackCandidates: releases.filter((item) => item.path !== currentRelease).slice(0, 5),
+    },
+    access: {
+      appPasswordConfigured,
+      status: appPasswordConfigured ? "app_password_configured" : "approval_required",
+      warning: appPasswordConfigured
+        ? null
+        : "OPENCODE_SERVER_PASSWORD is not set in the running service environment; set password or Cloudflare Access policy before exposing more powerful tools.",
+      secretValuesExposed: false,
+    },
+    git: {
+      opencode: opencodeRepo,
+      experiments: experimentsRepo,
+    },
+    gates: [
+      {
+        label: "GitHub push",
+        status: opencodeRepo.pushReady && experimentsRepo.pushReady ? "ready" : "blocked",
+        detail: "Push only after the remotes/auth path is valid and Alfonso approves the external mutation.",
+      },
+      {
+        label: "Access boundary",
+        status: appPasswordConfigured ? "ready" : "approval_required",
+        detail: "Changing OPENCODE_SERVER_PASSWORD, Cloudflare Access, or DNS remains approval-gated.",
+      },
+      {
+        label: "Rollback",
+        status: releases.length > 1 ? "available" : "limited",
+        detail: "Rollback candidates are previous release directories under /opt/opencode-workspace-suite/releases.",
+      },
+    ],
+  }
+}
+
+function latestWorkspaceSuiteReleases(releaseRoot: string) {
+  const rootStat = statSync(releaseRoot, { throwIfNoEntry: false })
+  if (!rootStat?.isDirectory()) return []
+  return readdirSync(releaseRoot, { withFileTypes: true })
+    .flatMap((entry) => {
+      if (!entry.isDirectory()) return []
+      const releasePath = path.join(releaseRoot, entry.name)
+      const stat = statSync(releasePath, { throwIfNoEntry: false })
+      if (!stat?.isDirectory()) return []
+      return [
+        {
+          name: entry.name,
+          path: releasePath,
+          updatedAt: stat.mtime.toISOString(),
+        },
+      ]
+    })
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .slice(0, 12)
+}
+
+async function gitRepositoryStatus(input: { label: string; path: string; pushRemote: string }) {
+  if (!existsSync(input.path)) {
+    return {
+      label: input.label,
+      path: input.path,
+      exists: false,
+      pushReady: false,
+      error: "Repository path is missing",
+    }
+  }
+
+  const [branch, commit, status, remotes, remoteProbe] = await Promise.all([
+    execTextIn("git", ["rev-parse", "--abbrev-ref", "HEAD"], input.path).catch((error: unknown) => errorMessage(error)),
+    execTextIn("git", ["rev-parse", "--short", "HEAD"], input.path).catch((error: unknown) => errorMessage(error)),
+    execTextIn("git", ["status", "--short"], input.path).catch((error: unknown) => errorMessage(error)),
+    execTextIn("git", ["remote", "-v"], input.path).catch((error: unknown) => errorMessage(error)),
+    probeGitRemote(input.path, input.pushRemote),
+  ])
+
+  return {
+    label: input.label,
+    path: input.path,
+    exists: true,
+    branch: branch.trim(),
+    commit: commit.trim(),
+    dirtyCount: status.trim() ? status.trim().split("\n").length : 0,
+    dirtyPreview: status.trim().split("\n").filter(Boolean).slice(0, 8),
+    remotes: remotes
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => line.replace(/\s+/g, " ")),
+    pushRemote: input.pushRemote,
+    pushReady: remoteProbe.ok,
+    remoteProbe,
+  }
+}
+
+async function probeGitRemote(cwd: string, remote: string) {
+  try {
+    const output = await execTextIn("git", ["ls-remote", "--heads", remote], cwd, 10000)
+    return {
+      ok: true,
+      remote,
+      headsVisible: output
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .slice(0, 5)
+        .map((line) => line.replace(/\s+/g, " ")),
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      remote,
+      error: errorMessage(error),
+    }
+  }
+}
+
 function execText(command: string, args: string[], display?: string) {
   return new Promise<string>((resolve, reject) => {
     execFile(
@@ -1162,6 +1335,22 @@ function execText(command: string, args: string[], display?: string) {
       },
     )
   })
+}
+
+function execTextIn(command: string, args: string[], cwd: string, timeout = 8000) {
+  return new Promise<string>((resolve, reject) => {
+    execFile(command, args, { cwd, env: process.env, timeout, maxBuffer: 512_000 }, (error, stdout, stderr) => {
+      if (error) {
+        reject(new Error((stderr || stdout || error.message).toString().trim()))
+        return
+      }
+      resolve(stdout.toString())
+    })
+  })
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error)
 }
 
 function delay(ms: number) {

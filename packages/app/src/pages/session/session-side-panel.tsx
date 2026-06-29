@@ -44,6 +44,7 @@ const PANEL_BROWSER_TAB = "panel://browser"
 const PANEL_OPEN_DESIGN_TAB = "panel://open-design"
 const PANEL_MAC_VIEW_TAB = "panel://mac-view"
 const PANEL_ACCOUNTS_TAB = "panel://accounts"
+const PANEL_ENVIRONMENT_TAB = "panel://environment"
 const PANEL_RESOURCES_TAB = "panel://resources"
 const PANEL_ARTIFACTS_TAB = "panel://artifacts"
 const PANEL_FILE_BROWSER_TAB = "panel://file-browser"
@@ -54,6 +55,7 @@ const PANEL_TABS = new Set([
   PANEL_OPEN_DESIGN_TAB,
   PANEL_MAC_VIEW_TAB,
   PANEL_ACCOUNTS_TAB,
+  PANEL_ENVIRONMENT_TAB,
   PANEL_RESOURCES_TAB,
   PANEL_ARTIFACTS_TAB,
   PANEL_FILE_BROWSER_TAB,
@@ -74,6 +76,7 @@ function panelTabLabel(tab: string) {
   if (tab === PANEL_OPEN_DESIGN_TAB) return "Open Design"
   if (tab === PANEL_MAC_VIEW_TAB) return "Mac View"
   if (tab === PANEL_ACCOUNTS_TAB) return "Accounts"
+  if (tab === PANEL_ENVIRONMENT_TAB) return "Environment"
   if (tab === PANEL_RESOURCES_TAB) return "Resources"
   if (tab === PANEL_ARTIFACTS_TAB) return "Artifacts"
   if (tab === PANEL_FILE_BROWSER_TAB) return "File Browser"
@@ -87,6 +90,7 @@ function panelTabIcon(tab: string) {
   if (tab === PANEL_OPEN_DESIGN_TAB) return <span class="text-[10px] leading-none font-semibold tracking-[0]">OD</span>
   if (tab === PANEL_MAC_VIEW_TAB) return <Icon name="eye" size="small" />
   if (tab === PANEL_ACCOUNTS_TAB) return <Icon name="providers" size="small" />
+  if (tab === PANEL_ENVIRONMENT_TAB) return <span class="text-[9px] leading-none font-semibold tracking-[0]">ENV</span>
   if (tab === PANEL_RESOURCES_TAB) return <span class="text-[9px] leading-none font-semibold tracking-[0]">CPU</span>
   if (tab === PANEL_ARTIFACTS_TAB) return <Icon name="photo" size="small" />
   if (tab === PANEL_FILE_BROWSER_TAB) return <Icon name="folder" size="small" />
@@ -968,6 +972,188 @@ function AccountsTabContent() {
   )
 }
 
+function EnvironmentTabContent() {
+  const environment = createPolledJson<any>(() => "/experimental/workspace-suite/environments", 15000)
+  const data = () => environment.data()
+
+  return (
+    <TabChrome title="Environment" iconTab={PANEL_ENVIRONMENT_TAB} onRefresh={environment.refresh}>
+      <div class="flex flex-col gap-3">
+        <Show when={environment.error()}>
+          {(error) => (
+            <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">
+              {error()}
+            </div>
+          )}
+        </Show>
+
+        <div class="grid gap-3 xl:grid-cols-3">
+          <EnvironmentSummaryCard
+            label="Mode"
+            value={data()?.mode ?? "checking"}
+            detail={data()?.desiredInvariant}
+            tone={data()?.mode === "live-only" ? "ready" : "warn"}
+          />
+          <EnvironmentSummaryCard
+            label="Access"
+            value={data()?.access?.status ?? "checking"}
+            detail={data()?.access?.warning ?? "App password is configured."}
+            tone={data()?.access?.appPasswordConfigured ? "ready" : "warn"}
+          />
+          <EnvironmentSummaryCard
+            label="GitHub"
+            value={data()?.gates?.find((gate: any) => gate.label === "GitHub push")?.status ?? "checking"}
+            detail={data()?.gates?.find((gate: any) => gate.label === "GitHub push")?.detail}
+            tone={data()?.gates?.find((gate: any) => gate.label === "GitHub push")?.status === "ready" ? "ready" : "blocked"}
+          />
+        </div>
+
+        <div class="grid gap-3 xl:grid-cols-2">
+          <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+            <div class="mb-2 flex items-center justify-between gap-3">
+              <div class="text-13-medium text-text-strong">Live Route</div>
+              <EnvironmentPill tone="ready" label="single live" />
+            </div>
+            <div class="grid gap-2 sm:grid-cols-2">
+              <EnvironmentInfoRow label="Public URL" value={data()?.routes?.liveURL} />
+              <EnvironmentInfoRow label="Health" value={data()?.routes?.healthURL} />
+              <EnvironmentInfoRow label="Proxy" value={data()?.routes?.publicProxy} />
+              <EnvironmentInfoRow label="Internal" value={data()?.routes?.internalOpenCode} />
+              <EnvironmentInfoRow label="Direct 8310" value={data()?.routes?.disabledDirectRuntime} />
+              <EnvironmentInfoRow label="Legacy host" value={data()?.routes?.legacyHostnameState} />
+            </div>
+          </div>
+
+          <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+            <div class="mb-2 flex items-center justify-between gap-3">
+              <div class="text-13-medium text-text-strong">Release</div>
+              <EnvironmentPill tone="ready" label="current" />
+            </div>
+            <div class="grid gap-2">
+              <EnvironmentInfoRow label="Current symlink" value={data()?.release?.currentSymlink} />
+              <EnvironmentInfoRow label="Current release" value={data()?.release?.currentRelease} />
+            </div>
+            <div class="mt-3 flex flex-col gap-2">
+              <div class="text-12-regular text-text-weak">Rollback candidates</div>
+              <For each={data()?.release?.rollbackCandidates ?? []}>
+                {(release: any) => (
+                  <div class="flex items-center justify-between gap-3 rounded bg-background-base px-2 py-1.5 text-12-regular">
+                    <span class="min-w-0 truncate text-text-strong">{release.name}</span>
+                    <span class="shrink-0 text-text-weak">{formatShortDate(release.updatedAt)}</span>
+                  </div>
+                )}
+              </For>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid gap-3 xl:grid-cols-2">
+          <GitEnvironmentCard title="OpenCode" repo={data()?.git?.opencode} />
+          <GitEnvironmentCard title="LLM-Experiments" repo={data()?.git?.experiments} />
+        </div>
+
+        <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+          <div class="mb-2 text-13-medium text-text-strong">Gates</div>
+          <div class="grid gap-2 xl:grid-cols-3">
+            <For each={data()?.gates ?? []}>
+              {(gate: any) => (
+                <div class="rounded bg-background-base p-2">
+                  <div class="mb-1 flex items-center justify-between gap-2">
+                    <span class="text-12-regular text-text-strong">{gate.label}</span>
+                    <EnvironmentPill
+                      tone={gate.status === "ready" || gate.status === "available" ? "ready" : gate.status === "blocked" ? "blocked" : "warn"}
+                      label={gate.status}
+                    />
+                  </div>
+                  <div class="text-12-regular text-text-weak">{gate.detail}</div>
+                </div>
+              )}
+            </For>
+          </div>
+        </div>
+
+        <StatusRow label="Last checked" value={data()?.generatedAt} />
+      </div>
+    </TabChrome>
+  )
+}
+
+function EnvironmentSummaryCard(props: { label: string; value?: string; detail?: string; tone: "ready" | "warn" | "blocked" }) {
+  return (
+    <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+      <div class="mb-2 flex items-center justify-between gap-2">
+        <div class="text-12-regular text-text-weak">{props.label}</div>
+        <EnvironmentPill tone={props.tone} label={props.value ?? "checking"} />
+      </div>
+      <div class="text-13-regular text-text-strong">{props.detail ?? "Not available"}</div>
+    </div>
+  )
+}
+
+function GitEnvironmentCard(props: { title: string; repo?: any }) {
+  const repo = () => props.repo
+  return (
+    <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+      <div class="mb-2 flex items-center justify-between gap-3">
+        <div class="text-13-medium text-text-strong">{props.title}</div>
+        <EnvironmentPill tone={repo()?.pushReady ? "ready" : "blocked"} label={repo()?.pushReady ? "push visible" : "blocked"} />
+      </div>
+      <div class="grid gap-2 sm:grid-cols-2">
+        <EnvironmentInfoRow label="Branch" value={repo()?.branch} />
+        <EnvironmentInfoRow label="Commit" value={repo()?.commit} />
+        <EnvironmentInfoRow label="Dirty files" value={repo()?.dirtyCount} />
+        <EnvironmentInfoRow label="Push remote" value={repo()?.pushRemote} />
+      </div>
+      <Show when={repo()?.remoteProbe?.error}>
+        <div class="mt-3 rounded bg-background-base p-2 text-12-regular text-text-weak">
+          {repo()?.remoteProbe?.error}
+        </div>
+      </Show>
+      <Show when={(repo()?.dirtyPreview ?? []).length > 0}>
+        <div class="mt-3">
+          <div class="mb-1 text-12-regular text-text-weak">Dirty preview</div>
+          <div class="flex flex-col gap-1">
+            <For each={repo()?.dirtyPreview ?? []}>
+              {(line: string) => <code class="rounded bg-background-base px-2 py-1 text-11-regular text-text-strong">{line}</code>}
+            </For>
+          </div>
+        </div>
+      </Show>
+    </div>
+  )
+}
+
+function EnvironmentInfoRow(props: { label: string; value?: string | number | boolean | null }) {
+  return (
+    <div class="min-w-0 border-b border-border-weaker-base pb-2 last:border-b-0">
+      <div class="text-11-regular text-text-weak">{props.label}</div>
+      <div class="break-words text-12-regular text-text-strong">{String(props.value ?? "Not available")}</div>
+    </div>
+  )
+}
+
+function EnvironmentPill(props: { tone: "ready" | "warn" | "blocked"; label?: string }) {
+  return (
+    <span
+      class="shrink-0 rounded px-2 py-1 text-11-regular"
+      classList={{
+        "bg-background-base text-text-strong": props.tone === "ready",
+        "bg-[#f97316]/10 text-[#f97316]": props.tone === "warn",
+        "bg-red-500/10 text-red-400": props.tone === "blocked",
+      }}
+    >
+      {props.label ?? props.tone}
+    </span>
+  )
+}
+
+function formatShortDate(value?: string) {
+  if (!value) return "n/a"
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+}
+
 function ResourcesTabContent() {
   const resources = createPolledJson<any>(() => "/experimental/resources/status", 15000)
 
@@ -1792,6 +1978,7 @@ export function SessionSidePanel(props: {
                           <PanelMenuButton tab={PANEL_OPEN_DESIGN_TAB} onSelect={launchOpenDesign} />
                           <PanelMenuButton tab={PANEL_MAC_VIEW_TAB} onSelect={() => openPanelTab(PANEL_MAC_VIEW_TAB)} />
                           <PanelMenuButton tab={PANEL_ACCOUNTS_TAB} onSelect={() => openPanelTab(PANEL_ACCOUNTS_TAB)} />
+                          <PanelMenuButton tab={PANEL_ENVIRONMENT_TAB} onSelect={() => openPanelTab(PANEL_ENVIRONMENT_TAB)} />
                           <PanelMenuButton tab={PANEL_RESOURCES_TAB} onSelect={() => openPanelTab(PANEL_RESOURCES_TAB)} />
                           <PanelMenuButton tab={PANEL_ARTIFACTS_TAB} onSelect={() => openPanelTab(PANEL_ARTIFACTS_TAB)} />
                           <PanelMenuButton tab={PANEL_FILE_BROWSER_TAB} onSelect={() => openPanelTab(PANEL_FILE_BROWSER_TAB)} />
@@ -1861,6 +2048,12 @@ export function SessionSidePanel(props: {
                     <Tabs.Content value={PANEL_ACCOUNTS_TAB} class="flex flex-col h-full overflow-hidden contain-strict">
                       <Show when={activePanelTab() === PANEL_ACCOUNTS_TAB}>
                         <AccountsTabContent />
+                      </Show>
+                    </Tabs.Content>
+
+                    <Tabs.Content value={PANEL_ENVIRONMENT_TAB} class="flex flex-col h-full overflow-hidden contain-strict">
+                      <Show when={activePanelTab() === PANEL_ENVIRONMENT_TAB}>
+                        <EnvironmentTabContent />
                       </Show>
                     </Tabs.Content>
 

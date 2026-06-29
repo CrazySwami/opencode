@@ -11,7 +11,8 @@ Keep this runbook in Alfonso OS and in the server OpenCode repo because the live
 ## Live Shape
 
 - Public URL: `https://code.hustletogether.com`
-- Legacy alias: `https://opencode.hustletogether.com`
+- Live-only policy: use `https://code.hustletogether.com` only
+- Legacy alias: `https://opencode.hustletogether.com` was removed from the active CT100 and Proxmox Cloudflare tunnel configs on 2026-06-29; if it still returns a Cloudflare Access response, that is a Cloudflare/DNS object outside the active OpenCode tunnel config, not a live OpenCode runtime.
 - Cloudflare route origin: Proxmox loopback `127.0.0.1:18300`
 - CT100 proxy service: `opencode-public-proxy.service`
 - CT100 proxy listener: `0.0.0.0:8300`
@@ -25,6 +26,8 @@ Keep this runbook in Alfonso OS and in the server OpenCode repo because the live
 - Dev-root normalizer: `/usr/local/sbin/opencode-normalize-dev-root.py`
 - Manual browser reset: `https://code.hustletogether.com/__reset`
 - Proxy health: `https://code.hustletogether.com/__health`
+
+There is intentionally no separate OpenCode staging/dev listener right now. The earlier direct `0.0.0.0:8310` runtime was stopped, and stale staging/smoke browser profile directories were removed so agents and humans converge on the same live instance.
 
 ## What Was Broken
 
@@ -116,29 +119,6 @@ The public proxy now protects the server-backed default workspace in six places.
    ```
 
    This session existed in the database and direct session route, but was missing from the generic sidebar list until the merged-list proxy behavior was added.
-
-
-## 2026-06-29 Topology Guardrail
-
-The project-picker normalization depends on the public route reaching `opencode-public-proxy.service` on port `8300`, with OpenCode itself listening internally on `127.0.0.1:8299`. If a future OpenCode release drop-in points OpenCode directly at public `8300`, the Open Project modal will bypass the `/find/file` rewrite and show only recent projects or no folders. The proxy also normalizes `/project/current?directory=/home/dev/repos` and `/path?directory=/home/dev/repos` so the active Dev Folder state reports worktree `/home/dev/repos` instead of `/`.
-
-Expected listeners:
-
-```text
-127.0.0.1:8299 -> opencode
-0.0.0.0:8300 -> node /usr/local/sbin/opencode-public-proxy.mjs
-```
-
-The repair command sequence is:
-
-```bash
-systemctl restart opencode.service
-systemctl start opencode-public-proxy.service
-curl -sS https://code.hustletogether.com/__health
-curl -sS 'https://code.hustletogether.com/find/file?directory=%2Fhome%2Fdev&query=&type=directory&limit=50'
-curl -sS 'https://code.hustletogether.com/project/current?directory=%2Fhome%2Fdev%2Frepos'
-curl -sS 'https://code.hustletogether.com/path?directory=%2Fhome%2Fdev%2Frepos'
-```
 
 ## Verification Commands
 
