@@ -306,7 +306,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
   const [browserBusy, setBrowserBusy] = createSignal(false)
   const [browserError, setBrowserError] = createSignal<string | undefined>()
   const [previewReady, setPreviewReady] = createSignal(false)
-  const [useNoVNC, setUseNoVNC] = createSignal(false)
+  const [useNoVNC, setUseNoVNC] = createSignal(true)
   const [annotating, setAnnotating] = createSignal(false)
   const [drawing, setDrawing] = createSignal(false)
   const [lastArtifact, setLastArtifact] = createSignal<{ url: string; name: string } | undefined>()

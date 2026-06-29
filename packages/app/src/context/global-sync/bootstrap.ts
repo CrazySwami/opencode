@@ -56,6 +56,8 @@ function errors(list: PromiseSettledResult<unknown>[]) {
 }
 
 const providerRev = new Map<string, number>()
+const invalidSessionIDKeys = new Set(["id", "slug", "projectID", "directory", "path", "summary", "cost", "tokens", "title", "agent", "model", "version", "time", "parentID", "revert", "metadata"])
+const isSessionID = (value: string | undefined): value is string => typeof value === "string" && value.length > 0 && !invalidSessionIDKeys.has(value)
 
 export function clearProviderRev(scope: ServerScope, directory: string) {
   providerRev.delete(ScopedKey.from(scope, directory))
@@ -164,7 +166,7 @@ function warmSessions(input: {
   sdk: OpencodeClient
 }) {
   const known = new Set(input.store.session.map((item) => item.id))
-  const ids = [...new Set(input.ids)].filter((id) => !!id && !known.has(id))
+  const ids = [...new Set(input.ids)].filter((id) => isSessionID(id) && !known.has(id))
   if (ids.length === 0) return Promise.resolve()
   return Promise.all(
     ids.map((sessionID) =>
@@ -242,7 +244,9 @@ export async function bootstrapDirectory(input: {
             if (input.session) {
               const statuses = x.data ?? {}
               await Promise.all(
-                Object.keys(statuses).map((sessionID) => input.session!.resolve(sessionID).catch(() => undefined)),
+                Object.keys(statuses)
+                  .filter(isSessionID)
+                  .map((sessionID) => input.session!.resolve(sessionID).catch(() => undefined)),
               )
               input.session.set(
                 "session_status",
@@ -280,7 +284,7 @@ export async function bootstrapDirectory(input: {
       () =>
         retry(() =>
           input.sdk.permission.list().then((x) => {
-            const ids = (x.data ?? []).map((perm) => perm?.sessionID).filter((id): id is string => !!id)
+            const ids = (x.data ?? []).map((perm) => perm?.sessionID).filter(isSessionID)
             const grouped = groupBySession(
               (x.data ?? []).filter((perm): perm is PermissionRequest => !!perm?.id && !!perm.sessionID),
             )
@@ -311,7 +315,7 @@ export async function bootstrapDirectory(input: {
       () =>
         retry(() =>
           input.sdk.question.list().then((x) => {
-            const ids = (x.data ?? []).map((question) => question?.sessionID).filter((id): id is string => !!id)
+            const ids = (x.data ?? []).map((question) => question?.sessionID).filter(isSessionID)
             const grouped = groupBySession((x.data ?? []).filter((q): q is QuestionRequest => !!q?.id && !!q.sessionID))
             const warm = input.session
               ? Promise.all(ids.map((sessionID) => input.session!.resolve(sessionID))).then(() => undefined)

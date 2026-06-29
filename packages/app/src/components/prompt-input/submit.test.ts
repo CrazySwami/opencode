@@ -378,6 +378,49 @@ describe("prompt submit worktree selection", () => {
     })
   })
 
+  test("queues follow-up drafts while an existing session is busy", async () => {
+    params = { id: "session-1" }
+    const queued: Array<Parameters<NonNullable<Parameters<typeof createPromptSubmit>[0]["onQueue"]>>[0]> = []
+    const submitted: boolean[] = []
+    const clearedModes: string[] = []
+    const clearedPopovers: Array<string | null> = []
+
+    const submit = createPromptSubmit({
+      prompt,
+      info: () => ({ id: "session-1" }),
+      imageAttachments: () => [],
+      commentCount: () => 0,
+      autoAccept: () => false,
+      mode: () => "normal",
+      working: () => true,
+      editor: () => undefined,
+      queueScroll: () => undefined,
+      promptLength: (value) => value.reduce((sum, part) => sum + ("content" in part ? part.content.length : 0), 0),
+      addToHistory: () => undefined,
+      resetHistoryNavigation: () => undefined,
+      setMode: (value) => clearedModes.push(value),
+      setPopover: (value) => clearedPopovers.push(value),
+      onSubmit: () => submitted.push(true),
+      shouldQueue: () => true,
+      onQueue: (draft) => queued.push(draft),
+    })
+
+    await submit.handleSubmit({ preventDefault: () => undefined } as unknown as Event)
+
+    expect(queued).toHaveLength(1)
+    expect(queued[0]).toMatchObject({
+      sessionID: "session-1",
+      sessionDirectory: "/repo/main",
+      agent: "agent",
+      model: { providerID: "provider", modelID: "model" },
+    })
+    expect(queued[0]?.prompt).toEqual(promptValue)
+    expect(submitted).toEqual([])
+    expect(clearedModes).toEqual(["normal"])
+    expect(clearedPopovers).toEqual([null])
+    expect(optimistic).toEqual([])
+  })
+
   test("seeds new sessions before optimistic prompts are added", async () => {
     const submit = createPromptSubmit({
       prompt,

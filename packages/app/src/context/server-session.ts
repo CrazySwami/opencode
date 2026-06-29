@@ -24,6 +24,8 @@ const initialMessagePageSize = 2
 const historyMessagePageSize = 200
 const sessionInfoLimit = 2_048
 const emptyIDs: ReadonlySet<string> = new Set()
+const invalidSessionIDKeys = new Set(["id", "slug", "projectID", "directory", "path", "summary", "cost", "tokens", "title", "agent", "model", "version", "time", "parentID", "revert", "metadata"])
+const isSessionID = (value: string | undefined): value is string => typeof value === "string" && value.length > 0 && !invalidSessionIDKeys.has(value)
 
 type OptimisticItem = {
   message: Message
@@ -229,6 +231,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
   }
 
   const resolve = (sessionID: string, options?: { force?: boolean }) => {
+    if (!isSessionID(sessionID)) return Promise.reject(new Error(`Invalid session id: ${sessionID}`))
     const cached = data.info[sessionID]
     if (cached && !options?.force) return Promise.resolve(cached)
     const pending = requests.get(sessionID)
