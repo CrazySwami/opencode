@@ -29,6 +29,7 @@ const InputObject = Schema.StructWithRest(
     webfetch: Schema.optional(Action),
     websearch: Schema.optional(Action),
     browser: Schema.optional(Action),
+    browser_use: Schema.optional(Action),
     open_design: Schema.optional(Action),
     mac_view: Schema.optional(Action),
     resource_status: Schema.optional(Action),

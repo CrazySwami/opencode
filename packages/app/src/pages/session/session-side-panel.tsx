@@ -247,10 +247,21 @@ type LiveBrowserStatus = {
   mode?: string
   display?: string
   error?: string
+  streamURL?: string
+  browserUse?: {
+    ok?: boolean
+    liveURL?: string
+    activeSessions?: number
+    health?: {
+      browserUseVersion?: string
+      model?: string
+    }
+    error?: string
+  }
 }
 
 function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRequest }) {
-  const [tick, setTick] = createSignal(Date.now())
+  const [streamKey, setStreamKey] = createSignal(Date.now())
   const [status, setStatus] = createSignal<LiveBrowserStatus>({})
   const [browserUrl, setBrowserUrl] = createSignal("")
   const [browserText, setBrowserText] = createSignal("")
@@ -266,7 +277,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
   let imageRef: HTMLImageElement | undefined
   let canvasRef: HTMLCanvasElement | undefined
 
-  const screenshotSrc = createMemo(() => `/experimental/browser/live/snapshot?t=${tick()}`)
+  const streamSrc = createMemo(() => `${status().streamURL ?? "/experimental/browser/live/stream"}?t=${streamKey()}`)
   const displayUrl = createMemo(() => status().currentURL || browserUrl() || "about:blank")
 
   const refreshStatus = async () => {
@@ -294,8 +305,6 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
       const result = await response.json().catch(() => ({}))
       if (!response.ok || result?.ok === false) throw new Error(result?.error ?? "Browser action failed")
       await refreshStatus()
-      setPreviewReady(false)
-      setTick(Date.now())
       return true
     } catch (error) {
       setBrowserError(error instanceof Error ? error.message : String(error))
@@ -343,6 +352,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
   }
 
   const handleViewportClick: JSX.EventHandler<HTMLDivElement, MouseEvent> = (event) => {
+    event.currentTarget.focus()
     if (annotating()) return
     const point = pointForEvent(event)
     if (!point) return
@@ -485,8 +495,6 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
       })
       const body = await response.json().catch(() => ({}))
       if (!response.ok || body?.ok === false) throw new Error(body?.error ?? "Selector not found")
-      setPreviewReady(false)
-      setTick(Date.now())
     } catch (error) {
       setBrowserError(error instanceof Error ? error.message : String(error))
     } finally {
@@ -498,7 +506,6 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
     void refreshStatus()
     const interval = window.setInterval(() => {
       void refreshStatus()
-      setTick(Date.now())
     }, 2500)
     onCleanup(() => window.clearInterval(interval))
   })
@@ -546,6 +553,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
             <IconButton icon="arrow-left" variant="ghost" class="h-7 w-7" disabled={browserBusy()} onClick={() => void runLiveInput({ action: "back" })} aria-label="Back" />
             <IconButton icon="arrow-right" variant="ghost" class="h-7 w-7" disabled={browserBusy()} onClick={() => void runLiveInput({ action: "forward" })} aria-label="Forward" />
             <IconButton icon="reset" variant="ghost" class="h-7 w-7" disabled={browserBusy()} onClick={() => void runLiveInput({ action: "reload" })} aria-label="Reload" />
+            <IconButton icon="reset" variant="ghost" class="h-7 w-7" onClick={() => setStreamKey(Date.now())} aria-label="Restart live stream" />
             <IconButton icon="photo" variant="ghost" class="h-7 w-7" disabled={browserBusy()} onClick={() => void saveScreenshot(false)} aria-label="Save screenshot" />
             <button class="h-7 rounded px-2 text-12-regular text-text-strong hover:bg-surface-raised-base-hover" onClick={() => setAnnotating(!annotating())} type="button">
               {annotating() ? "Annotating" : "Annotate"}
@@ -603,6 +611,30 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
           <Show when={browserError()}>
             {(error) => <div class="text-12-regular text-text-weak break-all">{error()}</div>}
           </Show>
+          <div class="flex flex-wrap items-center gap-2 rounded border border-border-weaker-base bg-background-base px-2 py-1 text-12-regular text-text-weak">
+            <span class="text-text-strong">Browser Use</span>
+            <span>{status().browserUse?.ok ? "ready" : "unavailable"}</span>
+            <Show when={status().browserUse?.health?.browserUseVersion}>
+              {(version) => <span>v{version()}</span>}
+            </Show>
+            <Show when={status().browserUse?.health?.model}>
+              {(model) => <span>{model()}</span>}
+            </Show>
+            <Show when={status().browserUse?.activeSessions !== undefined}>
+              <span>{status().browserUse?.activeSessions} sessions</span>
+            </Show>
+            <Show when={status().browserUse?.liveURL}>
+              {(url) => (
+                <button
+                  class="ml-auto rounded px-2 py-0.5 text-text-strong hover:bg-surface-raised-base-hover"
+                  type="button"
+                  onClick={() => window.open(url(), "_blank", "noopener,noreferrer")}
+                >
+                  Open noVNC
+                </button>
+              )}
+            </Show>
+          </div>
           <Show when={lastArtifact()}>
             {(artifact) => (
               <div class="text-12-regular text-text-weak">
@@ -630,7 +662,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
             </Show>
             <img
               ref={(el) => (imageRef = el)}
-              src={screenshotSrc()}
+              src={streamSrc()}
               alt="Live Chromium browser"
               class="block w-full h-auto select-none"
               classList={{ invisible: !previewReady() }}

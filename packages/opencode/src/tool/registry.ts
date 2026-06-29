@@ -17,6 +17,7 @@ import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
 import { SkillTool } from "./skill"
 import { BrowserTool } from "./browser"
+import { BrowserUseTool } from "./browser-use"
 import { OpenDesignTool } from "./open-design"
 import { MacViewTool } from "./mac-view"
 import { ResourceStatusTool } from "./resource-status"
@@ -113,6 +114,7 @@ export const layer = Layer.effect(
     const patchtool = yield* ApplyPatchTool
     const skilltool = yield* SkillTool
     const browser = yield* BrowserTool
+    const browserUse = yield* BrowserUseTool
     const openDesign = yield* OpenDesignTool
     const macView = yield* MacViewTool
     const resourceStatus = yield* ResourceStatusTool
@@ -223,6 +225,7 @@ export const layer = Layer.effect(
           search: Tool.init(websearch),
           skill: Tool.init(skilltool),
           browser: Tool.init(browser),
+          browserUse: Tool.init(browserUse),
           openDesign: Tool.init(openDesign),
           macView: Tool.init(macView),
           resourceStatus: Tool.init(resourceStatus),
@@ -261,6 +264,7 @@ export const layer = Layer.effect(
             tool.search,
             tool.skill,
             tool.browser,
+            tool.browserUse,
             tool.openDesign,
             tool.macView,
             tool.resourceStatus,

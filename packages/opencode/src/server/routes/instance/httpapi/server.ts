@@ -1,4 +1,4 @@
-import { Config as EffectConfig, Context, Effect, Layer } from "effect"
+import { Config as EffectConfig, Context, Effect, Layer, Stream } from "effect"
 import { HttpApiBuilder, OpenApi } from "effect/unstable/httpapi"
 import { HttpClient, HttpMiddleware, HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http"
 import * as Socket from "effect/unstable/socket/Socket"
@@ -266,6 +266,18 @@ const browserPreviewRoute = HttpRouter.use((router) =>
       Effect.promise(async () => HttpServerResponse.jsonUnsafe(await liveBrowserStatus())),
     )
 
+    yield* router.add("GET", "/experimental/browser/live/stream", () =>
+      Effect.succeed(
+        HttpServerResponse.setHeader(
+          HttpServerResponse.stream(liveBrowserStream(), {
+            contentType: `multipart/x-mixed-replace; boundary=${liveBrowserStreamBoundary}`,
+          }),
+          "cache-control",
+          "no-store",
+        ),
+      ),
+    )
+
     yield* router.add("GET", "/experimental/browser/live/snapshot", () =>
       Effect.promise(async () => {
         await ensureLiveBrowser()
@@ -345,6 +357,10 @@ const browserPreviewRoute = HttpRouter.use((router) =>
         )
         return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : 500 })
       }),
+    )
+
+    yield* router.add("GET", "/experimental/browser-use/status", () =>
+      Effect.promise(async () => HttpServerResponse.jsonUnsafe(await browserUseBridgeStatus())),
     )
   }),
 ).pipe(Layer.provide(authOnlyRouterLayer))
@@ -472,6 +488,7 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
           hostname: process.env.OPENCODE_HOSTNAME ?? null,
           tools: [
             "browser",
+            "browser_use",
             "terminal",
             "open_design",
             "mac_view",
@@ -685,6 +702,7 @@ type LiveBrowserInput =
   | { action: "scroll"; deltaX?: number; deltaY?: number }
 
 const liveBrowserDisplay = () => process.env.OPENCODE_LIVE_BROWSER_DISPLAY || ":99"
+const liveBrowserStreamBoundary = "opencode-browser-frame"
 const liveBrowserHome = () =>
   path.resolve(
     process.env.OPENCODE_LIVE_BROWSER_HOME ||
@@ -710,6 +728,11 @@ async function liveBrowserStatus() {
     title: cdp?.title,
     error: "error" in browser ? browser.error : undefined,
     screenshotURL: "/experimental/browser/live/snapshot",
+    streamURL: "/experimental/browser/live/stream",
+    browserUse: await browserUseBridgeStatus().catch((error: unknown) => ({
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    })),
   }
 }
 
@@ -800,9 +823,44 @@ async function runLiveBrowserInput(input: LiveBrowserInput) {
   }
 }
 
-async function captureLiveBrowserImage() {
+function liveBrowserStream() {
+  return Stream.fromAsyncIterable(
+    (async function* () {
+      await ensureLiveBrowser()
+      while (true) {
+        const image = await captureLiveBrowserImage({ transient: true })
+        yield multipartBrowserFrame(image)
+        await delay(850)
+      }
+    })(),
+    (error) => error,
+  )
+}
+
+function multipartBrowserFrame(image: Buffer) {
+  const header = new TextEncoder().encode(
+    [
+      `--${liveBrowserStreamBoundary}`,
+      "content-type: image/png",
+      `content-length: ${image.length}`,
+      "cache-control: no-store",
+      "",
+      "",
+    ].join("\r\n"),
+  )
+  const footer = new TextEncoder().encode("\r\n")
+  const frame = new Uint8Array(header.length + image.length + footer.length)
+  frame.set(header, 0)
+  frame.set(image, header.length)
+  frame.set(footer, header.length + image.length)
+  return frame
+}
+
+async function captureLiveBrowserImage(options: { transient?: boolean } = {}) {
   await ensureLiveBrowser()
-  const file = path.join(liveBrowserArtifacts(), `snapshot-${Date.now()}.png`)
+  const file = options.transient
+    ? path.join(liveBrowserHome(), `live-frame-${process.pid}.png`)
+    : path.join(liveBrowserArtifacts(), `snapshot-${Date.now()}.png`)
   await execText("import", ["-window", "root", "-resize", "1280x889", file], liveBrowserDisplay())
   return readFileSync(file)
 }
@@ -931,6 +989,26 @@ async function liveBrowserPage() {
     url: page.url || "about:blank",
     title: page.title || "",
     webSocketDebuggerUrl: page.webSocketDebuggerUrl,
+  }
+}
+
+const browserUseBridgeURL = () => process.env.OPENCODE_BROWSER_USE_URL || "http://127.0.0.1:8768"
+
+async function browserUseBridgeStatus() {
+  const base = browserUseBridgeURL().replace(/\/+$/, "")
+  const [health, sessions] = await Promise.all([
+    fetch(`${base}/health`).then(readStatus).catch(errorStatus),
+    fetch(`${base}/sessions`).then(readStatus).catch(errorStatus),
+  ])
+  const healthBody = (health as any)?.body ?? health
+  const sessionsBody = (sessions as any)?.body ?? sessions
+  return {
+    ok: Boolean((health as any)?.ok && healthBody?.ok),
+    bridgeURL: base,
+    health: healthBody,
+    sessions: sessionsBody,
+    liveURL: healthBody?.liveUrl,
+    activeSessions: healthBody?.activeSessions ?? sessionsBody?.sessions?.length ?? 0,
   }
 }
 
