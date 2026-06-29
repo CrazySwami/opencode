@@ -149,6 +149,41 @@ describe("buildRequestParts", () => {
     expect(files.some((part) => part.type === "file" && part.url === "file:///repo/src/shared.ts")).toBe(true)
   })
 
+  test("adds structured context for tagged tools", () => {
+    const result = buildRequestParts({
+      prompt: [
+        { type: "tool", id: "browser", name: "browser", source: "browser", content: "@browser", start: 0, end: 8 },
+        {
+          type: "tool",
+          id: "mcp__cloudflare_api__execute",
+          name: "mcp__cloudflare_api__execute",
+          source: "mcp",
+          description: "Execute Cloudflare API calls",
+          content: "@mcp__cloudflare_api__execute",
+          start: 9,
+          end: 38,
+        },
+      ],
+      context: [],
+      images: [],
+      text: "@browser @mcp__cloudflare_api__execute",
+      messageID: "msg_tool_tags",
+      sessionID: "ses_tool_tags",
+      sessionDirectory: "/repo",
+    })
+
+    const toolContext = result.requestParts.find(
+      (part) => part.type === "text" && part.synthetic && part.metadata?.type === "tool-tags",
+    )
+
+    expect(toolContext).toBeDefined()
+    expect(toolContext?.type === "text" ? toolContext.text : "").toContain("@browser: browser tool id=browser")
+    expect(toolContext?.type === "text" ? toolContext.text : "").toContain(
+      "@mcp__cloudflare_api__execute: MCP/tool id=mcp__cloudflare_api__execute",
+    )
+    expect((toolContext?.metadata as { tools?: unknown[] } | undefined)?.tools).toHaveLength(2)
+  })
+
   test("handles Windows paths correctly (simulated on macOS)", () => {
     const prompt: Prompt = [{ type: "file", path: "src\\foo.ts", content: "@src\\foo.ts", start: 0, end: 11 }]
 
