@@ -643,6 +643,10 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
       }),
     )
 
+    yield* router.add("GET", "/experimental/mac-view/sck/status", () =>
+      Effect.promise(async () => macViewSCKStatusResponse()),
+    )
+
     yield* router.add("GET", "/experimental/mac-view/stream", (request) =>
       Effect.promise(async () => macViewStreamResponse(request.url)),
     )
@@ -1924,6 +1928,22 @@ async function macViewVideoResponse(requestURL: string) {
   )
 }
 
+async function macViewSCKStatusResponse() {
+  const feedURL = macViewFeedURL()
+  if (!feedURL) return HttpServerResponse.text("Mac View is not configured", { status: 404 })
+  const response = await fetch(`${feedURL}/sck/status`).catch(() => undefined)
+  if (!response) return HttpServerResponse.text("Mac View ScreenCaptureKit probe unavailable", { status: 502 })
+  const body = await response.text()
+  return HttpServerResponse.setHeader(
+    HttpServerResponse.text(body || "{}", {
+      status: response.ok ? 200 : response.status,
+      contentType: response.headers.get("content-type") ?? "application/json",
+    }),
+    "cache-control",
+    "no-store",
+  )
+}
+
 
 async function macViewStatus() {
   const feedURL = macViewFeedURL()
@@ -1949,8 +1969,11 @@ async function macViewStatus() {
     qualityOptions: [6, 8, 10, 12],
     bitrateOptions: (health as any)?.body?.options?.bitrate ?? [2500, 4000, 6000, 8000, 12000],
     transportOptions: (health as any)?.body?.options?.transport ?? ["video", "mjpeg"],
+    nativeCapture: (health as any)?.body?.nativeCapture ?? null,
+    webrtc: (health as any)?.body?.webrtc ?? null,
     health,
     snapshotURL: "/experimental/mac-view/snapshot",
+    sckStatusURL: "/experimental/mac-view/sck/status",
     streamURL: "/experimental/mac-view/stream",
     videoURL: "/experimental/mac-view/video",
   }

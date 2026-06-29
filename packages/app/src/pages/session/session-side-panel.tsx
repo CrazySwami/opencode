@@ -1202,6 +1202,12 @@ function MacViewTabContent() {
       ? `/experimental/mac-view/video?fps=${fps()}&width=${width()}&bitrate=${bitrate()}&t=${streamKey()}`
       : `/experimental/mac-view/stream?fps=${fps()}&width=${width()}&quality=${quality()}&t=${streamKey()}`,
   )
+  const nativeCaptureLabel = createMemo(() =>
+    status.data()?.nativeCapture?.available ? "SCK ready" : "SCK unavailable",
+  )
+  const webRTCLabel = createMemo(() =>
+    status.data()?.webrtc?.status === "enabled" ? "WebRTC" : "WebRTC held",
+  )
 
   return (
     <TabChrome
@@ -1217,6 +1223,12 @@ function MacViewTabContent() {
               {status.data()?.health?.ok
                 ? `${status.data()?.health?.body?.mode ?? "live"} · ${transport()} · ${width()}px${transport() === "video" ? ` · ${bitrate()}k` : ` · q${quality()}`}`
                 : (status.data()?.note ?? "checking")}
+            </span>
+            <span class="hidden items-center gap-1 rounded bg-background-base px-1.5 py-0.5 text-11-regular text-text-weak md:inline-flex">
+              {nativeCaptureLabel()}
+            </span>
+            <span class="hidden items-center gap-1 rounded bg-background-base px-1.5 py-0.5 text-11-regular text-text-weak md:inline-flex">
+              {webRTCLabel()}
             </span>
           </div>
           <div class="flex min-w-0 items-center gap-1">
