@@ -10,7 +10,7 @@ import { projectForSession } from "@/pages/layout/helpers"
 import { SessionTabAvatar } from "@/pages/layout/session-tab-avatar"
 import { showToast } from "@/utils/toast"
 import type { Session } from "@opencode-ai/sdk/v2"
-import { canOpenTabRename, forwardTabRef } from "./titlebar-tab-gesture"
+import { canOpenTabRename, forwardTabRef, suppressNextMiddleAuxClick } from "./titlebar-tab-gesture"
 import "./titlebar-tab-nav.css"
 
 export function TabNavItem(props: {
@@ -41,6 +41,7 @@ export function TabNavItem(props: {
   const closeTab = (event: MouseEvent) => {
     event.preventDefault()
     event.stopPropagation()
+    if (event.button === 1) suppressNextMiddleAuxClick()
     props.onClose()
   }
   const global = useGlobal()
@@ -187,6 +188,11 @@ export function TabNavItem(props: {
         if (event.button !== 1) return
         closeTab(event)
       }}
+      onAuxClick={(event) => {
+        if (event.button !== 1) return
+        event.preventDefault()
+        event.stopPropagation()
+      }}
     >
       <Show when={props.session()}>
         {(session) => {
@@ -289,6 +295,7 @@ export function DraftTabItem(props: {
   const closeTab = (event: MouseEvent) => {
     event.preventDefault()
     event.stopPropagation()
+    if (event.button === 1) suppressNextMiddleAuxClick()
     props.onClose()
   }
   return (
@@ -304,6 +311,11 @@ export function DraftTabItem(props: {
       onMouseDown={(event) => {
         if (event.button !== 1) return
         closeTab(event)
+      }}
+      onAuxClick={(event) => {
+        if (event.button !== 1) return
+        event.preventDefault()
+        event.stopPropagation()
       }}
     >
       <a

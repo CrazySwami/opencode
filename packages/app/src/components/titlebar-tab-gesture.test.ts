@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test"
-import { canOpenTabRename, canStartTabDrag, forwardTabRef, isTabCloseTarget } from "./titlebar-tab-gesture"
+import {
+  canOpenTabRename,
+  canStartTabDrag,
+  forwardTabRef,
+  isTabCloseTarget,
+  suppressNextMiddleAuxClick,
+} from "./titlebar-tab-gesture"
 
 describe("titlebar tab gestures", () => {
   test("excludes close controls from tab gestures", () => {
@@ -18,6 +24,22 @@ describe("titlebar tab gestures", () => {
     let received: HTMLDivElement | undefined
     forwardTabRef((value) => (received = value), element)
     expect(received).toBe(element)
+  })
+
+  test("suppresses the auxclick following a middle-click close", () => {
+    const link = document.createElement("a")
+    let reachedLink = false
+    document.body.append(link)
+    link.addEventListener("auxclick", () => (reachedLink = true))
+
+    suppressNextMiddleAuxClick(document)
+    const event = new MouseEvent("auxclick", { button: 1, bubbles: true, cancelable: true })
+    const dispatched = link.dispatchEvent(event)
+
+    expect(dispatched).toBe(false)
+    expect(event.defaultPrevented).toBe(true)
+    expect(reachedLink).toBe(false)
+    link.remove()
   })
 
   test("does not reopen rename while a save is pending", () => {
