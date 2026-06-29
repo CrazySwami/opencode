@@ -1547,8 +1547,9 @@ async function macViewStreamResponse(requestURL: string) {
   const url = new URL(requestURL, "http://localhost")
   const fps = macViewFPS(url.searchParams.get("fps") || undefined)
   const width = Math.max(640, Math.min(2048, Number(url.searchParams.get("width") || 1280)))
+  const quality = Math.max(4, Math.min(18, Number(url.searchParams.get("quality") || process.env.OPENCODE_MAC_VIEW_QUALITY || 8)))
   const controller = new AbortController()
-  const response = await fetch(`${feedURL}/stream?fps=${fps}&width=${Math.round(width)}`, { signal: controller.signal })
+  const response = await fetch(`${feedURL}/stream?fps=${fps}&width=${Math.round(width)}&quality=${Math.round(quality)}`, { signal: controller.signal })
   if (!response.ok || !response.body) {
     controller.abort()
     return HttpServerResponse.text(`Mac View stream unavailable: ${response.status}`, { status: 502 })
@@ -1594,7 +1595,11 @@ async function macViewStatus() {
     mode: "read-only",
     feedURL,
     fps: macViewFPS(),
+    width: Math.max(640, Math.min(2048, Number(process.env.OPENCODE_MAC_VIEW_WIDTH || 1280))),
+    quality: Math.max(4, Math.min(18, Number(process.env.OPENCODE_MAC_VIEW_QUALITY || 8))),
     fpsOptions: [6, 12, 20, 30, 45, 60],
+    widthOptions: [960, 1280, 1600, 2048],
+    qualityOptions: [6, 8, 10, 12],
     health,
     snapshotURL: "/experimental/mac-view/snapshot",
     streamURL: "/experimental/mac-view/stream",

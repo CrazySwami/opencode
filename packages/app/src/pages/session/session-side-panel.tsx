@@ -1090,6 +1090,8 @@ function MacViewTabContent() {
   const status = createPolledJson<any>(() => "/experimental/mac-view/status")
   const [streamKey, setStreamKey] = createSignal(Date.now())
   const [fps, setFps] = createSignal(30)
+  const [width, setWidth] = createSignal(1280)
+  const [quality, setQuality] = createSignal(8)
   const streamReconnectMs = 30_000
 
   const reconnect = setInterval(() => setStreamKey(Date.now()), streamReconnectMs)
@@ -1099,6 +1101,16 @@ function MacViewTabContent() {
     const next = Number(status.data()?.fps)
     if (!Number.isFinite(next)) return
     setFps(next)
+  })
+  createEffect(() => {
+    const next = Number(status.data()?.width)
+    if (!Number.isFinite(next)) return
+    setWidth(next)
+  })
+  createEffect(() => {
+    const next = Number(status.data()?.quality)
+    if (!Number.isFinite(next)) return
+    setQuality(next)
   })
 
   return (
@@ -1111,9 +1123,11 @@ function MacViewTabContent() {
           <div class="flex min-w-0 items-center gap-2 text-14-medium text-text-strong">
             <PanelGlyph tab={PANEL_MAC_VIEW_TAB} />
             <span>Mac View</span>
-            <span class="truncate text-12-regular text-text-weak">{status.data()?.health?.ok ? "live" : (status.data()?.note ?? "checking")}</span>
+            <span class="truncate text-12-regular text-text-weak">
+              {status.data()?.health?.ok ? `${status.data()?.health?.body?.mode ?? "live"} · ${width()}px · q${quality()}` : (status.data()?.note ?? "checking")}
+            </span>
           </div>
-          <div class="flex items-center gap-1">
+          <div class="flex min-w-0 items-center gap-1">
             <div class="hidden items-center gap-1 md:flex" aria-label="Mac View FPS">
               <For each={status.data()?.fpsOptions ?? [6, 12, 20, 30, 45, 60]}>
                 {(option: number) => (
@@ -1131,6 +1145,26 @@ function MacViewTabContent() {
                 )}
               </For>
             </div>
+            <select
+              class="hidden h-7 rounded-md border border-border-weaker-base bg-background-base px-2 text-11-regular text-text-strong md:block"
+              value={width()}
+              onChange={(event) => { setWidth(Number(event.currentTarget.value)); setStreamKey(Date.now()) }}
+              aria-label="Mac View width"
+            >
+              <For each={status.data()?.widthOptions ?? [960, 1280, 1600]}>
+                {(option: number) => <option value={option}>{option}px</option>}
+              </For>
+            </select>
+            <select
+              class="hidden h-7 rounded-md border border-border-weaker-base bg-background-base px-2 text-11-regular text-text-strong md:block"
+              value={quality()}
+              onChange={(event) => { setQuality(Number(event.currentTarget.value)); setStreamKey(Date.now()) }}
+              aria-label="Mac View quality"
+            >
+              <For each={status.data()?.qualityOptions ?? [6, 8, 10, 12]}>
+                {(option: number) => <option value={option}>q{option}</option>}
+              </For>
+            </select>
             <IconButton icon="reset" variant="ghost" class="h-7 w-7" onClick={() => { void status.refresh(); setStreamKey(Date.now()) }} aria-label="Refresh Mac View" />
             <Show when={status.data()?.feedURL}>{(feedURL) => <IconButton icon="square-arrow-top-right" variant="ghost" class="h-7 w-7" onClick={() => window.open(feedURL(), "_blank", "noopener,noreferrer")} aria-label="Open feed externally" />}</Show>
           </div>
@@ -1147,7 +1181,7 @@ function MacViewTabContent() {
       >
         <div class="min-h-0 flex-1 overflow-auto bg-background-base">
           <img
-            src={`/experimental/mac-view/stream?fps=${fps()}&width=1280&t=${streamKey()}`}
+            src={`/experimental/mac-view/stream?fps=${fps()}&width=${width()}&quality=${quality()}&t=${streamKey()}`}
             alt="Live Mac screen"
             class="block h-auto w-full select-none"
             onError={() => void status.refresh()}
