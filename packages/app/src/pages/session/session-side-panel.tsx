@@ -1047,35 +1047,73 @@ function TabChrome(props: {
 
 function OpenDesignTabContent() {
   const status = createPolledJson<any>(() => "/experimental/open-design/status")
+  const [frameKey, setFrameKey] = createSignal(Date.now())
   const launchUrl = createMemo(() =>
     status.data()?.proxyReady
       ? (status.data()?.proxyURL ?? "/experimental/open-design/proxy/")
       : (status.data()?.publicURL ?? "https://design.hustletogether.com"),
   )
   const canEmbed = createMemo(() => !!status.data()?.proxyReady)
+  const stateLabel = createMemo(() => {
+    if (status.error()) return "offline"
+    if (status.data()?.proxyReady) return "interactive"
+    if (status.data()?.health?.ok) return "held"
+    return "checking"
+  })
 
   const openExternal = () => window.open(launchUrl(), "_blank", "noopener,noreferrer")
+  const refresh = () => {
+    status.refresh()
+    setFrameKey(Date.now())
+  }
 
   return (
-    <TabChrome title="Open Design" iconTab={PANEL_OPEN_DESIGN_TAB} onRefresh={status.refresh}>
-      <div class="flex flex-col gap-3">
-        <Show when={status.error()}>
-          {(error) => <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">{error()}</div>}
-        </Show>
-        <StatusRow label="Launch URL" value={launchUrl()} />
-        <StatusRow label="Daemon" value={status.data()?.daemonURL} />
-        <StatusRow label="Proxy" value={status.data()?.proxyReady ? "enabled" : "disabled"} />
-        <StatusRow label="Health" value={status.data()?.health?.ok ? "healthy" : "not ready"} />
-        <StatusRow label="Projects" value={status.data()?.projects?.count} />
-        <div class="flex gap-2">
-          <button
-            class="h-8 px-3 rounded-md border border-border-weaker-base bg-background-stronger text-13-regular text-text-strong"
+    <TabChrome
+      iconTab={PANEL_OPEN_DESIGN_TAB}
+      headerClass="h-12 shrink-0 border-b border-border-weaker-base bg-background-stronger px-2 py-1.5"
+      bodyClass="flex-1 min-h-0 overflow-hidden"
+      toolbar={
+        <div class="flex h-full min-w-0 items-center gap-1 rounded-md border border-border-weaker-base bg-background-base px-1.5">
+          <PanelGlyph tab={PANEL_OPEN_DESIGN_TAB} />
+          <div class="min-w-0 flex-1 truncate px-2 text-13-regular text-text-strong">{launchUrl()}</div>
+          <span class="hidden shrink-0 items-center gap-1 px-1 text-11-regular text-text-weak md:flex">
+            <span
+              class="h-2 w-2 rounded-full"
+              classList={{
+                "bg-[#f97316]": stateLabel() === "interactive",
+                "bg-yellow-500": stateLabel() === "held",
+                "bg-text-disabled": stateLabel() !== "interactive" && stateLabel() !== "held",
+              }}
+            />
+            {stateLabel()}
+          </span>
+          <IconButton icon="reset" variant="ghost" class="h-7 w-7 shrink-0" onClick={refresh} aria-label="Refresh Open Design" />
+          <IconButton
+            icon="square-arrow-top-right"
+            variant="ghost"
+            class="h-7 w-7 shrink-0"
             onClick={openExternal}
-          >
-            Open in external browser
-          </button>
+            aria-label="Open Open Design externally"
+          />
+          <details class="group relative shrink-0" data-prevent-autofocus>
+            <summary class="flex h-7 w-7 cursor-pointer list-none items-center justify-center rounded text-text-weak hover:bg-surface-raised-base-hover hover:text-text-strong [&::-webkit-details-marker]:hidden">
+              <Icon name="sliders" size="small" />
+            </summary>
+            <div class="absolute right-0 top-9 z-20 grid w-[min(420px,calc(100vw-2rem))] grid-cols-1 gap-2 rounded-md border border-border-weaker-base bg-background-stronger p-2 shadow-lg md:grid-cols-2">
+              <StatusRow label="Daemon" value={status.data()?.daemonURL} />
+              <StatusRow label="Proxy" value={status.data()?.proxyReady ? "enabled" : "disabled"} />
+              <StatusRow label="Health" value={status.data()?.health?.ok ? "healthy" : "not ready"} />
+              <StatusRow label="Projects" value={status.data()?.projects?.count} />
+            </div>
+          </details>
         </div>
-        <div class="min-h-[360px] overflow-hidden rounded-md border border-border-weaker-base bg-background-stronger">
+      }
+    >
+      <Show when={status.error()}>
+        {(error) => <div class="m-3 rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">{error()}</div>}
+      </Show>
+      <div class="relative size-full min-h-0 overflow-hidden bg-background-base">
+        <div class="size-full overflow-hidden bg-background-stronger">
           <Show
             when={canEmbed()}
             fallback={
@@ -1094,14 +1132,15 @@ function OpenDesignTabContent() {
             }
           >
             <iframe
-              src={launchUrl()}
+              src={`${launchUrl()}${launchUrl().includes("?") ? "&" : "?"}t=${frameKey()}`}
               title="Open Design"
-              class="block h-[520px] w-full border-0 bg-white"
+              class="block size-full border-0 bg-white"
               allow="clipboard-read; clipboard-write"
             />
           </Show>
         </div>
-        <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+        <Show when={(status.data()?.projects?.projects ?? []).length > 0}>
+          <div class="absolute bottom-3 right-3 max-h-60 w-80 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger p-3 shadow-lg">
           <div class="text-12-regular text-text-weak mb-2">Projects</div>
           <div class="flex flex-col gap-2">
             <For each={status.data()?.projects?.projects ?? []}>
@@ -1112,15 +1151,9 @@ function OpenDesignTabContent() {
                 </div>
               )}
             </For>
-            <Show when={(status.data()?.projects?.projects ?? []).length === 0}>
-              <div class="text-13-regular text-text-weak">No projects reported by the daemon.</div>
-            </Show>
           </div>
-        </div>
-        <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">
-          The model can use the native <span class="text-text-strong">@open_design</span> tool. The hosted UI remains on
-          safe 404 until Cloudflare Access is approved.
-        </div>
+          </div>
+        </Show>
       </div>
     </TabChrome>
   )
