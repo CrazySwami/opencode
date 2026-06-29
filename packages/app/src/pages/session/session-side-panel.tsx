@@ -116,6 +116,7 @@ function PanelTab(props: { tab: string; onClose: (tab: string) => void }) {
             icon="close-small"
             variant="ghost"
             class="h-5 w-5"
+            onPointerDown={(event) => event.stopPropagation()}
             onClick={(event) => {
               event.stopPropagation()
               props.onClose(props.tab)
@@ -182,6 +183,7 @@ function SessionTerminalTab() {
                       icon="close-small"
                       variant="ghost"
                       class="h-5 w-5"
+                      onPointerDown={(event) => event.stopPropagation()}
                       onClick={(event) => {
                         event.stopPropagation()
                         void terminal.close(pty.id)
@@ -1574,6 +1576,7 @@ export function SessionSidePanel(props: {
                                   icon="close-small"
                                   variant="ghost"
                                   class="h-5 w-5"
+                                  onPointerDown={(event) => event.stopPropagation()}
                                   onClick={(event) => {
                                     event.stopPropagation()
                                     tabs().close("context")
@@ -1597,8 +1600,13 @@ export function SessionSidePanel(props: {
                             {(tab) => <SortableTab tab={tab} onTabClose={tabs().close} />}
                           </For>
                         </SortableProvider>
-                        <div class="bg-background-stronger h-full shrink-0 sticky right-0 z-10 flex items-center justify-center pr-3">
-                          <DropdownMenu gutter={4} placement="bottom-end">
+                        <div
+                          class="bg-background-stronger h-full shrink-0 sticky right-0 z-20 flex items-center justify-center pr-3"
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onMouseDown={(event) => event.stopPropagation()}
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <DropdownMenu gutter={4} placement="bottom-end" modal={false}>
                             <DropdownMenu.Trigger
                               as={IconButton}
                               icon="plus-small"
@@ -1606,6 +1614,7 @@ export function SessionSidePanel(props: {
                               iconSize="large"
                               class="!rounded-md"
                               aria-label="Add tab"
+                              onPointerDown={(event: PointerEvent) => event.stopPropagation()}
                             />
                             <DropdownMenu.Portal>
                               <DropdownMenu.Content>
