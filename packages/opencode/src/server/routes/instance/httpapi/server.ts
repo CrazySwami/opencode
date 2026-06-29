@@ -643,6 +643,10 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
       Effect.promise(async () => macViewStreamResponse(request.url)),
     )
 
+    yield* router.add("GET", "/experimental/mac-view/video", (request) =>
+      Effect.promise(async () => macViewVideoResponse(request.url)),
+    )
+
     yield* router.add("GET", "/experimental/browser/:sessionID/artifacts", (request) =>
       Effect.promise(async () => {
         const sessionID = decodeParam(request.url, /^\/experimental\/browser\/([^/]+)\/artifacts$/)
@@ -1776,6 +1780,44 @@ async function macViewStreamResponse(requestURL: string) {
   )
 }
 
+async function macViewVideoResponse(requestURL: string) {
+  const feedURL = macViewFeedURL()
+  if (!feedURL) return HttpServerResponse.text("Mac View is not configured", { status: 404 })
+  const url = new URL(requestURL, "http://localhost")
+  const fps = macViewFPS(url.searchParams.get("fps") || undefined)
+  const width = Math.max(640, Math.min(2048, Number(url.searchParams.get("width") || 1280)))
+  const bitrate = Math.max(1000, Math.min(20000, Number(url.searchParams.get("bitrate") || process.env.OPENCODE_MAC_VIEW_BITRATE || 6000)))
+  const controller = new AbortController()
+  const response = await fetch(`${feedURL}/video?fps=${fps}&width=${Math.round(width)}&bitrate=${Math.round(bitrate)}`, { signal: controller.signal })
+  if (!response.ok || !response.body) {
+    controller.abort()
+    return HttpServerResponse.text(`Mac View video unavailable: ${response.status}`, { status: 502 })
+  }
+  const reader = response.body.getReader()
+  return HttpServerResponse.setHeader(
+    HttpServerResponse.stream(
+      Stream.fromAsyncIterable(
+        (async function* () {
+          try {
+            while (true) {
+              const chunk = await reader.read()
+              if (chunk.done) return
+              yield chunk.value
+            }
+          } finally {
+            controller.abort()
+            await reader.cancel().catch(() => undefined)
+          }
+        })(),
+        (cause) => new Error(`Mac View video error: ${String(cause)}`),
+      ),
+      { contentType: response.headers.get("content-type") ?? "video/mp4" },
+    ),
+    "cache-control",
+    "no-store",
+  )
+}
+
 
 async function macViewStatus() {
   const feedURL = macViewFeedURL()
@@ -1794,12 +1836,17 @@ async function macViewStatus() {
     fps: macViewFPS(),
     width: Math.max(640, Math.min(2048, Number(process.env.OPENCODE_MAC_VIEW_WIDTH || 1280))),
     quality: Math.max(4, Math.min(18, Number(process.env.OPENCODE_MAC_VIEW_QUALITY || 8))),
+    bitrate: Math.max(1000, Math.min(20000, Number(process.env.OPENCODE_MAC_VIEW_BITRATE || 6000))),
+    transport: (health as any)?.body?.defaults?.transport ?? "video",
     fpsOptions: [6, 12, 20, 30, 45, 60],
     widthOptions: [960, 1280, 1600, 2048],
     qualityOptions: [6, 8, 10, 12],
+    bitrateOptions: (health as any)?.body?.options?.bitrate ?? [2500, 4000, 6000, 8000, 12000],
+    transportOptions: (health as any)?.body?.options?.transport ?? ["video", "mjpeg"],
     health,
     snapshotURL: "/experimental/mac-view/snapshot",
     streamURL: "/experimental/mac-view/stream",
+    videoURL: "/experimental/mac-view/video",
   }
 }
 

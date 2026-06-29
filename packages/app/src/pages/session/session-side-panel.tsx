@@ -1093,6 +1093,8 @@ function MacViewTabContent() {
   const [fps, setFps] = createSignal(30)
   const [width, setWidth] = createSignal(1280)
   const [quality, setQuality] = createSignal(8)
+  const [bitrate, setBitrate] = createSignal(6000)
+  const [transport, setTransport] = createSignal<"video" | "mjpeg">("video")
   const streamReconnectMs = 30_000
 
   const reconnect = setInterval(() => setStreamKey(Date.now()), streamReconnectMs)
@@ -1113,6 +1115,21 @@ function MacViewTabContent() {
     if (!Number.isFinite(next)) return
     setQuality(next)
   })
+  createEffect(() => {
+    const next = Number(status.data()?.bitrate)
+    if (!Number.isFinite(next)) return
+    setBitrate(next)
+  })
+  createEffect(() => {
+    const next = status.data()?.transport
+    if (next === "video" || next === "mjpeg") setTransport(next)
+  })
+
+  const transportURL = createMemo(() =>
+    transport() === "video"
+      ? `/experimental/mac-view/video?fps=${fps()}&width=${width()}&bitrate=${bitrate()}&t=${streamKey()}`
+      : `/experimental/mac-view/stream?fps=${fps()}&width=${width()}&quality=${quality()}&t=${streamKey()}`,
+  )
 
   return (
     <TabChrome
@@ -1125,7 +1142,9 @@ function MacViewTabContent() {
             <PanelGlyph tab={PANEL_MAC_VIEW_TAB} />
             <span>Mac View</span>
             <span class="truncate text-12-regular text-text-weak">
-              {status.data()?.health?.ok ? `${status.data()?.health?.body?.mode ?? "live"} · ${width()}px · q${quality()}` : (status.data()?.note ?? "checking")}
+              {status.data()?.health?.ok
+                ? `${status.data()?.health?.body?.mode ?? "live"} · ${transport()} · ${width()}px${transport() === "video" ? ` · ${bitrate()}k` : ` · q${quality()}`}`
+                : (status.data()?.note ?? "checking")}
             </span>
           </div>
           <div class="flex min-w-0 items-center gap-1">
@@ -1166,6 +1185,26 @@ function MacViewTabContent() {
                 {(option: number) => <option value={option}>q{option}</option>}
               </For>
             </select>
+            <select
+              class="h-7 rounded-md border border-border-weaker-base bg-background-base px-2 text-11-regular text-text-strong"
+              value={transport()}
+              onChange={(event) => { setTransport(event.currentTarget.value === "mjpeg" ? "mjpeg" : "video"); setStreamKey(Date.now()) }}
+              aria-label="Mac View transport"
+            >
+              <For each={status.data()?.transportOptions ?? ["video", "mjpeg"]}>
+                {(option: string) => <option value={option}>{option === "video" ? "Video" : "MJPEG"}</option>}
+              </For>
+            </select>
+            <select
+              class="hidden h-7 rounded-md border border-border-weaker-base bg-background-base px-2 text-11-regular text-text-strong md:block"
+              value={bitrate()}
+              onChange={(event) => { setBitrate(Number(event.currentTarget.value)); setStreamKey(Date.now()) }}
+              aria-label="Mac View bitrate"
+            >
+              <For each={status.data()?.bitrateOptions ?? [2500, 4000, 6000, 8000, 12000]}>
+                {(option: number) => <option value={option}>{option}k</option>}
+              </For>
+            </select>
             <IconButton icon="reset" variant="ghost" class="h-7 w-7" onClick={() => { void status.refresh(); setStreamKey(Date.now()) }} aria-label="Refresh Mac View" />
             <Show when={status.data()?.feedURL}>{(feedURL) => <IconButton icon="square-arrow-top-right" variant="ghost" class="h-7 w-7" onClick={() => window.open(feedURL(), "_blank", "noopener,noreferrer")} aria-label="Open feed externally" />}</Show>
           </div>
@@ -1181,12 +1220,26 @@ function MacViewTabContent() {
         }
       >
         <div class="min-h-0 flex-1 overflow-auto bg-background-base">
-          <img
-            src={`/experimental/mac-view/stream?fps=${fps()}&width=${width()}&quality=${quality()}&t=${streamKey()}`}
-            alt="Live Mac screen"
-            class="block h-auto w-full select-none"
-            onError={() => void status.refresh()}
-          />
+          <Show
+            when={transport() === "video"}
+            fallback={
+              <img
+                src={transportURL()}
+                alt="Live Mac screen"
+                class="block h-auto w-full select-none"
+                onError={() => void status.refresh()}
+              />
+            }
+          >
+            <video
+              src={transportURL()}
+              autoplay
+              muted
+              playsinline
+              class="block h-auto w-full bg-black"
+              onError={() => { setTransport("mjpeg"); setStreamKey(Date.now()); void status.refresh() }}
+            />
+          </Show>
         </div>
       </Show>
     </TabChrome>
