@@ -4,6 +4,7 @@ import { HttpClient, HttpMiddleware, HttpRouter, HttpServer, HttpServerResponse 
 import * as Socket from "effect/unstable/socket/Socket"
 import { execFile, spawn } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
+import { createRemoteJWKSet, jwtVerify } from "jose"
 import path from "node:path"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import * as Observability from "@opencode-ai/core/observability"
@@ -265,7 +266,8 @@ const browserPreviewRoute = HttpRouter.use((router) =>
 
     yield* router.add("GET", "/experimental/browser/novnc/*", (request) =>
       Effect.gen(function* () {
-        if (!liveBrowserExposureEnabled()) return liveBrowserExposureBlockedResponse("text")
+        const access = yield* Effect.promise(() => liveBrowserExposureAccess(request))
+        if (!access.ok) return liveBrowserExposureBlockedResponse("text", access)
         if (new URL(request.url, "http://localhost").pathname.endsWith("/opencode-lite.html")) {
           return liveBrowserNoVNCLiteResponse(request.url)
         }
@@ -277,17 +279,19 @@ const browserPreviewRoute = HttpRouter.use((router) =>
       }),
     )
 
-    yield* router.add("GET", "/experimental/browser/live/status", () =>
-      Effect.promise(async () =>
-        liveBrowserExposureEnabled()
-          ? HttpServerResponse.jsonUnsafe(await liveBrowserStatus())
-          : liveBrowserExposureBlockedResponse("json"),
-      ),
+    yield* router.add("GET", "/experimental/browser/live/status", (request) =>
+      Effect.promise(async () => {
+        const access = await liveBrowserExposureAccess(request)
+        if (!access.ok) return liveBrowserExposureBlockedResponse("json", access)
+        return HttpServerResponse.jsonUnsafe(await liveBrowserStatus(access))
+      }),
     )
 
-    yield* router.add("GET", "/experimental/browser/live/stream", () =>
-      liveBrowserExposureEnabled()
-        ? Effect.succeed(
+    yield* router.add("GET", "/experimental/browser/live/stream", (request) =>
+      Effect.promise(async () => liveBrowserExposureAccess(request)).pipe(
+        Effect.flatMap((access) =>
+          access.ok
+            ? Effect.succeed(
             HttpServerResponse.setHeader(
               HttpServerResponse.stream(liveBrowserStream(), {
                 contentType: `multipart/x-mixed-replace; boundary=${liveBrowserStreamBoundary}`,
@@ -296,12 +300,16 @@ const browserPreviewRoute = HttpRouter.use((router) =>
               "no-store",
             ),
           )
-        : Effect.succeed(liveBrowserExposureBlockedResponse("text")),
+            : Effect.succeed(liveBrowserExposureBlockedResponse("text", access)),
+        ),
+      ),
     )
 
-    yield* router.add("GET", "/experimental/browser/live/snapshot", () =>
-      liveBrowserExposureEnabled()
-        ? Effect.promise(async () => {
+    yield* router.add("GET", "/experimental/browser/live/snapshot", (request) =>
+      Effect.promise(async () => liveBrowserExposureAccess(request)).pipe(
+        Effect.flatMap((access) =>
+          access.ok
+            ? Effect.promise(async () => {
             await ensureLiveBrowser()
             const image = await captureLiveBrowserImage()
             return HttpServerResponse.setHeader(
@@ -318,12 +326,15 @@ const browserPreviewRoute = HttpRouter.use((router) =>
               ),
             ),
           )
-        : Effect.succeed(liveBrowserExposureBlockedResponse("text")),
+            : Effect.succeed(liveBrowserExposureBlockedResponse("text", access)),
+        ),
+      ),
     )
 
     yield* router.add("POST", "/experimental/browser/live/input", (request) =>
       Effect.gen(function* () {
-        if (!liveBrowserExposureEnabled()) return liveBrowserExposureBlockedResponse("json")
+        const access = yield* Effect.promise(() => liveBrowserExposureAccess(request))
+        if (!access.ok) return liveBrowserExposureBlockedResponse("json", access)
         const raw = yield* Effect.orDie(request.text)
         let body: LiveBrowserInput
         try {
@@ -343,7 +354,8 @@ const browserPreviewRoute = HttpRouter.use((router) =>
 
     yield* router.add("POST", "/experimental/browser/live/selector", (request) =>
       Effect.gen(function* () {
-        if (!liveBrowserExposureEnabled()) return liveBrowserExposureBlockedResponse("json")
+        const access = yield* Effect.promise(() => liveBrowserExposureAccess(request))
+        if (!access.ok) return liveBrowserExposureBlockedResponse("json", access)
         const raw = yield* Effect.orDie(request.text)
         let body: { selector?: string }
         try {
@@ -364,7 +376,8 @@ const browserPreviewRoute = HttpRouter.use((router) =>
 
     yield* router.add("POST", "/experimental/browser/:sessionID/live/screenshot", (request) =>
       Effect.gen(function* () {
-        if (!liveBrowserExposureEnabled()) return liveBrowserExposureBlockedResponse("json")
+        const access = yield* Effect.promise(() => liveBrowserExposureAccess(request))
+        if (!access.ok) return liveBrowserExposureBlockedResponse("json", access)
         const sessionID = decodeParam(request.url, /^\/experimental\/browser\/([^/]+)\/live\/screenshot$/)
         if (!sessionID) return HttpServerResponse.text("Missing session ID", { status: 400 })
 
@@ -398,39 +411,46 @@ const workspaceIndexRoute = HttpRouter.use((router) =>
 
     yield* router.add("GET", "/__workspace-index", () =>
       Effect.gen(function* () {
-        const projectList = yield* projects.list()
-        const sessionList = yield* sessions.listGlobal({ roots: true, limit: 500 })
-        const sessionCounts = new Map<string, number>()
-
-        for (const session of sessionList) {
-          const projectID = session.project?.id
-          if (!projectID) continue
-          sessionCounts.set(projectID, (sessionCounts.get(projectID) ?? 0) + 1)
-        }
-
-        return HttpServerResponse.jsonUnsafe({
-          ok: true,
-          generatedAt: new Date().toISOString(),
-          roots: fileViewerRoots(),
-          projects: projectList.map((project) => ({
-            id: project.id,
-            name: project.name,
-            worktree: project.worktree,
-            updatedAt: project.time.updated,
-            activeSessions: sessionCounts.get(project.id) ?? 0,
-          })),
-          sessions: sessionList.slice(0, 100).map((session) => ({
-            id: session.id,
-            title: session.title,
-            directory: session.directory,
-            updatedAt: session.time.updated,
-            project: session.project,
-          })),
-        })
+        const index = yield* buildWorkspaceIndex(projects, sessions)
+        return HttpServerResponse.jsonUnsafe(index)
       }),
     )
   }),
 ).pipe(Layer.provide(authOnlyRouterLayer))
+
+function buildWorkspaceIndex(projects: any, sessions: any) {
+  return Effect.gen(function* () {
+    const projectList = yield* projects.list()
+    const sessionList = yield* sessions.listGlobal({ roots: true, limit: 500 })
+    const sessionCounts = new Map<string, number>()
+
+    for (const session of sessionList) {
+      const projectID = session.project?.id
+      if (!projectID) continue
+      sessionCounts.set(projectID, (sessionCounts.get(projectID) ?? 0) + 1)
+    }
+
+    return {
+      ok: true,
+      generatedAt: new Date().toISOString(),
+      roots: fileViewerRoots(),
+      projects: projectList.map((project: any) => ({
+        id: project.id,
+        name: project.name,
+        worktree: project.worktree,
+        updatedAt: project.time.updated,
+        activeSessions: sessionCounts.get(project.id) ?? 0,
+      })),
+      sessions: sessionList.slice(0, 100).map((session: any) => ({
+        id: session.id,
+        title: session.title,
+        directory: session.directory,
+        updatedAt: session.time.updated,
+        project: session.project,
+      })),
+    }
+  })
+}
 
 const fileViewerRoute = HttpRouter.use((router) =>
   Effect.gen(function* () {
@@ -542,9 +562,14 @@ function cleanStatusOutput(value: string) {
 
 const workspaceSuiteRoute = HttpRouter.use((router) =>
   Effect.gen(function* () {
+    const projects = yield* Project.Service
+    const sessions = yield* Session.Service
+
     yield* router.add("GET", "/experimental/workspace-suite/status", () =>
-      Effect.promise(async () =>
-        HttpServerResponse.jsonUnsafe({
+      Effect.gen(function* () {
+        const workspaceIndex = yield* buildWorkspaceIndex(projects, sessions)
+        return yield* Effect.promise(async () =>
+          HttpServerResponse.jsonUnsafe({
           ok: true,
           generatedAt: new Date().toISOString(),
           hostname: process.env.OPENCODE_HOSTNAME ?? null,
@@ -567,8 +592,11 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
           },
           codexAccounts: await codexMultiAuthStatus(),
           artifactRootConfigured: !!process.env.OPENCODE_BROWSER_HOME,
+          agentChrome: liveBrowserGateStatus(),
+          workspaceIndex,
         }),
-      ),
+        )
+      }),
     )
 
     yield* router.add("GET", "/experimental/workspace-suite/environments", () =>
@@ -787,16 +815,176 @@ const liveBrowserDebugPort = () => Number(process.env.OPENCODE_LIVE_BROWSER_DEBU
 const liveBrowserNoVNCURL = () => (process.env.OPENCODE_LIVE_BROWSER_NOVNC_URL || "http://127.0.0.1:6080").replace(/\/+$/, "")
 const liveBrowserExposureEnabled = () => process.env.OPENCODE_LIVE_BROWSER_EXPOSE === "1"
 
-function liveBrowserExposureBlockedResponse(format: "json" | "text") {
+type LiveBrowserAccess =
+  | {
+      ok: true
+      mode: "cloudflare-access"
+      email: string | null
+      audience: string
+      teamDomain: string
+    }
+  | {
+      ok: false
+      mode: "disabled" | "missing-cloudflare-config" | "missing-cloudflare-token" | "invalid-cloudflare-token"
+      error: string
+      requiredAccessBoundary: string
+      cloudflareAccess: {
+        configured: boolean
+        audienceConfigured: boolean
+        teamDomainConfigured: boolean
+        allowedEmailsConfigured: boolean
+      }
+    }
+
+type LiveBrowserBlockedMode = Extract<LiveBrowserAccess, { ok: false }>["mode"]
+
+let liveBrowserCloudflareJWKS:
+  | {
+      url: string
+      jwks: ReturnType<typeof createRemoteJWKSet>
+    }
+  | undefined
+
+function liveBrowserCloudflareAccessConfig() {
+  const audience = process.env.OPENCODE_CLOUDFLARE_ACCESS_AUD?.trim()
+  const rawTeamDomain = process.env.OPENCODE_CLOUDFLARE_ACCESS_TEAM_DOMAIN?.trim()
+  const teamDomain = rawTeamDomain
+    ? rawTeamDomain.startsWith("http")
+      ? rawTeamDomain.replace(/\/+$/, "")
+      : `https://${rawTeamDomain.replace(/\/+$/, "")}`
+    : undefined
+  const allowedEmails = (process.env.OPENCODE_CLOUDFLARE_ACCESS_ALLOWED_EMAILS ?? "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean)
+  return {
+    audience,
+    teamDomain,
+    allowedEmails,
+    configured: Boolean(audience && teamDomain),
+  }
+}
+
+function liveBrowserAccessConfigSummary() {
+  const config = liveBrowserCloudflareAccessConfig()
+  return {
+    configured: config.configured,
+    audienceConfigured: Boolean(config.audience),
+    teamDomainConfigured: Boolean(config.teamDomain),
+    allowedEmailsConfigured: config.allowedEmails.length > 0,
+  }
+}
+
+function liveBrowserGateStatus() {
+  return {
+    enabled: liveBrowserExposureEnabled(),
+    mode: liveBrowserExposureEnabled() ? "cloudflare-access-required" : "disabled",
+    requiredAccessBoundary: "Cloudflare Access GitHub login for code.hustletogether.com",
+    cloudflareAccess: liveBrowserAccessConfigSummary(),
+    routes: {
+      status: "/experimental/browser/live/status",
+      stream: "/experimental/browser/live/stream",
+      snapshot: "/experimental/browser/live/snapshot",
+      novnc: "/experimental/browser/novnc/opencode-lite.html?path=websockify",
+    },
+  }
+}
+
+function liveBrowserAccessBlocked(mode: LiveBrowserBlockedMode, error: string): LiveBrowserAccess {
+  return {
+    ok: false,
+    mode,
+    error,
+    requiredAccessBoundary: "Cloudflare Access GitHub login for code.hustletogether.com",
+    cloudflareAccess: liveBrowserAccessConfigSummary(),
+  }
+}
+
+function liveBrowserAccessToken(request: { headers: Record<string, string | undefined> }) {
+  const headerToken = request.headers["cf-access-jwt-assertion"]
+  if (headerToken) return headerToken
+  const cookie = request.headers.cookie ?? ""
+  return cookie
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith("CF_Authorization="))
+    ?.slice("CF_Authorization=".length)
+}
+
+async function liveBrowserExposureAccess(request: { headers: Record<string, string | undefined> }): Promise<LiveBrowserAccess> {
+  if (!liveBrowserExposureEnabled()) {
+    return liveBrowserAccessBlocked(
+      "disabled",
+      "Live browser viewing and control are disabled. Keep OPENCODE_LIVE_BROWSER_EXPOSE unset until Cloudflare Access with GitHub login is verified.",
+    )
+  }
+
+  const config = liveBrowserCloudflareAccessConfig()
+  if (!config.configured || !config.audience || !config.teamDomain) {
+    return liveBrowserAccessBlocked(
+      "missing-cloudflare-config",
+      "OPENCODE_LIVE_BROWSER_EXPOSE is enabled, but Cloudflare Access AUD/team domain env vars are missing.",
+    )
+  }
+
+  const token = liveBrowserAccessToken(request)
+  if (!token) {
+    return liveBrowserAccessBlocked("missing-cloudflare-token", "Missing Cloudflare Access JWT assertion.")
+  }
+
+  try {
+    const certsURL = `${config.teamDomain}/cdn-cgi/access/certs`
+    if (!liveBrowserCloudflareJWKS || liveBrowserCloudflareJWKS.url !== certsURL) {
+      liveBrowserCloudflareJWKS = {
+        url: certsURL,
+        jwks: createRemoteJWKSet(new URL(certsURL)),
+      }
+    }
+    const verified = await jwtVerify(token, liveBrowserCloudflareJWKS.jwks, {
+      audience: config.audience,
+      issuer: config.teamDomain,
+    })
+    const email =
+      typeof verified.payload.email === "string"
+        ? verified.payload.email.toLowerCase()
+        : typeof request.headers["cf-access-authenticated-user-email"] === "string"
+          ? request.headers["cf-access-authenticated-user-email"].toLowerCase()
+          : null
+    if (config.allowedEmails.length > 0 && (!email || !config.allowedEmails.includes(email))) {
+      return liveBrowserAccessBlocked("invalid-cloudflare-token", "Cloudflare Access user is not allowlisted for Agent Chrome.")
+    }
+    return {
+      ok: true,
+      mode: "cloudflare-access",
+      email,
+      audience: config.audience,
+      teamDomain: config.teamDomain,
+    }
+  } catch (error) {
+    return liveBrowserAccessBlocked(
+      "invalid-cloudflare-token",
+      error instanceof Error ? error.message : "Invalid Cloudflare Access JWT assertion.",
+    )
+  }
+}
+
+function liveBrowserExposureBlockedResponse(format: "json" | "text", access?: LiveBrowserAccess) {
   const message =
-    "Live browser viewing and control are disabled until code.hustletogether.com is protected by the approved access boundary. Set OPENCODE_LIVE_BROWSER_EXPOSE=1 only after Cloudflare Access is verified."
+    access?.ok === false
+      ? access.error
+      : "Live browser viewing and control are disabled until code.hustletogether.com is protected by the approved access boundary."
   if (format === "json") {
     return HttpServerResponse.jsonUnsafe(
       {
         ok: false,
         exposureBlocked: true,
         error: message,
-        requiredAccessBoundary: "Cloudflare Access GitHub login for code.hustletogether.com",
+        requiredAccessBoundary:
+          access?.ok === false
+            ? access.requiredAccessBoundary
+            : "Cloudflare Access GitHub login for code.hustletogether.com",
+        mode: access?.ok === false ? access.mode : "disabled",
+        cloudflareAccess: access?.ok === false ? access.cloudflareAccess : liveBrowserAccessConfigSummary(),
       },
       { status: 403 },
     )
@@ -890,7 +1078,7 @@ async function liveBrowserNoVNCProxyResponse(target: URL) {
   )
 }
 
-async function liveBrowserStatus() {
+async function liveBrowserStatus(access?: Extract<LiveBrowserAccess, { ok: true }>) {
   const browser = await ensureLiveBrowser().catch((error: unknown) => ({
     ok: false,
     error: error instanceof Error ? error.message : String(error),
@@ -908,6 +1096,13 @@ async function liveBrowserStatus() {
     screenshotURL: "/experimental/browser/live/snapshot",
     streamURL: "/experimental/browser/live/stream",
     proxiedLiveURL: "/experimental/browser/novnc/opencode-lite.html?path=websockify",
+    access: access
+      ? {
+          mode: access.mode,
+          email: access.email,
+          teamDomain: access.teamDomain,
+        }
+      : undefined,
     browserUse: await browserUseBridgeStatus().catch((error: unknown) => ({
       ok: false,
       error: error instanceof Error ? error.message : String(error),
@@ -1302,10 +1497,12 @@ async function liveOnlyEnvironmentStatus() {
     },
     access: {
       appPasswordConfigured,
-      status: appPasswordConfigured ? "app_password_configured" : "approval_required",
-      warning: appPasswordConfigured
+      desiredBoundary: "Cloudflare Access GitHub login",
+      status: liveBrowserAccessConfigSummary().configured ? "cloudflare_access_configured" : "approval_required",
+      warning: liveBrowserAccessConfigSummary().configured
         ? null
-        : "OPENCODE_SERVER_PASSWORD is not set in the running service environment; set password or Cloudflare Access policy before exposing more powerful tools.",
+        : "Cloudflare Access GitHub login is not configured in the running service environment. Do not expose Agent Chrome until Access AUD/team-domain env vars are set and verified.",
+      cloudflareAccess: liveBrowserAccessConfigSummary(),
       secretValuesExposed: false,
     },
     git: {
