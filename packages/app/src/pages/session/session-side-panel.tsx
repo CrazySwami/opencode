@@ -50,6 +50,7 @@ const PANEL_ARTIFACTS_TAB = "panel://artifacts"
 const PANEL_FILE_BROWSER_TAB = "panel://file-browser"
 const PANEL_QUEUE_TAB = "panel://queue"
 const ARTIFACT_VIEWER_TAB_PREFIX = "artifact://"
+const FILE_BROWSER_STATE_KEY = "opencode:workspace-suite:file-browser"
 const PANEL_TABS = new Set([
   PANEL_TERMINAL_TAB,
   PANEL_BROWSER_TAB,
@@ -91,6 +92,24 @@ function artifactFromTab(tab: string) {
   } catch {
     return undefined
   }
+}
+
+function readFileBrowserState() {
+  if (typeof window === "undefined") return {}
+  try {
+    return JSON.parse(window.localStorage.getItem(FILE_BROWSER_STATE_KEY) || "{}") as {
+      currentPath?: string
+      mode?: "list" | "icons"
+      query?: string
+    }
+  } catch {
+    return {}
+  }
+}
+
+function writeFileBrowserState(state: { currentPath?: string; mode: "list" | "icons"; query: string }) {
+  if (typeof window === "undefined") return
+  window.localStorage.setItem(FILE_BROWSER_STATE_KEY, JSON.stringify(state))
 }
 
 function panelTabLabel(tab: string) {
@@ -838,19 +857,36 @@ function StatusRow(props: { label: string; value?: string | number | boolean | n
   )
 }
 
-function TabChrome(props: { title: string; iconTab: string; onRefresh?: () => void; children: JSX.Element }) {
+function TabChrome(props: {
+  title?: string
+  iconTab: string
+  onRefresh?: () => void
+  actions?: JSX.Element
+  bodyClass?: string
+  children: JSX.Element
+}) {
+  const hasHeader = createMemo(() => !!props.title || !!props.onRefresh || !!props.actions)
   return (
     <div class="h-full min-h-0 flex flex-col bg-background-base">
-      <div class="h-10 shrink-0 flex items-center justify-between gap-3 px-3 border-b border-border-weaker-base">
-        <div class="flex items-center gap-2 text-14-medium text-text-strong">
-          <PanelGlyph tab={props.iconTab} />
-          <span>{props.title}</span>
+      <Show when={hasHeader()}>
+        <div class="h-10 shrink-0 flex items-center justify-between gap-3 px-3 border-b border-border-weaker-base">
+          <Show when={props.title}>
+            {(title) => (
+              <div class="flex items-center gap-2 text-14-medium text-text-strong">
+                <PanelGlyph tab={props.iconTab} />
+                <span>{title()}</span>
+              </div>
+            )}
+          </Show>
+          <div class="ml-auto flex items-center gap-1">
+            {props.actions}
+            <Show when={!!props.onRefresh}>
+              <IconButton icon="reset" variant="ghost" class="h-7 w-7" onClick={() => props.onRefresh?.()} aria-label="Refresh" />
+            </Show>
+          </div>
         </div>
-        <Show when={!!props.onRefresh}>
-          <IconButton icon="reset" variant="ghost" class="h-7 w-7" onClick={() => props.onRefresh?.()} aria-label="Refresh" />
-        </Show>
-      </div>
-      <div class="flex-1 min-h-0 overflow-auto p-3">{props.children}</div>
+      </Show>
+      <div class={props.bodyClass ?? "flex-1 min-h-0 overflow-auto p-3"}>{props.children}</div>
     </div>
   )
 }
@@ -1424,14 +1460,17 @@ function ArtifactsTabContent(props: { sessionID?: string }) {
 function FileBrowserTabContent() {
   const fileContext = useFile()
   const { tabs } = useSessionLayout()
-  const [currentPath, setCurrentPath] = createSignal<string | undefined>()
-  const [mode, setMode] = createSignal<"list" | "icons">("list")
+  const initialState = readFileBrowserState()
+  const [currentPath, setCurrentPath] = createSignal<string | undefined>(initialState.currentPath)
+  const [mode, setMode] = createSignal<"list" | "icons">(initialState.mode ?? "list")
+  const [query, setQuery] = createSignal(initialState.query ?? "")
   const [selected, setSelected] = createSignal<any>()
   const browser = createPolledJson<any>(
     () =>
       `/experimental/files/browse${currentPath() ? `?path=${encodeURIComponent(currentPath()!)}` : ""}`,
     12000,
   )
+  createEffect(() => writeFileBrowserState({ currentPath: currentPath(), mode: mode(), query: query() }))
 
   const opensInViewer = (entry: any) =>
     ["image", "video", "audio", "pdf", "html", "json", "text"].includes(entry.kind)
@@ -1443,6 +1482,7 @@ function FileBrowserTabContent() {
   }
 
   const openEntry = (entry: any) => {
+    setSelected(entry)
     if (entry.kind === "directory") {
       setSelected(undefined)
       setCurrentPath(entry.path)
@@ -1452,18 +1492,23 @@ function FileBrowserTabContent() {
       openCodeFile(entry)
       return
     }
-    setSelected(entry)
     const tab = artifactViewerTab(entry)
     tabs().open(tab)
     tabs().setActive(tab)
   }
 
-  const preview = createMemo(() => selected())
+  const entries = createMemo(() => {
+    const all = browser.data()?.entries ?? []
+    const needle = query().trim().toLowerCase()
+    if (!needle) return all
+    return all.filter((entry: any) => `${entry.name} ${entry.path} ${entry.kind}`.toLowerCase().includes(needle))
+  })
+  const details = createMemo(() => selected())
 
   return (
-    <TabChrome title="File Browser" iconTab={PANEL_FILE_BROWSER_TAB} onRefresh={browser.refresh}>
+    <TabChrome iconTab={PANEL_FILE_BROWSER_TAB} bodyClass="flex-1 min-h-0 overflow-hidden">
       <div class="flex h-full min-h-0 flex-col gap-3">
-        <div class="flex items-center gap-2 rounded-md border border-border-weaker-base bg-background-stronger p-2">
+        <div class="flex flex-wrap items-center gap-2 border-b border-border-weaker-base bg-background-base p-2">
           <IconButton
             icon="arrow-left"
             variant="ghost"
@@ -1475,13 +1520,28 @@ function FileBrowserTabContent() {
             }}
             aria-label="Parent folder"
           />
-          <div class="min-w-0 flex-1 truncate text-13-regular text-text-strong">{browser.data()?.path ?? "Loading..."}</div>
+          <div class="min-w-[180px] flex-1 truncate rounded-md border border-border-weaker-base bg-background-stronger px-2 py-1 text-13-regular text-text-strong">
+            {browser.data()?.path ?? "Loading..."}
+          </div>
+          <input
+            class="h-8 min-w-[180px] rounded-md border border-border-weaker-base bg-background-stronger px-2 text-13-regular text-text-strong outline-none placeholder:text-text-weak"
+            value={query()}
+            onInput={(event) => setQuery(event.currentTarget.value)}
+            placeholder="Search this folder"
+          />
           <IconButton
             icon={mode() === "list" ? "dot-grid" : "bullet-list"}
             variant="ghost"
             class="h-7 w-7"
             onClick={() => setMode(mode() === "list" ? "icons" : "list")}
             aria-label="Toggle view"
+          />
+          <IconButton
+            icon="reset"
+            variant="ghost"
+            class="h-7 w-7"
+            onClick={() => browser.refresh()}
+            aria-label="Refresh"
           />
         </div>
         <Show when={browser.error()}>
@@ -1492,10 +1552,11 @@ function FileBrowserTabContent() {
             <Switch>
               <Match when={mode() === "icons"}>
                 <div class="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-2 p-2">
-                  <For each={browser.data()?.entries ?? []}>
+                  <For each={entries()}>
                     {(entry: any) => (
                       <button
                         class="min-h-24 rounded-md bg-background-base p-2 text-left hover:bg-surface-raised-base-hover"
+                        classList={{ "ring-1 ring-[#f97316]": selected()?.path === entry.path }}
                         onClick={() => openEntry(entry)}
                       >
                         <div class="mb-2 flex justify-center text-[#f97316]">
@@ -1509,10 +1570,11 @@ function FileBrowserTabContent() {
               </Match>
               <Match when={true}>
                 <div class="flex flex-col">
-                  <For each={browser.data()?.entries ?? []}>
+                  <For each={entries()}>
                     {(entry: any) => (
                       <button
                         class="flex items-center gap-3 border-b border-border-weaker-base px-3 py-2 text-left last:border-b-0 hover:bg-surface-raised-base-hover"
+                        classList={{ "bg-background-base": selected()?.path === entry.path }}
                         onClick={() => openEntry(entry)}
                       >
                         <span class="text-[#f97316]">
@@ -1525,21 +1587,26 @@ function FileBrowserTabContent() {
                       </button>
                     )}
                   </For>
+                  <Show when={entries().length === 0}>
+                    <div class="flex min-h-40 items-center justify-center p-6 text-center text-12-regular text-text-weak">
+                      No files match this search in the current folder.
+                    </div>
+                  </Show>
                 </div>
               </Match>
             </Switch>
           </div>
           <div class="min-h-0 overflow-hidden rounded-md border border-border-weaker-base bg-background-stronger">
             <Show
-              when={preview()}
+              when={details()}
               fallback={
                 <div class="flex h-full min-h-56 items-center justify-center p-6 text-center text-12-regular text-text-weak">
-                  Select a file to preview it here.
+                  Select a file or folder to see details.
                 </div>
               }
             >
               {(file) => (
-                <FilePreview file={file()} />
+                <FileDetails file={file()} onOpen={() => openEntry(file())} />
               )}
             </Show>
           </div>
@@ -1549,27 +1616,96 @@ function FileBrowserTabContent() {
   )
 }
 
+function FileKindGlyph(props: { kind?: string; size?: "small" | "large" }) {
+  const size = () => props.size ?? "small"
+  if (props.kind === "directory") return <Icon name="folder" size={size()} />
+  if (props.kind === "image") return <Icon name="photo" size={size()} />
+  if (props.kind === "video" || props.kind === "audio") return <Icon name="photo" size={size()} />
+  return <Icon name="code" size={size()} />
+}
+
+function FileDetails(props: { file: any; onOpen?: () => void }) {
+  const file = () => props.file
+  const extension = createMemo(() => {
+    const match = String(file().name ?? "").match(/\.([^.]+)$/)
+    return match?.[1]?.toUpperCase() ?? "None"
+  })
+  return (
+    <div class="flex h-full min-h-0 flex-col">
+      <div class="flex shrink-0 items-center gap-3 border-b border-border-weaker-base px-3 py-3">
+        <span class="flex size-10 items-center justify-center rounded-md border border-border-weaker-base bg-background-base text-[#f97316]">
+          <FileKindGlyph kind={file().kind} size="large" />
+        </span>
+        <div class="min-w-0">
+          <div class="truncate text-14-medium text-text-strong">{file().name}</div>
+          <div class="text-12-regular text-text-weak">{file().kind ?? "file"}</div>
+        </div>
+      </div>
+      <div class="min-h-0 flex-1 overflow-auto p-3">
+        <div class="grid gap-2">
+          <StatusRow label="Path" value={file().path} />
+          <StatusRow label="Type" value={file().contentType ?? file().kind ?? "Unknown"} />
+          <StatusRow label="Extension" value={extension()} />
+          <StatusRow label="Size" value={file().kind === "directory" ? "Folder" : formatBytes(file().size)} />
+          <StatusRow label="Modified" value={file().mtime ? new Date(file().mtime).toLocaleString() : "Unknown"} />
+        </div>
+      </div>
+      <div class="flex shrink-0 items-center justify-end gap-2 border-t border-border-weaker-base p-3">
+        <Show when={file().url}>
+          <a
+            class="flex h-8 items-center rounded-md border border-border-weaker-base bg-background-stronger px-3 text-13-regular text-text-strong hover:bg-surface-raised-base-hover"
+            href={file().url}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Open raw
+          </a>
+        </Show>
+        <button
+          class="h-8 rounded-md border border-border-weaker-base bg-background-stronger px-3 text-13-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-50"
+          disabled={file().kind === "directory"}
+          onClick={() => props.onOpen?.()}
+        >
+          Open viewer
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function FilePreview(props: { file: any }) {
   const file = () => props.file
-  const url = () => file().url
+  const url = () => file().url ?? (file().path ? `/experimental/files/view?path=${encodeURIComponent(file().path)}` : undefined)
   return (
     <div class="flex h-full min-h-0 flex-col">
       <div class="flex shrink-0 items-center justify-between gap-3 border-b border-border-weaker-base px-3 py-2">
-        <div class="min-w-0 truncate text-13-regular text-text-strong">{file().name}</div>
-        <a class="shrink-0 text-12-regular text-text-weak hover:text-text-strong" href={url()} target="_blank" rel="noreferrer">
-          Open
-        </a>
+        <div class="flex min-w-0 items-center gap-2">
+          <span class="text-[#f97316]"><FileKindGlyph kind={file().kind} size="small" /></span>
+          <div class="min-w-0 truncate text-13-regular text-text-strong">{file().name}</div>
+        </div>
+        <Show when={url()}>
+          {(href) => (
+            <a class="shrink-0 text-12-regular text-text-weak hover:text-text-strong" href={href()} target="_blank" rel="noreferrer">
+              Open raw
+            </a>
+          )}
+        </Show>
       </div>
       <div class="min-h-0 flex-1 overflow-auto">
         <Switch>
+          <Match when={!url()}>
+            <div class="flex h-full min-h-56 items-center justify-center p-6 text-center text-12-regular text-text-weak">
+              This file does not have a viewable URL.
+            </div>
+          </Match>
           <Match when={file().kind === "image"}>
-            <img src={url()} alt={file().name} class="block h-auto w-full" />
+            <img src={url()} alt={file().name} class="block h-auto max-h-full w-full object-contain" />
           </Match>
           <Match when={file().kind === "video"}>
-            <video src={url()} controls class="block h-auto w-full" />
+            <video src={url()} controls class="block h-full max-h-full w-full bg-black object-contain" />
           </Match>
           <Match when={file().kind === "audio"}>
-            <div class="p-3">
+            <div class="p-4">
               <audio src={url()} controls class="w-full" />
             </div>
           </Match>
@@ -1596,7 +1732,7 @@ function FilePreview(props: { file: any }) {
 function ArtifactViewerTabContent(props: { tab: string }) {
   const file = createMemo(() => artifactFromTab(props.tab))
   return (
-    <TabChrome title={file()?.name ?? "Artifact"} iconTab={props.tab}>
+    <TabChrome iconTab={props.tab} bodyClass="flex-1 min-h-0 overflow-hidden">
       <Show
         when={file()}
         fallback={
