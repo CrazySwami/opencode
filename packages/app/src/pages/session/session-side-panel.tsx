@@ -156,7 +156,7 @@ function PanelGlyph(props: { tab: string }) {
   )
 }
 
-function PanelTab(props: { tab: string; onClose: (tab: string) => void }) {
+function PanelTab(props: { tab: string; onClose: (tab: string) => void; onActivate: (tab: string) => void }) {
   const command = useCommand()
   const language = useLanguage()
   return (
@@ -183,6 +183,7 @@ function PanelTab(props: { tab: string; onClose: (tab: string) => void }) {
         </TooltipKeybind>
       }
       hideCloseButton
+      onClick={() => props.onActivate(props.tab)}
       onMiddleClick={() => props.onClose(props.tab)}
     >
       <div class="flex items-center gap-2">
@@ -2417,7 +2418,7 @@ export function SessionSidePanel(props: {
                             </div>
                           </Tabs.Trigger>
                         </Show>
-                        <For each={openedPanelTabs()}>{(tab) => <PanelTab tab={tab} onClose={tabs().close} />}</For>
+                        <For each={openedPanelTabs()}>{(tab) => <PanelTab tab={tab} onClose={tabs().close} onActivate={changeActiveTab} />}</For>
                         <SortableProvider ids={openedFileTabs()}>
                           <For each={openedFileTabs()}>
                             {(tab) => <SortableTab tab={tab} onTabClose={tabs().close} />}
