@@ -528,14 +528,13 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
 
   return (
     <div class="h-full min-h-0 flex flex-col bg-background-base">
-      <div class="h-10 shrink-0 flex items-center gap-3 px-3 border-b border-border-weaker-base">
-        <div class="text-14-medium text-text-strong">Browser</div>
-        <div class="text-12-regular text-text-weak truncate">{status().mode ?? "ct100-xvfb-chrome"}</div>
-      </div>
-      <div class="flex-1 min-h-0 flex flex-col gap-2 p-3">
-        <div class="flex flex-col gap-2 rounded-md border border-border-weaker-base bg-background-stronger p-2">
+      <div class="h-12 shrink-0 border-b border-border-weaker-base bg-background-stronger px-2 py-1.5">
+        <div class="flex h-full min-w-0 items-center gap-1 rounded-md border border-border-weaker-base bg-background-base px-1.5">
+          <IconButton icon="arrow-left" variant="ghost" class="h-7 w-7 shrink-0" disabled={browserBusy()} onClick={() => void runLiveInput({ action: "back" })} aria-label="Back" />
+          <IconButton icon="arrow-right" variant="ghost" class="h-7 w-7 shrink-0" disabled={browserBusy()} onClick={() => void runLiveInput({ action: "forward" })} aria-label="Forward" />
+          <IconButton icon="reset" variant="ghost" class="h-7 w-7 shrink-0" disabled={browserBusy()} onClick={() => void runLiveInput({ action: "reload" })} aria-label="Reload page" />
           <form
-            class="flex items-center gap-2"
+            class="flex min-w-0 flex-1 items-center"
             onSubmit={(event) => {
               event.preventDefault()
               submitBrowserUrl()
@@ -544,156 +543,134 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
             <input
               value={browserUrl() || status().currentURL || ""}
               onInput={(event) => setBrowserUrl(event.currentTarget.value)}
-              class="h-8 min-w-0 flex-1 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
+              class="h-8 min-w-0 flex-1 bg-transparent px-2 text-13-regular text-text-strong outline-none"
               placeholder="Search or enter URL"
             />
-            <IconButton icon="enter" variant="ghost" class="h-8 w-8" disabled={browserBusy()} onClick={submitBrowserUrl} aria-label="Open URL" />
+            <IconButton icon="enter" variant="ghost" class="h-7 w-7 shrink-0" disabled={browserBusy()} onClick={submitBrowserUrl} aria-label="Open URL" />
           </form>
-          <div class="flex flex-wrap items-center gap-1">
-            <IconButton icon="arrow-left" variant="ghost" class="h-7 w-7" disabled={browserBusy()} onClick={() => void runLiveInput({ action: "back" })} aria-label="Back" />
-            <IconButton icon="arrow-right" variant="ghost" class="h-7 w-7" disabled={browserBusy()} onClick={() => void runLiveInput({ action: "forward" })} aria-label="Forward" />
-            <IconButton icon="reset" variant="ghost" class="h-7 w-7" disabled={browserBusy()} onClick={() => void runLiveInput({ action: "reload" })} aria-label="Reload" />
-            <IconButton icon="reset" variant="ghost" class="h-7 w-7" onClick={() => setStreamKey(Date.now())} aria-label="Restart live stream" />
-            <IconButton icon="photo" variant="ghost" class="h-7 w-7" disabled={browserBusy()} onClick={() => void saveScreenshot(false)} aria-label="Save screenshot" />
-            <button class="h-7 rounded px-2 text-12-regular text-text-strong hover:bg-surface-raised-base-hover" onClick={() => setAnnotating(!annotating())} type="button">
-              {annotating() ? "Annotating" : "Annotate"}
-            </button>
-            <button class="h-7 rounded px-2 text-12-regular text-text-strong hover:bg-surface-raised-base-hover" onClick={() => void saveScreenshot(true)} type="button" disabled={browserBusy()}>
-              Send to chat
-            </button>
-            <IconButton
-              icon="window-cursor"
-              variant="ghost"
-              class="h-7 w-7"
-              disabled={!displayUrl()}
-              onClick={() => window.open(displayUrl(), "_blank", "noopener,noreferrer")}
-              aria-label="Open in external browser"
+          <div class="hidden min-w-0 items-center gap-1 md:flex">
+            <span class="max-w-40 truncate px-1 text-11-regular text-text-weak">{browserBusy() ? "working" : previewReady() ? "live" : "connecting"}</span>
+            <span
+              class="h-2 w-2 shrink-0 rounded-full"
+              classList={{
+                "bg-[#f97316]": !!status().browserUse?.ok,
+                "bg-text-disabled": !status().browserUse?.ok,
+              }}
+              title={status().browserUse?.ok ? "Browser Use ready" : "Browser Use unavailable"}
             />
           </div>
-          <div class="grid gap-2 md:grid-cols-2">
-            <form
-              class="flex items-center gap-2"
-              onSubmit={(event) => {
-                event.preventDefault()
-                sendBrowserText()
-              }}
-            >
-              <input
-                value={browserText()}
-                onInput={(event) => setBrowserText(event.currentTarget.value)}
-                class="h-8 min-w-0 flex-1 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
-                placeholder="Type into focused page"
-              />
-              <IconButton icon="enter" variant="ghost" class="h-8 w-8" disabled={browserBusy() || !browserText()} onClick={sendBrowserText} aria-label="Type into page" />
-            </form>
-            <form
-              class="flex items-center gap-2"
-              onSubmit={(event) => {
-                event.preventDefault()
-                void highlightSelector()
-              }}
-            >
-              <input
-                value={selector()}
-                onInput={(event) => setSelector(event.currentTarget.value)}
-                class="h-8 min-w-0 flex-1 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
-                placeholder="CSS selector to highlight"
-              />
-              <IconButton icon="enter" variant="ghost" class="h-8 w-8" disabled={browserBusy() || !selector()} onClick={highlightSelector} aria-label="Highlight selector" />
-            </form>
-          </div>
-          <input
-            value={note()}
-            onInput={(event) => setNote(event.currentTarget.value)}
-            class="h-8 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
-            placeholder="Optional screenshot note"
-          />
-          <Show when={browserError()}>
-            {(error) => <div class="text-12-regular text-text-weak break-all">{error()}</div>}
-          </Show>
-          <div class="flex flex-wrap items-center gap-2 rounded border border-border-weaker-base bg-background-base px-2 py-1 text-12-regular text-text-weak">
-            <span class="text-text-strong">Browser Use</span>
-            <span>{status().browserUse?.ok ? "ready" : "unavailable"}</span>
-            <Show when={status().browserUse?.health?.browserUseVersion}>
-              {(version) => <span>v{version()}</span>}
-            </Show>
-            <Show when={status().browserUse?.health?.model}>
-              {(model) => <span>{model()}</span>}
-            </Show>
-            <Show when={status().browserUse?.activeSessions !== undefined}>
-              <span>{status().browserUse?.activeSessions} sessions</span>
-            </Show>
-            <Show when={status().browserUse?.liveURL}>
-              {(url) => (
-                <button
-                  class="ml-auto rounded px-2 py-0.5 text-text-strong hover:bg-surface-raised-base-hover"
-                  type="button"
-                  onClick={() => window.open(url(), "_blank", "noopener,noreferrer")}
-                >
-                  Open noVNC
-                </button>
-              )}
-            </Show>
-          </div>
-          <Show when={lastArtifact()}>
-            {(artifact) => (
-              <div class="text-12-regular text-text-weak">
-                Saved <a class="text-text-strong underline" href={artifact().url} target="_blank" rel="noreferrer">{artifact().name}</a>
-              </div>
-            )}
-          </Show>
-        </div>
-        <div class="min-h-0 flex-1 overflow-hidden rounded-md border border-border-weaker-base bg-background-stronger">
-          <div class="flex items-center justify-between border-b border-border-weaker-base px-3 py-2">
-            <div class="min-w-0 truncate text-12-regular text-text-weak">{displayUrl()}</div>
-            <div class="shrink-0 text-11-regular text-text-weak">{browserBusy() ? "working" : previewReady() ? "live" : "connecting"}</div>
-          </div>
-          <div
-            class="relative size-full min-h-0 overflow-auto outline-none"
-            tabIndex={0}
-            onClick={handleViewportClick}
-            onWheel={handleViewportWheel}
-            onKeyDown={handleViewportKeyDown}
-          >
-            <Show when={!previewReady()}>
-              <div class="absolute inset-0 flex items-center justify-center text-center text-12-regular text-text-weak">
-                Starting live Chromium...
-              </div>
-            </Show>
-            <img
-              ref={(el) => (imageRef = el)}
-              src={streamSrc()}
-              alt="Live Chromium browser"
-              class="block w-full h-auto select-none"
-              classList={{ invisible: !previewReady() }}
-              onLoad={() => {
-                setPreviewReady(true)
-                if (annotating()) resizeCanvas()
-              }}
-              onError={() => setPreviewReady(false)}
-            />
-            <Show when={annotating()}>
-              <canvas
-                ref={(el) => (canvasRef = el)}
-                class="absolute left-0 top-0 cursor-crosshair touch-none"
-                onPointerDown={startAnnotation}
-                onPointerMove={drawAnnotation}
-                onPointerUp={stopAnnotation}
-                onPointerCancel={stopAnnotation}
-              />
-              <button
-                class="absolute right-3 top-3 rounded bg-background-base px-2 py-1 text-12-regular text-text-strong shadow"
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation()
-                  clearAnnotation()
+          <IconButton icon="photo" variant="ghost" class="h-7 w-7 shrink-0" disabled={browserBusy()} onClick={() => void saveScreenshot(false)} aria-label="Save screenshot" />
+          <IconButton icon="pencil-line" variant="ghost" class="h-7 w-7 shrink-0" disabled={browserBusy()} onClick={() => setAnnotating(!annotating())} aria-label={annotating() ? "Stop annotating" : "Annotate screenshot"} />
+          <IconButton icon="share" variant="ghost" class="h-7 w-7 shrink-0" disabled={browserBusy()} onClick={() => void saveScreenshot(true)} aria-label="Send screenshot to chat" />
+          <details class="group relative shrink-0" data-prevent-autofocus>
+            <summary class="flex h-7 w-7 cursor-pointer list-none items-center justify-center rounded text-text-weak hover:bg-surface-raised-base-hover hover:text-text-strong [&::-webkit-details-marker]:hidden">
+              <Icon name="sliders" size="small" />
+            </summary>
+            <div class="absolute right-0 top-9 z-20 flex w-[min(520px,calc(100vw-2rem))] flex-col gap-2 rounded-md border border-border-weaker-base bg-background-stronger p-2 shadow-lg">
+              <form
+                class="flex items-center gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  sendBrowserText()
                 }}
               >
-                Clear
-              </button>
-            </Show>
-          </div>
+                <Icon name="keyboard" size="small" />
+                <input
+                  value={browserText()}
+                  onInput={(event) => setBrowserText(event.currentTarget.value)}
+                  class="h-8 min-w-0 flex-1 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
+                  placeholder="Type into focused page"
+                />
+                <IconButton icon="enter" variant="ghost" class="h-8 w-8" disabled={browserBusy() || !browserText()} onClick={sendBrowserText} aria-label="Type into page" />
+              </form>
+              <form
+                class="flex items-center gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  void highlightSelector()
+                }}
+              >
+                <Icon name="selector" size="small" />
+                <input
+                  value={selector()}
+                  onInput={(event) => setSelector(event.currentTarget.value)}
+                  class="h-8 min-w-0 flex-1 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
+                  placeholder="CSS selector to highlight"
+                />
+                <IconButton icon="enter" variant="ghost" class="h-8 w-8" disabled={browserBusy() || !selector()} onClick={highlightSelector} aria-label="Highlight selector" />
+              </form>
+              <input
+                value={note()}
+                onInput={(event) => setNote(event.currentTarget.value)}
+                class="h-8 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
+                placeholder="Optional screenshot note"
+              />
+              <div class="flex flex-wrap items-center gap-2 text-12-regular text-text-weak">
+                <span class="text-text-strong">Browser Use</span>
+                <span>{status().browserUse?.ok ? "ready" : "unavailable"}</span>
+                <Show when={status().browserUse?.health?.browserUseVersion}>{(version) => <span>v{version()}</span>}</Show>
+                <Show when={status().browserUse?.health?.model}>{(model) => <span>{model()}</span>}</Show>
+                <Show when={status().browserUse?.activeSessions !== undefined}><span>{status().browserUse?.activeSessions} sessions</span></Show>
+                <Show when={status().browserUse?.liveURL}>{(url) => <button class="ml-auto rounded px-2 py-0.5 text-text-strong hover:bg-surface-raised-base-hover" type="button" onClick={() => window.open(url(), "_blank", "noopener,noreferrer")}>Open noVNC</button>}</Show>
+              </div>
+              <Show when={browserError()}>{(error) => <div class="text-12-regular text-text-weak break-all">{error()}</div>}</Show>
+              <Show when={lastArtifact()}>{(artifact) => <div class="text-12-regular text-text-weak">Saved <a class="text-text-strong underline" href={artifact().url} target="_blank" rel="noreferrer">{artifact().name}</a></div>}</Show>
+            </div>
+          </details>
+          <IconButton
+            icon="square-arrow-top-right"
+            variant="ghost"
+            class="h-7 w-7 shrink-0"
+            disabled={!displayUrl()}
+            onClick={() => window.open(displayUrl(), "_blank", "noopener,noreferrer")}
+            aria-label="Open in external browser"
+          />
         </div>
+      </div>
+      <div
+        class="relative min-h-0 flex-1 overflow-auto bg-background-base outline-none"
+        tabIndex={0}
+        onClick={handleViewportClick}
+        onWheel={handleViewportWheel}
+        onKeyDown={handleViewportKeyDown}
+      >
+        <Show when={!previewReady()}>
+          <div class="absolute inset-0 flex items-center justify-center text-center text-12-regular text-text-weak">
+            Starting live Chromium...
+          </div>
+        </Show>
+        <img
+          ref={(el) => (imageRef = el)}
+          src={streamSrc()}
+          alt="Live Chromium browser"
+          class="block w-full h-auto select-none"
+          classList={{ invisible: !previewReady() }}
+          onLoad={() => {
+            setPreviewReady(true)
+            if (annotating()) resizeCanvas()
+          }}
+          onError={() => setPreviewReady(false)}
+        />
+        <Show when={annotating()}>
+          <canvas
+            ref={(el) => (canvasRef = el)}
+            class="absolute left-0 top-0 cursor-crosshair touch-none"
+            onPointerDown={startAnnotation}
+            onPointerMove={drawAnnotation}
+            onPointerUp={stopAnnotation}
+            onPointerCancel={stopAnnotation}
+          />
+          <button
+            class="absolute right-3 top-3 rounded bg-background-base px-2 py-1 text-12-regular text-text-strong shadow"
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              clearAnnotation()
+            }}
+          >
+            Clear
+          </button>
+        </Show>
       </div>
     </div>
   )
@@ -806,47 +783,39 @@ function OpenDesignTabContent() {
 
 function MacViewTabContent() {
   const status = createPolledJson<any>(() => "/experimental/mac-view/status")
-  const [tick, setTick] = createSignal(Date.now())
-  createEffect(() => {
-    if (!status.data()?.configured) return
-    const timer = window.setInterval(() => setTick(Date.now()), 3000)
-    onCleanup(() => window.clearInterval(timer))
-  })
+  const [streamKey, setStreamKey] = createSignal(Date.now())
 
   return (
-    <TabChrome title="Mac View" iconTab={PANEL_MAC_VIEW_TAB} onRefresh={status.refresh}>
-      <div class="flex flex-col gap-3">
-        <StatusRow label="Mode" value={status.data()?.mode ?? "read-only"} />
-        <StatusRow label="Feed" value={status.data()?.configured ? "configured" : "not configured"} />
-        <Show when={status.data()?.feedURL}>
-          {(feedURL) => <StatusRow label="Feed URL" value={feedURL()} />}
-        </Show>
-        <StatusRow label="Health" value={status.data()?.health?.ok ? "healthy" : status.data()?.note} />
-        <Show when={status.data()?.configured}>
-          <div class="overflow-hidden rounded-md border border-border-weaker-base bg-background-stronger">
-            <img
-              src={`/experimental/mac-view/snapshot?t=${tick()}`}
-              alt="Mac View snapshot"
-              class="block w-full h-auto"
-            />
-          </div>
-        </Show>
-        <Show when={status.data()?.feedURL}>
-          {(feedURL) => (
-            <button
-              class="h-8 w-fit px-3 rounded-md border border-border-weaker-base bg-background-stronger text-13-regular text-text-strong"
-              onClick={() => window.open(feedURL(), "_blank", "noopener,noreferrer")}
-            >
-              Open feed in external browser
-            </button>
-          )}
-        </Show>
-        <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">
-          Mac View needs the Mac ScreenCaptureKit helper running and OPENCODE_MAC_VIEW_URL set on this OpenCode service.
-          Control stays routed through the existing Computer Use approval path.
+    <div class="h-full min-h-0 flex flex-col bg-background-base">
+      <div class="h-10 shrink-0 flex items-center justify-between gap-3 px-3 border-b border-border-weaker-base bg-background-stronger">
+        <div class="flex min-w-0 items-center gap-2 text-14-medium text-text-strong">
+          <PanelGlyph tab={PANEL_MAC_VIEW_TAB} />
+          <span>Mac View</span>
+          <span class="truncate text-12-regular text-text-weak">{status.data()?.health?.ok ? "live" : (status.data()?.note ?? "checking")}</span>
+        </div>
+        <div class="flex items-center gap-1">
+          <IconButton icon="reset" variant="ghost" class="h-7 w-7" onClick={() => { void status.refresh(); setStreamKey(Date.now()) }} aria-label="Refresh Mac View" />
+          <Show when={status.data()?.feedURL}>{(feedURL) => <IconButton icon="square-arrow-top-right" variant="ghost" class="h-7 w-7" onClick={() => window.open(feedURL(), "_blank", "noopener,noreferrer")} aria-label="Open feed externally" />}</Show>
         </div>
       </div>
-    </TabChrome>
+      <Show
+        when={status.data()?.configured}
+        fallback={
+          <div class="flex flex-1 items-center justify-center p-6 text-center text-13-regular text-text-weak">
+            Mac View needs OPENCODE_MAC_VIEW_URL pointed at the ScreenCaptureKit helper.
+          </div>
+        }
+      >
+        <div class="min-h-0 flex-1 overflow-auto bg-background-base">
+          <img
+            src={`/experimental/mac-view/stream?t=${streamKey()}`}
+            alt="Live Mac screen"
+            class="block h-auto w-full select-none"
+            onError={() => void status.refresh()}
+          />
+        </div>
+      </Show>
+    </div>
   )
 }
 
@@ -1063,6 +1032,8 @@ function ArtifactsTabContent(props: { sessionID?: string }) {
 }
 
 function FileBrowserTabContent() {
+  const fileContext = useFile()
+  const { tabs } = useSessionLayout()
   const [currentPath, setCurrentPath] = createSignal<string | undefined>()
   const [mode, setMode] = createSignal<"list" | "icons">("list")
   const [selected, setSelected] = createSignal<any>()
@@ -1072,10 +1043,22 @@ function FileBrowserTabContent() {
     12000,
   )
 
+  const opensInViewer = (entry: any) => ["image", "video", "audio", "pdf"].includes(entry.kind)
+  const openCodeFile = (entry: any) => {
+    const tab = fileContext.tab(entry.path)
+    tabs().open(tab)
+    tabs().setActive(tab)
+    void fileContext.load(entry.path)
+  }
+
   const openEntry = (entry: any) => {
     if (entry.kind === "directory") {
       setSelected(undefined)
       setCurrentPath(entry.path)
+      return
+    }
+    if (!opensInViewer(entry)) {
+      openCodeFile(entry)
       return
     }
     setSelected(entry)
@@ -1196,8 +1179,13 @@ function FilePreview(props: { file: any }) {
               <audio src={url()} controls class="w-full" />
             </div>
           </Match>
-          <Match when={true}>
+          <Match when={file().kind === "pdf"}>
             <iframe src={url()} title={file().name} class="h-full min-h-96 w-full border-0" />
+          </Match>
+          <Match when={true}>
+            <div class="flex h-full min-h-56 items-center justify-center p-6 text-center text-12-regular text-text-weak">
+              Code and text files open in normal editor tabs.
+            </div>
           </Match>
         </Switch>
       </div>
@@ -1632,7 +1620,6 @@ export function SessionSidePanel(props: {
                                 <PanelMenuItem tab={PANEL_RESOURCES_TAB} onSelect={() => openPanelTab(PANEL_RESOURCES_TAB)} />
                                 <PanelMenuItem tab={PANEL_ARTIFACTS_TAB} onSelect={() => openPanelTab(PANEL_ARTIFACTS_TAB)} />
                                 <PanelMenuItem tab={PANEL_FILE_BROWSER_TAB} onSelect={() => openPanelTab(PANEL_FILE_BROWSER_TAB)} />
-                                <PanelMenuItem tab={PANEL_QUEUE_TAB} onSelect={() => openPanelTab(PANEL_QUEUE_TAB)} />
                               </DropdownMenu.Content>
                             </DropdownMenu.Portal>
                           </DropdownMenu>

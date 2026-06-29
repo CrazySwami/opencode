@@ -547,18 +547,15 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
     )
 
     yield* router.add("GET", "/experimental/mac-view/stream", () =>
-      Effect.promise(async () => {
-        const feedURL = process.env.OPENCODE_MAC_VIEW_URL?.replace(/\/+$/, "")
-        if (!feedURL) return HttpServerResponse.text("Mac View is not configured", { status: 404 })
-        const response = await fetch(`${feedURL}/snapshot`).catch(() => undefined)
-        if (!response?.ok) return HttpServerResponse.text("Mac View stream unavailable", { status: 502 })
-        const bytes = new Uint8Array(await response.arrayBuffer())
-        return HttpServerResponse.setHeader(
-          HttpServerResponse.uint8Array(bytes, { contentType: response.headers.get("content-type") ?? "image/jpeg" }),
+      Effect.succeed(
+        HttpServerResponse.setHeader(
+          HttpServerResponse.stream(macViewStream(), {
+            contentType: `multipart/x-mixed-replace; boundary=${macViewStreamBoundary}`,
+          }),
           "cache-control",
           "no-store",
-        )
-      }),
+        ),
+      ),
     )
 
     yield* router.add("GET", "/experimental/browser/:sessionID/artifacts", (request) =>
@@ -653,6 +650,7 @@ function contentTypeForFile(name: string) {
   if (lower.endsWith(".pdf")) return "application/pdf"
   if (lower.endsWith(".html") || lower.endsWith(".htm")) return "text/html"
   if (lower.endsWith(".json")) return "application/json"
+  if (/\.(ts|tsx|js|jsx|mjs|cjs|css|scss|sass|py|rb|go|rs|java|c|cc|cpp|h|hpp|cs|php|swift|kt|kts|sh|bash|zsh|fish|sql|yaml|yml|toml|xml|vue|svelte)$/i.test(lower)) return "text/plain"
   if (lower.endsWith(".md") || lower.endsWith(".txt") || lower.endsWith(".log")) return "text/plain"
   return "application/octet-stream"
 }
@@ -708,6 +706,8 @@ type LiveBrowserInput =
 
 const liveBrowserDisplay = () => process.env.OPENCODE_LIVE_BROWSER_DISPLAY || ":99"
 const liveBrowserStreamBoundary = "opencode-browser-frame"
+const macViewStreamBoundary = "opencode-mac-frame"
+const liveBrowserStreamDelay = () => Math.max(250, Number(process.env.OPENCODE_LIVE_BROWSER_FRAME_MS || 500))
 const liveBrowserHome = () =>
   path.resolve(
     process.env.OPENCODE_LIVE_BROWSER_HOME ||
@@ -843,7 +843,7 @@ function liveBrowserStream() {
       while (true) {
         const image = await captureLiveBrowserImage({ transient: true })
         yield multipartBrowserFrame(image)
-        await delay(850)
+        await delay(liveBrowserStreamDelay())
       }
     })(),
     (error) => error,
@@ -1180,8 +1180,62 @@ async function openDesignProxyResponse(rawURL: string) {
   )
 }
 
+function macViewFeedURL() {
+  return process.env.OPENCODE_MAC_VIEW_URL?.replace(/\/+$/, "")
+}
+
+function macViewFPS() {
+  const configured = Number(process.env.OPENCODE_MAC_VIEW_FPS || 6)
+  if (!Number.isFinite(configured)) return 6
+  return Math.max(1, Math.min(12, configured))
+}
+
+function macViewStream() {
+  return Stream.fromAsyncIterable(
+    (async function* () {
+      while (true) {
+        const frame = await captureMacViewFrame()
+        yield multipartMacViewFrame(frame.bytes, frame.contentType)
+        await delay(Math.round(1000 / macViewFPS()))
+      }
+    })(),
+    (error) => error,
+  )
+}
+
+async function captureMacViewFrame() {
+  const feedURL = macViewFeedURL()
+  if (!feedURL) throw new Error("Mac View is not configured")
+  const response = await fetch(`${feedURL}/stream`)
+  if (!response.ok) throw new Error(`Mac View frame unavailable: ${response.status}`)
+  return {
+    bytes: Buffer.from(await response.arrayBuffer()),
+    contentType: response.headers.get("content-type") ?? "image/png",
+  }
+}
+
+function multipartMacViewFrame(image: Buffer, contentType: string) {
+  const header = new TextEncoder().encode(
+    [
+      `--${macViewStreamBoundary}`,
+      `content-type: ${contentType}`,
+      `content-length: ${image.length}`,
+      "cache-control: no-store",
+      "",
+      "",
+    ].join("\r\n"),
+  )
+  const footer = new TextEncoder().encode("\r\n")
+  const frame = new Uint8Array(header.length + image.length + footer.length)
+  frame.set(header, 0)
+  frame.set(image, header.length)
+  frame.set(footer, header.length + image.length)
+  return frame
+}
+
+
 async function macViewStatus() {
-  const feedURL = process.env.OPENCODE_MAC_VIEW_URL?.replace(/\/+$/, "")
+  const feedURL = macViewFeedURL()
   if (!feedURL) {
     return {
       configured: false,
@@ -1194,8 +1248,10 @@ async function macViewStatus() {
     configured: true,
     mode: "read-only",
     feedURL,
+    fps: macViewFPS(),
     health,
     snapshotURL: "/experimental/mac-view/snapshot",
+    streamURL: "/experimental/mac-view/stream",
   }
 }
 
