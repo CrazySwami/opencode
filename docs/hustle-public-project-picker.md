@@ -1,6 +1,6 @@
 # OpenCode Public Project Picker Runbook
 
-Last verified: 2026-06-28
+Last verified: 2026-06-29
 
 ## Purpose
 
@@ -116,6 +116,27 @@ The public proxy now protects the server-backed default workspace in six places.
    ```
 
    This session existed in the database and direct session route, but was missing from the generic sidebar list until the merged-list proxy behavior was added.
+
+
+## 2026-06-29 Topology Guardrail
+
+The project-picker normalization depends on the public route reaching `opencode-public-proxy.service` on port `8300`, with OpenCode itself listening internally on `127.0.0.1:8299`. If a future OpenCode release drop-in points OpenCode directly at public `8300`, the Open Project modal will bypass the `/find/file` rewrite and show only recent projects or no folders.
+
+Expected listeners:
+
+```text
+127.0.0.1:8299 -> opencode
+0.0.0.0:8300 -> node /usr/local/sbin/opencode-public-proxy.mjs
+```
+
+The repair command sequence is:
+
+```bash
+systemctl restart opencode.service
+systemctl start opencode-public-proxy.service
+curl -sS https://code.hustletogether.com/__health
+curl -sS 'https://code.hustletogether.com/find/file?directory=%2Fhome%2Fdev&query=&type=directory&limit=50'
+```
 
 ## Verification Commands
 
