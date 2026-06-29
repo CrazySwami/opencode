@@ -41,6 +41,7 @@ import { useSessionLayout } from "@/pages/session/session-layout"
 type RenderDiff = (SnapshotFileDiff & { file: string }) | VcsFileDiff
 const PANEL_TERMINAL_TAB = "panel://terminal"
 const PANEL_BROWSER_TAB = "panel://browser"
+const PANEL_PREVIEW_TAB = "panel://preview"
 const PANEL_OPEN_DESIGN_TAB = "panel://open-design"
 const PANEL_MAC_VIEW_TAB = "panel://mac-view"
 const PANEL_ACCOUNTS_TAB = "panel://accounts"
@@ -51,9 +52,11 @@ const PANEL_FILE_BROWSER_TAB = "panel://file-browser"
 const PANEL_QUEUE_TAB = "panel://queue"
 const ARTIFACT_VIEWER_TAB_PREFIX = "artifact://"
 const FILE_BROWSER_STATE_KEY = "opencode:workspace-suite:file-browser"
+const PREVIEW_STATE_KEY = "opencode:workspace-suite:preview"
 const PANEL_TABS = new Set([
   PANEL_TERMINAL_TAB,
   PANEL_BROWSER_TAB,
+  PANEL_PREVIEW_TAB,
   PANEL_OPEN_DESIGN_TAB,
   PANEL_MAC_VIEW_TAB,
   PANEL_ACCOUNTS_TAB,
@@ -116,7 +119,8 @@ function panelTabLabel(tab: string) {
   const artifact = artifactFromTab(tab)
   if (artifact) return artifact.name ?? "Artifact"
   if (tab === PANEL_TERMINAL_TAB) return "Terminal"
-  if (tab === PANEL_BROWSER_TAB) return "Browser"
+  if (tab === PANEL_BROWSER_TAB) return "Agent Chrome"
+  if (tab === PANEL_PREVIEW_TAB) return "Preview"
   if (tab === PANEL_OPEN_DESIGN_TAB) return "Open Design"
   if (tab === PANEL_MAC_VIEW_TAB) return "Mac View"
   if (tab === PANEL_ACCOUNTS_TAB) return "Accounts"
@@ -135,6 +139,7 @@ function panelTabIcon(tab: string) {
   if (artifact) return <Icon name="code" size="small" />
   if (tab === PANEL_TERMINAL_TAB) return <Icon name="terminal" size="small" />
   if (tab === PANEL_BROWSER_TAB) return <Icon name="window-cursor" size="small" />
+  if (tab === PANEL_PREVIEW_TAB) return <Icon name="window-cursor" size="small" />
   if (tab === PANEL_OPEN_DESIGN_TAB) return <span class="text-[10px] leading-none font-semibold tracking-[0]">OD</span>
   if (tab === PANEL_MAC_VIEW_TAB) return <Icon name="eye" size="small" />
   if (tab === PANEL_ACCOUNTS_TAB) return <Icon name="providers" size="small" />
@@ -819,6 +824,96 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
           </Show>
         </Show>
       </div>
+    </div>
+  )
+}
+
+function readPreviewState() {
+  if (typeof window === "undefined") return {}
+  try {
+    return JSON.parse(window.localStorage.getItem(PREVIEW_STATE_KEY) || "{}") as { url?: string }
+  } catch {
+    return {}
+  }
+}
+
+function writePreviewState(state: { url?: string }) {
+  if (typeof window === "undefined") return
+  window.localStorage.setItem(PREVIEW_STATE_KEY, JSON.stringify(state))
+}
+
+function normalizePreviewURL(value: string) {
+  const input = value.trim()
+  if (!input) return ""
+  if (input.startsWith("/") || /^[a-z]+:\/\//i.test(input)) return input
+  if (input.includes("localhost") || input.includes("127.0.0.1") || input.includes("100.")) return `http://${input}`
+  return `https://${input}`
+}
+
+function PreviewTabContent() {
+  const initial = readPreviewState().url ?? ""
+  const [address, setAddress] = createSignal(initial)
+  const [currentURL, setCurrentURL] = createSignal(initial)
+  const [frameKey, setFrameKey] = createSignal(Date.now())
+
+  createEffect(() => writePreviewState({ url: currentURL() || address() }))
+
+  const openAddress = () => {
+    const next = normalizePreviewURL(address())
+    setAddress(next)
+    setCurrentURL(next)
+    setFrameKey(Date.now())
+  }
+
+  return (
+    <div class="h-full min-h-0 flex flex-col bg-background-base">
+      <div class="h-12 shrink-0 border-b border-border-weaker-base bg-background-stronger px-2 py-1.5">
+        <div class="flex h-full min-w-0 items-center gap-1 rounded-md border border-border-weaker-base bg-background-base px-1.5">
+          <form
+            class="flex min-w-0 flex-1 items-center"
+            onSubmit={(event) => {
+              event.preventDefault()
+              openAddress()
+            }}
+          >
+            <input
+              value={address()}
+              onInput={(event) => setAddress(event.currentTarget.value)}
+              class="h-8 min-w-0 flex-1 bg-transparent px-2 text-13-regular text-text-strong outline-none"
+              placeholder="Preview URL, route, or local app"
+            />
+            <IconButton icon="enter" variant="ghost" class="h-7 w-7 shrink-0" disabled={!address().trim()} onClick={openAddress} aria-label="Open preview URL" />
+          </form>
+          <IconButton icon="reset" variant="ghost" class="h-7 w-7 shrink-0" disabled={!currentURL()} onClick={() => setFrameKey(Date.now())} aria-label="Refresh preview" />
+          <IconButton
+            icon="square-arrow-top-right"
+            variant="ghost"
+            class="h-7 w-7 shrink-0"
+            disabled={!currentURL()}
+            onClick={() => window.open(currentURL(), "_blank", "noopener,noreferrer")}
+            aria-label="Open preview externally"
+          />
+        </div>
+      </div>
+      <Show
+        when={currentURL()}
+        fallback={
+          <div class="flex flex-1 items-center justify-center p-6 text-center text-13-regular text-text-weak">
+            Enter a hosted route, project URL, or local preview URL.
+          </div>
+        }
+      >
+        {(url) => (
+          <iframe
+            key={frameKey()}
+            src={url()}
+            title="Preview"
+            class="block size-full border-0 bg-white"
+            sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-downloads"
+            allow="clipboard-read; clipboard-write"
+          />
+        )}
+      </Show>
     </div>
   )
 }
@@ -2277,6 +2372,7 @@ export function SessionSidePanel(props: {
                           </button>
                           <PanelMenuButton tab={PANEL_TERMINAL_TAB} onSelect={() => openPanelTab(PANEL_TERMINAL_TAB)} />
                           <PanelMenuButton tab={PANEL_BROWSER_TAB} onSelect={() => openPanelTab(PANEL_BROWSER_TAB)} />
+                          <PanelMenuButton tab={PANEL_PREVIEW_TAB} onSelect={() => openPanelTab(PANEL_PREVIEW_TAB)} />
                           <PanelMenuButton tab={PANEL_OPEN_DESIGN_TAB} onSelect={launchOpenDesign} />
                           <PanelMenuButton tab={PANEL_MAC_VIEW_TAB} onSelect={() => openPanelTab(PANEL_MAC_VIEW_TAB)} />
                           <PanelMenuButton tab={PANEL_ACCOUNTS_TAB} onSelect={() => openPanelTab(PANEL_ACCOUNTS_TAB)} />
@@ -2329,6 +2425,12 @@ export function SessionSidePanel(props: {
                     <Tabs.Content value={PANEL_BROWSER_TAB} class="flex flex-col h-full overflow-hidden contain-strict">
                       <Show when={activePanelTab() === PANEL_BROWSER_TAB}>
                         <BrowserTabContent sessionID={params.id} launch={browserLaunch()} />
+                      </Show>
+                    </Tabs.Content>
+
+                    <Tabs.Content value={PANEL_PREVIEW_TAB} class="flex flex-col h-full overflow-hidden contain-strict">
+                      <Show when={activePanelTab() === PANEL_PREVIEW_TAB}>
+                        <PreviewTabContent />
                       </Show>
                     </Tabs.Content>
 
