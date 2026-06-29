@@ -712,13 +712,44 @@ function TitlebarUpdateIconButton(props: { state: TitlebarUpdatePillState }) {
 }
 
 function ChannelIndicator() {
+  const server = useServer()
+  const info = createMemo(() => {
+    const url = server.current?.http.url || window.location.origin
+    let host = url
+    try {
+      host = new URL(url).host
+    } catch {
+      host = url.replace(/^https?:\/\//, "").replace(/\/+$/, "")
+    }
+
+    const channel = import.meta.env.VITE_OPENCODE_CHANNEL
+    const lowerHost = host.toLowerCase()
+    const label = lowerHost === "code.hustletogether.com" || lowerHost.endsWith(":8300")
+      ? "LIVE"
+      : lowerHost.includes("100.99.131.90:8310") || lowerHost.endsWith(":8310")
+        ? "STAGING"
+        : lowerHost.includes("localhost") || lowerHost.includes("127.0.0.1")
+          ? "LOCAL"
+          : channel?.toUpperCase() || "SERVER"
+
+    return {
+      label,
+      title: `${label} · ${url}${channel ? ` · ${channel} build` : ""}`,
+    }
+  })
+
   return (
-    <>
-      {["beta", "dev"].includes(import.meta.env.VITE_OPENCODE_CHANNEL) && (
-        <div class="bg-icon-interactive-base text-[#FFF] font-medium px-2 rounded-sm uppercase font-mono">
-          {import.meta.env.VITE_OPENCODE_CHANNEL.toUpperCase()}
-        </div>
-      )}
-    </>
+    <div
+      class="text-[#FFF] font-medium px-2 rounded-sm uppercase font-mono"
+      classList={{
+        "bg-green-600": info().label === "LIVE",
+        "bg-orange-600": info().label === "STAGING",
+        "bg-neutral-600": info().label === "LOCAL",
+        "bg-icon-interactive-base": !["LIVE", "STAGING", "LOCAL"].includes(info().label),
+      }}
+      title={info().title}
+    >
+      {info().label}
+    </div>
   )
 }
