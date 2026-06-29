@@ -940,6 +940,10 @@ function MacViewTabContent() {
   const status = createPolledJson<any>(() => "/experimental/mac-view/status")
   const [streamKey, setStreamKey] = createSignal(Date.now())
   const [fps, setFps] = createSignal(30)
+  const streamReconnectMs = 30_000
+
+  const reconnect = setInterval(() => setStreamKey(Date.now()), streamReconnectMs)
+  onCleanup(() => clearInterval(reconnect))
 
   createEffect(() => {
     const next = Number(status.data()?.fps)
@@ -987,7 +991,7 @@ function MacViewTabContent() {
       >
         <div class="min-h-0 flex-1 overflow-auto bg-background-base">
           <img
-            src={`/experimental/mac-view/stream?fps=${fps()}&t=${streamKey()}`}
+            src={`/experimental/mac-view/stream?fps=${fps()}&width=1280&t=${streamKey()}`}
             alt="Live Mac screen"
             class="block h-auto w-full select-none"
             onError={() => void status.refresh()}

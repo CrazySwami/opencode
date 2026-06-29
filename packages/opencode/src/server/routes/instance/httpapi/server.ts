@@ -612,15 +612,7 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
     )
 
     yield* router.add("GET", "/experimental/mac-view/stream", (request) =>
-      Effect.succeed(
-        HttpServerResponse.setHeader(
-          HttpServerResponse.stream(macViewStream(macViewFPSFromRequest(request.url)), {
-            contentType: `multipart/x-mixed-replace; boundary=${macViewStreamBoundary}`,
-          }),
-          "cache-control",
-          "no-store",
-        ),
-      ),
+      Effect.promise(async () => macViewStreamResponse(request.url)),
     )
 
     yield* router.add("GET", "/experimental/browser/:sessionID/artifacts", (request) =>
@@ -783,7 +775,6 @@ type LiveBrowserInput =
 
 const liveBrowserDisplay = () => process.env.OPENCODE_LIVE_BROWSER_DISPLAY || ":99"
 const liveBrowserStreamBoundary = "opencode-browser-frame"
-const macViewStreamBoundary = "opencode-mac-frame"
 const liveBrowserStreamDelay = () => Math.max(250, Number(process.env.OPENCODE_LIVE_BROWSER_FRAME_MS || 500))
 const liveBrowserHome = () =>
   path.resolve(
@@ -1550,47 +1541,41 @@ function macViewFPSFromRequest(requestURL: string) {
   return macViewFPS(value || undefined)
 }
 
-function macViewStream(fps = macViewFPS()) {
-  return Stream.fromAsyncIterable(
-    (async function* () {
-      while (true) {
-        const frame = await captureMacViewFrame()
-        yield multipartMacViewFrame(frame.bytes, frame.contentType)
-        await delay(Math.round(1000 / fps))
-      }
-    })(),
-    (error) => error,
-  )
-}
-
-async function captureMacViewFrame() {
+async function macViewStreamResponse(requestURL: string) {
   const feedURL = macViewFeedURL()
-  if (!feedURL) throw new Error("Mac View is not configured")
-  const response = await fetch(`${feedURL}/stream`)
-  if (!response.ok) throw new Error(`Mac View frame unavailable: ${response.status}`)
-  return {
-    bytes: Buffer.from(await response.arrayBuffer()),
-    contentType: response.headers.get("content-type") ?? "image/png",
+  if (!feedURL) return HttpServerResponse.text("Mac View is not configured", { status: 404 })
+  const url = new URL(requestURL, "http://localhost")
+  const fps = macViewFPS(url.searchParams.get("fps") || undefined)
+  const width = Math.max(640, Math.min(2048, Number(url.searchParams.get("width") || 1280)))
+  const controller = new AbortController()
+  const response = await fetch(`${feedURL}/stream?fps=${fps}&width=${Math.round(width)}`, { signal: controller.signal })
+  if (!response.ok || !response.body) {
+    controller.abort()
+    return HttpServerResponse.text(`Mac View stream unavailable: ${response.status}`, { status: 502 })
   }
-}
-
-function multipartMacViewFrame(image: Buffer, contentType: string) {
-  const header = new TextEncoder().encode(
-    [
-      `--${macViewStreamBoundary}`,
-      `content-type: ${contentType}`,
-      `content-length: ${image.length}`,
-      "cache-control: no-store",
-      "",
-      "",
-    ].join("\r\n"),
+  const reader = response.body.getReader()
+  return HttpServerResponse.setHeader(
+    HttpServerResponse.stream(
+      Stream.fromAsyncIterable(
+        (async function* () {
+          try {
+            while (true) {
+              const chunk = await reader.read()
+              if (chunk.done) return
+              yield chunk.value
+            }
+          } finally {
+            controller.abort()
+            await reader.cancel().catch(() => undefined)
+          }
+        })(),
+        (cause) => new Error(`Mac View stream error: ${String(cause)}`),
+      ),
+      { contentType: response.headers.get("content-type") ?? "multipart/x-mixed-replace; boundary=ffmpeg" },
+    ),
+    "cache-control",
+    "no-store",
   )
-  const footer = new TextEncoder().encode("\r\n")
-  const frame = new Uint8Array(header.length + image.length + footer.length)
-  frame.set(header, 0)
-  frame.set(image, header.length)
-  frame.set(footer, header.length + image.length)
-  return frame
 }
 
 
