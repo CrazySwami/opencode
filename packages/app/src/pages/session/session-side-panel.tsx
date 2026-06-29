@@ -7,7 +7,6 @@ import { Icon } from "@opencode-ai/ui/icon"
 import { TooltipKeybind } from "@opencode-ai/ui/tooltip"
 import { ResizeHandle } from "@opencode-ai/ui/resize-handle"
 import { Mark } from "@opencode-ai/ui/logo"
-import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
 import { DragDropProvider, DragDropSensors, DragOverlay, SortableProvider, closestCenter } from "@thisbeyond/solid-dnd"
 import type { DragEvent } from "@thisbeyond/solid-dnd"
 import type { SnapshotFileDiff, VcsFileDiff } from "@opencode-ai/sdk/v2"
@@ -136,16 +135,16 @@ function PanelTab(props: { tab: string; onClose: (tab: string) => void }) {
   )
 }
 
-function PanelMenuItem(props: { tab: string; onSelect: () => void }) {
+function PanelMenuButton(props: { tab: string; onSelect: () => void }) {
   return (
-    <DropdownMenu.Item onSelect={props.onSelect}>
-      <DropdownMenu.ItemLabel>
-        <span class="flex items-center gap-2">
-          <PanelGlyph tab={props.tab} />
-          <span>{panelTabLabel(props.tab)}</span>
-        </span>
-      </DropdownMenu.ItemLabel>
-    </DropdownMenu.Item>
+    <button
+      type="button"
+      class="flex h-8 w-full items-center gap-2 rounded-md px-3 text-left text-13-regular text-text-base hover:bg-surface-base-hover"
+      onClick={props.onSelect}
+    >
+      <PanelGlyph tab={props.tab} />
+      <span>{panelTabLabel(props.tab)}</span>
+    </button>
   )
 }
 
@@ -1419,12 +1418,14 @@ export function SessionSidePanel(props: {
   }
 
   const showFilePicker = () => {
+    setPanelMenuOpen(false)
     void import("@/components/dialog-select-file").then((x) => {
       dialog.show(() => <x.DialogSelectFile mode="files" onOpenFile={showAllFiles} />)
     })
   }
 
   const openPanelTab = (tab: string) => {
+    setPanelMenuOpen(false)
     openReviewPanel()
     if (tab === PANEL_TERMINAL_TAB && view().terminal.opened()) view().terminal.close()
     tabs().open(tab)
@@ -1432,6 +1433,7 @@ export function SessionSidePanel(props: {
   }
 
   const changeActiveTab = (tab: string) => {
+    setPanelMenuOpen(false)
     if (isPanelTab(tab) || tab === "review" || tab === "context" || tab === "empty") {
       if (isPanelTab(tab)) tabs().open(tab)
       tabs().setActive(tab)
@@ -1442,6 +1444,7 @@ export function SessionSidePanel(props: {
   }
 
   const [browserLaunch, setBrowserLaunch] = createSignal<BrowserLaunchRequest | undefined>()
+  const [panelMenuOpen, setPanelMenuOpen] = createSignal(false)
 
   const launchOpenDesign = () => {
     openPanelTab(PANEL_BROWSER_TAB)
@@ -1600,32 +1603,41 @@ export function SessionSidePanel(props: {
                             {(tab) => <SortableTab tab={tab} onTabClose={tabs().close} />}
                           </For>
                         </SortableProvider>
-                        <div class="bg-background-stronger h-full shrink-0 sticky right-0 z-20 flex items-center justify-center pr-3">
-                          <DropdownMenu gutter={4} placement="bottom-end" modal={false}>
-                            <DropdownMenu.Trigger
-                              as={IconButton}
-                              icon="plus-small"
-                              variant="ghost"
-                              iconSize="large"
-                              class="!rounded-md"
-                              aria-label="Add tab"
-                            />
-                            <DropdownMenu.Portal>
-                              <DropdownMenu.Content>
-                                <DropdownMenu.Item onSelect={showFilePicker}>
-                                  <DropdownMenu.ItemLabel>Files</DropdownMenu.ItemLabel>
-                                </DropdownMenu.Item>
-                                <PanelMenuItem tab={PANEL_TERMINAL_TAB} onSelect={() => openPanelTab(PANEL_TERMINAL_TAB)} />
-                                <PanelMenuItem tab={PANEL_BROWSER_TAB} onSelect={() => openPanelTab(PANEL_BROWSER_TAB)} />
-                                <PanelMenuItem tab={PANEL_OPEN_DESIGN_TAB} onSelect={launchOpenDesign} />
-                                <PanelMenuItem tab={PANEL_MAC_VIEW_TAB} onSelect={() => openPanelTab(PANEL_MAC_VIEW_TAB)} />
-                                <PanelMenuItem tab={PANEL_ACCOUNTS_TAB} onSelect={() => openPanelTab(PANEL_ACCOUNTS_TAB)} />
-                                <PanelMenuItem tab={PANEL_RESOURCES_TAB} onSelect={() => openPanelTab(PANEL_RESOURCES_TAB)} />
-                                <PanelMenuItem tab={PANEL_ARTIFACTS_TAB} onSelect={() => openPanelTab(PANEL_ARTIFACTS_TAB)} />
-                                <PanelMenuItem tab={PANEL_FILE_BROWSER_TAB} onSelect={() => openPanelTab(PANEL_FILE_BROWSER_TAB)} />
-                              </DropdownMenu.Content>
-                            </DropdownMenu.Portal>
-                          </DropdownMenu>
+                        <div class="bg-background-stronger h-full shrink-0 sticky right-0 z-20 flex items-center justify-center pr-3 relative">
+                          <IconButton
+                            icon="plus-small"
+                            variant="ghost"
+                            iconSize="large"
+                            class="!rounded-md"
+                            aria-label="Add tab"
+                            aria-expanded={panelMenuOpen()}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              setPanelMenuOpen((open) => !open)
+                            }}
+                          />
+                          <Show when={panelMenuOpen()}>
+                            <div
+                              class="absolute right-3 top-9 z-50 w-48 rounded-lg border border-border-base bg-background-stronger p-1 shadow-lg"
+                              onClick={(event) => event.stopPropagation()}
+                            >
+                              <button
+                                type="button"
+                                class="flex h-8 w-full items-center rounded-md px-3 text-left text-13-regular text-text-base hover:bg-surface-base-hover"
+                                onClick={showFilePicker}
+                              >
+                                Files
+                              </button>
+                              <PanelMenuButton tab={PANEL_TERMINAL_TAB} onSelect={() => openPanelTab(PANEL_TERMINAL_TAB)} />
+                              <PanelMenuButton tab={PANEL_BROWSER_TAB} onSelect={() => openPanelTab(PANEL_BROWSER_TAB)} />
+                              <PanelMenuButton tab={PANEL_OPEN_DESIGN_TAB} onSelect={launchOpenDesign} />
+                              <PanelMenuButton tab={PANEL_MAC_VIEW_TAB} onSelect={() => openPanelTab(PANEL_MAC_VIEW_TAB)} />
+                              <PanelMenuButton tab={PANEL_ACCOUNTS_TAB} onSelect={() => openPanelTab(PANEL_ACCOUNTS_TAB)} />
+                              <PanelMenuButton tab={PANEL_RESOURCES_TAB} onSelect={() => openPanelTab(PANEL_RESOURCES_TAB)} />
+                              <PanelMenuButton tab={PANEL_ARTIFACTS_TAB} onSelect={() => openPanelTab(PANEL_ARTIFACTS_TAB)} />
+                              <PanelMenuButton tab={PANEL_FILE_BROWSER_TAB} onSelect={() => openPanelTab(PANEL_FILE_BROWSER_TAB)} />
+                            </div>
+                          </Show>
                         </div>
                       </Tabs.List>
                     </div>
