@@ -1557,16 +1557,21 @@ export function SessionSidePanel(props: {
     if (!panelMenuOpen()) return
 
     const closeMenu = () => setPanelMenuOpen(false)
+    const closeOnPointerDown = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : undefined
+      if (target?.closest("[data-panel-menu-root], [data-panel-menu-trigger]")) return
+      closeMenu()
+    }
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") closeMenu()
     }
 
-    document.addEventListener("pointerdown", closeMenu)
+    document.addEventListener("pointerdown", closeOnPointerDown, true)
     document.addEventListener("keydown", closeOnEscape)
     window.addEventListener("resize", closeMenu)
 
     onCleanup(() => {
-      document.removeEventListener("pointerdown", closeMenu)
+      document.removeEventListener("pointerdown", closeOnPointerDown, true)
       document.removeEventListener("keydown", closeOnEscape)
       window.removeEventListener("resize", closeMenu)
     })
@@ -1729,7 +1734,7 @@ export function SessionSidePanel(props: {
                             {(tab) => <SortableTab tab={tab} onTabClose={tabs().close} />}
                           </For>
                         </SortableProvider>
-                        <div class="bg-background-stronger h-full shrink-0 sticky right-0 z-50 flex items-center justify-center pr-3 relative">
+                        <div data-panel-menu-trigger class="bg-background-stronger h-full shrink-0 sticky right-0 z-50 flex items-center justify-center pr-3 relative">
                           <IconButton
                             icon="plus-small"
                             variant="ghost"
@@ -1750,6 +1755,7 @@ export function SessionSidePanel(props: {
                     <Show when={panelMenuOpen()}>
                       <Portal>
                         <div
+                          data-panel-menu-root
                           class="fixed z-[1000] w-48 overflow-auto rounded-lg border border-border-base bg-background-stronger p-1 shadow-lg"
                           style={{
                             left: panelMenuPosition().left + "px",
