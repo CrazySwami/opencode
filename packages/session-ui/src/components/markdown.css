@@ -201,23 +201,31 @@
       transform: translateX(-50%);
       z-index: 1000;
 
+      box-sizing: border-box;
+      display: inline-flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 6px;
       max-width: 320px;
-      border-radius: var(--radius-sm);
-      background: var(--surface-float-base);
-      color: var(--text-invert-strong);
-      padding: 2px 8px;
-      border: 0.5px solid var(--v2-border-border-base, rgba(0, 0, 0, 0.07));
-      box-shadow: var(--shadow-md);
+      border-radius: 4px;
+      background: var(--v2-background-bg-layer-01);
+      color: var(--v2-text-text-base);
+      padding: 5px 6px;
+      border: 0;
+      box-shadow: var(--v2-elevation-floating);
 
       pointer-events: none;
       white-space: nowrap;
+      user-select: none;
 
       font-family: var(--font-family-sans);
-      font-size: var(--font-size-small);
+      font-size: 11px;
       font-style: normal;
-      font-weight: var(--font-weight-medium);
-      line-height: var(--line-height-large);
-      letter-spacing: var(--letter-spacing-normal);
+      font-weight: 530;
+      line-height: 12px;
+      letter-spacing: 0.05px;
+      font-variant-numeric: tabular-nums;
+      font-variation-settings: "slnt" 0;
 
       opacity: 0;
       transition: opacity 0.15s ease;
@@ -367,7 +375,20 @@ body:not([data-new-layout]) [data-component="markdown"] {
   }
 
   [data-slot="markdown-copy-button"]::after {
+    display: block;
+    padding: 2px 8px;
+    border-radius: var(--radius-sm);
+    background: var(--surface-float-base);
+    color: var(--text-invert-strong);
     border: 1px solid var(--border-weak-base, rgba(0, 0, 0, 0.07));
+    box-shadow: var(--shadow-md);
+    user-select: auto;
+    font-size: var(--font-size-small);
+    font-weight: var(--font-weight-medium);
+    line-height: var(--line-height-large);
+    letter-spacing: var(--letter-spacing-normal);
+    font-variant-numeric: normal;
+    font-variation-settings: normal;
   }
 
   [data-slot="markdown-copy-button"][data-variant="secondary"] {
