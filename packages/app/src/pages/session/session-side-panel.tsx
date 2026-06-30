@@ -1079,6 +1079,82 @@ function TabChrome(props: {
       )}
     </Show>
   )
+  const ToolsModal = () => (
+    <Show when={definition()}>
+      {(tab) => (
+        <Portal>
+          <div
+            class="fixed inset-0 z-[1200] flex items-center justify-center bg-background-base/60 p-4 backdrop-blur-sm"
+            onPointerDown={() => setOpenMenu(undefined)}
+          >
+            <div
+              class="flex max-h-[min(720px,calc(100vh-2rem))] w-[min(720px,calc(100vw-2rem))] flex-col overflow-hidden rounded-lg border border-border-base bg-background-stronger shadow-2xl"
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              <div class="flex min-w-0 items-center gap-3 border-b border-border-weaker-base px-4 py-3">
+                <PanelGlyph tab={tab().id} />
+                <div class="min-w-0 flex-1">
+                  <div class="text-14-medium text-text-strong">{tab().label} Tools</div>
+                  <div class="truncate text-12-regular text-text-weak">{tab().description}</div>
+                </div>
+                <IconButton
+                  icon="close-small"
+                  variant="ghost"
+                  class="h-7 w-7"
+                  onClick={() => setOpenMenu(undefined)}
+                  aria-label="Close tools"
+                />
+              </div>
+              <div class="grid min-h-0 gap-3 overflow-auto p-4 md:grid-cols-2">
+                <div class="rounded-md border border-border-weaker-base bg-background-base p-3">
+                  <div class="mb-2 text-13-medium text-text-strong">LLM Tools</div>
+                  <div class="flex flex-wrap gap-1.5">
+                    <For each={tab().toolIDs}>
+                      {(tool) => <span class="rounded bg-background-stronger px-2 py-1 text-11-regular text-text-strong">@{tool}</span>}
+                    </For>
+                  </div>
+                </div>
+                <div class="rounded-md border border-border-weaker-base bg-background-base p-3">
+                  <div class="mb-2 text-13-medium text-text-strong">Mentions</div>
+                  <div class="flex flex-wrap gap-1.5">
+                    <For each={tab().mentionIDs}>
+                      {(mention) => <span class="rounded bg-background-stronger px-2 py-1 text-11-regular text-text-strong">@{mention}</span>}
+                    </For>
+                  </div>
+                </div>
+                <div class="rounded-md border border-border-weaker-base bg-background-base p-3 md:col-span-2">
+                  <div class="mb-2 text-13-medium text-text-strong">Registry Actions</div>
+                  <div class="flex flex-wrap gap-1.5">
+                    <For each={tab().actions}>
+                      {(action) => <span class="rounded bg-background-stronger px-2 py-1 text-11-regular text-text-weak">{action.replaceAll("_", " ")}</span>}
+                    </For>
+                  </div>
+                </div>
+                <div class="rounded-md border border-border-weaker-base bg-background-base p-3 md:col-span-2">
+                  <div class="mb-2 text-13-medium text-text-strong">Tool Contract</div>
+                  <pre class="max-h-56 overflow-auto whitespace-pre-wrap rounded bg-background-stronger p-3 text-11-regular text-text-weak">{JSON.stringify(
+                    {
+                      tool: "workspace_tabs",
+                      examples: [
+                        { action: "open", tab: tab().id },
+                        { action: "focus", tab: tab().id },
+                        { action: "run_action", tab: tab().id, tabAction: tab().actions[0] },
+                      ],
+                      canSnapshot: tab().canSnapshot,
+                      canAttachToChat: tab().canAttachToChat,
+                      safetyPolicy: tab().safetyPolicy,
+                    },
+                    null,
+                    2,
+                  )}</pre>
+                </div>
+              </div>
+            </div>
+          </div>
+        </Portal>
+      )}
+    </Show>
+  )
   const PanelTopMenus = () => (
     <Show when={definition()}>
       {(_) => (
@@ -1108,7 +1184,12 @@ function TabChrome(props: {
             }}
             aria-label="Tab tools"
           />
-          <Show when={openMenu()}>{(menu) => <MenuContent menu={menu()} />}</Show>
+          <Show when={openMenu() === "tools" ? undefined : openMenu()}>
+            {(menu) => <MenuContent menu={menu() as "tab" | "view" | "actions"} />}
+          </Show>
+          <Show when={openMenu() === "tools"}>
+            <ToolsModal />
+          </Show>
         </div>
       )}
     </Show>

@@ -854,9 +854,14 @@ type LiveBrowserInput =
   | { action: "forward" }
   | { action: "reload" }
   | { action: "click"; x?: number; y?: number }
+  | { action: "fill"; selector?: string; text?: string }
   | { action: "type"; text?: string }
   | { action: "key"; key?: string }
   | { action: "scroll"; deltaX?: number; deltaY?: number }
+  | { action: "inspect"; selector?: string; limit?: number }
+  | { action: "accessibility"; limit?: number }
+  | { action: "history" }
+  | { action: "annotate"; selector?: string }
 
 const liveBrowserDisplay = () => process.env.OPENCODE_LIVE_BROWSER_DISPLAY || ":99"
 const liveBrowserStreamBoundary = "opencode-browser-frame"
@@ -1257,7 +1262,23 @@ async function liveBrowserStatus(access?: Extract<LiveBrowserAccess, { ok: true 
     screenshotURL: "/experimental/browser/live/snapshot",
     streamURL: "/experimental/browser/live/stream",
     proxiedLiveURL: "/experimental/browser/novnc/opencode-lite.html?path=websockify",
-    actions: ["goto", "back", "forward", "reload", "click", "type", "key", "scroll", "screenshot", "selector"],
+    actions: [
+      "goto",
+      "back",
+      "forward",
+      "reload",
+      "click",
+      "fill",
+      "type",
+      "key",
+      "scroll",
+      "inspect",
+      "accessibility",
+      "history",
+      "annotate",
+      "screenshot",
+      "selector",
+    ],
     access: access
       ? {
           mode: access.mode,
@@ -1345,6 +1366,11 @@ async function runLiveBrowserInput(input: LiveBrowserInput) {
       await cdpCommand("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 })
       return { ok: true, x, y }
     }
+    case "fill": {
+      if (!input.selector?.trim()) return { ok: false, error: "Missing selector" }
+      const result = await fillLiveBrowserSelector(input.selector.trim(), input.text ?? "")
+      return { ok: true, selector: input.selector.trim(), result }
+    }
     case "type": {
       if (!input.text) return { ok: false, error: "Missing text" }
       await cdpCommand("Input.insertText", { text: input.text })
@@ -1366,6 +1392,16 @@ async function runLiveBrowserInput(input: LiveBrowserInput) {
         deltaY,
       })
       return { ok: true, deltaX, deltaY }
+    }
+    case "inspect":
+      return { ok: true, ...(await inspectLiveBrowserDOM(input.selector, input.limit)) }
+    case "accessibility":
+      return { ok: true, ...(await inspectLiveBrowserAccessibility(input.limit)) }
+    case "history":
+      return { ok: true, ...(await liveBrowserHistoryState()) }
+    case "annotate": {
+      if (!input.selector?.trim()) return { ok: false, error: "Missing selector" }
+      return await highlightLiveBrowserSelector(input.selector.trim())
     }
   }
 }
@@ -1482,6 +1518,128 @@ async function highlightLiveBrowserSelector(selector: string) {
   })()`
   const result = await cdpEvaluate(expression)
   return { ok: true, selector, result }
+}
+
+async function fillLiveBrowserSelector(selector: string, text: string) {
+  await ensureLiveBrowser()
+  const expression = `(() => {
+    const el = document.querySelector(${JSON.stringify(selector)});
+    if (!el) return { found: false };
+    const value = ${JSON.stringify(text)};
+    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    if (typeof el.focus === 'function') el.focus();
+    if ('value' in el) {
+      const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value');
+      if (descriptor?.set) descriptor.set.call(el, value);
+      else el.value = value;
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      const rect = el.getBoundingClientRect();
+      return { found: true, tag: el.tagName, valueLength: value.length, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
+    }
+    el.textContent = value;
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+    const rect = el.getBoundingClientRect();
+    return { found: true, tag: el.tagName, textLength: value.length, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
+  })()`
+  return await cdpEvaluate(expression)
+}
+
+async function inspectLiveBrowserDOM(selector?: string, limitInput?: number) {
+  await ensureLiveBrowser()
+  const limit = Math.max(1, Math.min(200, Math.round(limitInput ?? 80)))
+  const expression = `(() => {
+    const rootSelector = ${JSON.stringify(selector?.trim() || "")};
+    const root = rootSelector ? document.querySelector(rootSelector) : document.body;
+    const makeSelector = (el) => {
+      if (!el || !el.tagName) return '';
+      if (el.id) return '#' + CSS.escape(el.id);
+      const parts = [];
+      let node = el;
+      while (node && node.nodeType === Node.ELEMENT_NODE && parts.length < 4) {
+        let part = node.tagName.toLowerCase();
+        if (node.classList?.length) part += '.' + Array.from(node.classList).slice(0, 2).map((x) => CSS.escape(x)).join('.');
+        const parent = node.parentElement;
+        if (parent) {
+          const siblings = Array.from(parent.children).filter((x) => x.tagName === node.tagName);
+          if (siblings.length > 1) part += ':nth-of-type(' + (siblings.indexOf(node) + 1) + ')';
+        }
+        parts.unshift(part);
+        node = parent;
+      }
+      return parts.join(' > ');
+    };
+    if (!root) return { found: false, selector: rootSelector || null, url: location.href, title: document.title, elements: [] };
+    const query = [
+      'a[href]',
+      'button',
+      'input',
+      'textarea',
+      'select',
+      '[role]',
+      '[contenteditable="true"]',
+      '[tabindex]:not([tabindex="-1"])',
+    ].join(',');
+    const elements = Array.from(root.querySelectorAll(query)).slice(0, ${limit}).map((el) => {
+      const rect = el.getBoundingClientRect();
+      return {
+        selector: makeSelector(el),
+        tag: el.tagName.toLowerCase(),
+        role: el.getAttribute('role'),
+        type: el.getAttribute('type'),
+        name: el.getAttribute('name'),
+        label: (el.getAttribute('aria-label') || el.getAttribute('title') || el.innerText || el.value || '').trim().slice(0, 160),
+        href: el.getAttribute('href'),
+        visible: rect.width > 0 && rect.height > 0,
+        rect: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) },
+      };
+    });
+    return {
+      found: true,
+      selector: rootSelector || null,
+      url: location.href,
+      title: document.title,
+      textPreview: (root.innerText || document.body?.innerText || '').trim().slice(0, 1200),
+      elements,
+    };
+  })()`
+  return await cdpEvaluate(expression)
+}
+
+async function inspectLiveBrowserAccessibility(limitInput?: number) {
+  await ensureLiveBrowser()
+  const limit = Math.max(1, Math.min(300, Math.round(limitInput ?? 120)))
+  const body = (await cdpCommand("Accessibility.getFullAXTree")) as {
+    nodes?: Array<{
+      role?: { value?: string }
+      name?: { value?: string }
+      value?: { value?: string }
+      ignored?: boolean
+      childIds?: string[]
+    }>
+  }
+  const nodes = (body.nodes ?? [])
+    .filter((node) => !node.ignored)
+    .slice(0, limit)
+    .map((node) => ({
+      role: node.role?.value ?? "",
+      name: node.name?.value ?? "",
+      value: node.value?.value ?? "",
+      childCount: node.childIds?.length ?? 0,
+    }))
+  return { url: (await currentLiveBrowserURL()).url, nodes }
+}
+
+async function liveBrowserHistoryState() {
+  await ensureLiveBrowser()
+  return await cdpEvaluate(`(() => ({
+    url: location.href,
+    title: document.title,
+    historyLength: history.length,
+    referrer: document.referrer || null,
+    canGoBack: history.length > 1,
+    note: 'Browsers do not expose the full cross-origin history list to page JavaScript; use back/forward actions to navigate it.'
+  }))()`)
 }
 
 async function currentLiveBrowserURL() {
