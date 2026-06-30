@@ -10,6 +10,7 @@ import {
   createMemo,
   createEffect,
   createComputed,
+  createSignal,
   on,
   onMount,
   untrack,
@@ -268,6 +269,23 @@ export default function Page() {
   const sessionSync = timeline.resource
   const userMessages = timeline.userMessages
   const visibleUserMessages = timeline.visibleUserMessages
+  const [renderedSessionID, setRenderedSessionID] = createSignal<string>()
+  const timelineSessionID = createMemo(() => (params.id && messagesReady() ? params.id : renderedSessionID()))
+
+  createEffect(() => {
+    if (!params.id || !messagesReady()) return
+    setRenderedSessionID(params.id)
+  })
+
+  createEffect(
+    on(
+      sessionKey,
+      () => {
+        setRenderedSessionID(undefined)
+      },
+      { defer: true },
+    ),
+  )
 
   createEffect(() => {
     const tab = activeFileTab()
@@ -321,14 +339,54 @@ export default function Page() {
     }),
   )
 
+  let deferRenderFrame: number | undefined
+  let deferRenderTimer: number | undefined
+  let deferRenderVisibilityCleanup: (() => void) | undefined
+
+  const clearDeferredRenderSchedule = () => {
+    if (deferRenderFrame !== undefined) {
+      cancelAnimationFrame(deferRenderFrame)
+      deferRenderFrame = undefined
+    }
+    if (deferRenderTimer !== undefined) {
+      clearTimeout(deferRenderTimer)
+      deferRenderTimer = undefined
+    }
+    deferRenderVisibilityCleanup?.()
+    deferRenderVisibilityCleanup = undefined
+  }
+
+  const scheduleDeferredRenderResume = () => {
+    clearDeferredRenderSchedule()
+    setStore("deferRender", true)
+
+    const owner = sessionOwnership.capture()
+    let resumed = false
+    const resume = () => {
+      if (resumed) return
+      resumed = true
+      clearDeferredRenderSchedule()
+      owner.run(() => setStore("deferRender", false))
+    }
+    const resumeWhenVisible = () => {
+      if (typeof document === "undefined" || document.visibilityState === "visible") resume()
+    }
+
+    deferRenderFrame = requestAnimationFrame(() => {
+      deferRenderFrame = undefined
+      setTimeout(resume, 0)
+    })
+    deferRenderTimer = window.setTimeout(resume, 300)
+    document.addEventListener("visibilitychange", resumeWhenVisible)
+    deferRenderVisibilityCleanup = () => document.removeEventListener("visibilitychange", resumeWhenVisible)
+  }
+
+  onCleanup(clearDeferredRenderSchedule)
+
   createComputed((prev) => {
     const key = sessionKey()
     if (key !== prev) {
-      setStore("deferRender", true)
-      const owner = sessionOwnership.capture()
-      requestAnimationFrame(() => {
-        setTimeout(() => owner.run(() => setStore("deferRender", false)), 0)
-      })
+      scheduleDeferredRenderResume()
     }
     return key
   })
@@ -1787,7 +1845,15 @@ export default function Page() {
                   />
                 </Match>
                 <Match when={params.id}>
-                  <Show when={messagesReady() ? params.id : undefined} keyed>
+                  <Show
+                    when={timelineSessionID()}
+                    keyed
+                    fallback={
+                      <div class="flex h-full items-center justify-center text-center text-12-regular text-text-weak">
+                        Loading session...
+                      </div>
+                    }
+                  >
                     {(_id) => (
                       <MessageTimeline
                         actions={actions}

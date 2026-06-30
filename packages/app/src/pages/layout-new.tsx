@@ -7,6 +7,14 @@ import { usePlatform } from "@/context/platform"
 import { setNavigate } from "@/utils/notification-click"
 import { setV2Toast, ToastRegion } from "@/utils/toast"
 
+function RouteFallback() {
+  return (
+    <div class="flex size-full items-center justify-center text-center text-12-regular text-text-weak">
+      Loading workspace...
+    </div>
+  )
+}
+
 export default function NewLayout(props: ParentProps) {
   const platform = usePlatform()
   const navigate = useNavigate()
@@ -34,7 +42,7 @@ export default function NewLayout(props: ParentProps) {
     >
       <Titlebar update={update} />
       <main class="flex-1 min-h-0 min-w-0 overflow-x-hidden flex flex-col items-start contain-strict">
-        <Suspense>{props.children}</Suspense>
+        <Suspense fallback={<RouteFallback />}>{props.children}</Suspense>
       </main>
       {import.meta.env.DEV && <DebugBar inline />}
       <HelpButton />
