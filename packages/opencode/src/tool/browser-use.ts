@@ -223,22 +223,26 @@ function browserUseProfilePolicy() {
   const accessConfigured = Boolean(
     process.env.OPENCODE_CLOUDFLARE_ACCESS_AUD && process.env.OPENCODE_CLOUDFLARE_ACCESS_TEAM_DOMAIN,
   )
-  const accessBoundaryReady = process.env.OPENCODE_LIVE_BROWSER_EXPOSE === "1" && accessConfigured
+  const liveExposureEnabled = process.env.OPENCODE_LIVE_BROWSER_EXPOSE !== "0"
+  const accessBoundaryReady = liveExposureEnabled && accessConfigured
+  const persistentProfileReady = accessBoundaryReady || (liveExposureEnabled && persistentProfileRequested)
   return {
-    status: accessBoundaryReady
-      ? persistentProfileRequested
+    status: persistentProfileReady
+      ? accessBoundaryReady
         ? "manual_profile_setup_required"
-        : "safe_default_no_persistent_auth"
-      : "blocked_access_boundary",
+        : "persistent_profile_enabled_by_explicit_live_override"
+      : accessBoundaryReady
+        ? "safe_default_no_persistent_auth"
+        : "blocked_access_boundary",
     requiredAccessBoundary: "Cloudflare Access GitHub login for code.hustletogether.com",
     accessBoundaryReady,
     persistentProfile: {
       requested: persistentProfileRequested,
-      enabled: accessBoundaryReady && persistentProfileRequested,
-      status: accessBoundaryReady
-        ? persistentProfileRequested
+      enabled: persistentProfileReady && persistentProfileRequested,
+      status: persistentProfileReady
+        ? accessBoundaryReady
           ? "manual_profile_setup_required"
-          : "disabled_by_policy"
+          : "enabled_by_explicit_live_override"
         : "blocked_until_access_boundary",
     },
     extensions: {

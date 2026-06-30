@@ -1000,14 +1000,17 @@ function liveBrowserProfilePolicy() {
   const persistentAuthRequested =
     process.env.OPENCODE_LIVE_BROWSER_PERSISTENT_AUTH === "1" ||
     process.env.OPENCODE_BROWSER_USE_PERSISTENT_PROFILE === "1"
+  const persistentAuthReady = accessBoundaryReady || (liveBrowserExposureEnabled() && persistentAuthRequested)
   const profileRoot = liveBrowserProfile()
-  const status = accessBoundaryReady
-    ? extensionRequested || persistentAuthRequested
+  const status = persistentAuthReady
+    ? accessBoundaryReady
       ? "ready_after_manual_profile_setup"
-      : "safe_default_no_persistent_auth"
-    : liveBrowserExposureEnabled()
-      ? "live_exposed_profile_features_disabled"
-      : "blocked_access_boundary"
+      : "persistent_profile_enabled_by_explicit_live_override"
+    : accessBoundaryReady
+      ? "safe_default_no_persistent_auth"
+      : liveBrowserExposureEnabled()
+        ? "live_exposed_profile_features_disabled"
+        : "blocked_access_boundary"
 
   return {
     ok: true,
@@ -1020,15 +1023,15 @@ function liveBrowserProfilePolicy() {
       type: "ct100-local-chrome-user-data-dir",
       persistentOnDisk: true,
       containsSecrets: "unknown_until_user_configures_profile",
-      exposedToBrowserUI: accessBoundaryReady,
+      exposedToBrowserUI: persistentAuthReady,
     },
     persistentAuth: {
       requested: persistentAuthRequested,
-      enabled: accessBoundaryReady && persistentAuthRequested,
-      status: accessBoundaryReady
-        ? persistentAuthRequested
+      enabled: persistentAuthReady && persistentAuthRequested,
+      status: persistentAuthReady
+        ? accessBoundaryReady
           ? "manual_profile_setup_required"
-          : "disabled_by_policy"
+          : "enabled_by_explicit_live_override"
         : liveBrowserExposureEnabled()
           ? "disabled_until_access_boundary"
           : "blocked_until_browser_exposed",
