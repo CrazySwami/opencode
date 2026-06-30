@@ -4,6 +4,7 @@ import {
   createMemo,
   createResource,
   createRoot,
+  createSignal,
   For,
   Match,
   on,
@@ -13,6 +14,7 @@ import {
   startTransition,
   Switch,
 } from "solid-js"
+import { Portal } from "solid-js/web"
 import { makeEventListener } from "@solid-primitives/event-listener"
 import { createStore, produce } from "solid-js/store"
 import { useQuery } from "@tanstack/solid-query"
@@ -89,6 +91,8 @@ type HomeSessionGroup = {
   sessions: HomeSessionRecord[]
 }
 
+type HomeDashboardMode = "projects" | "routines"
+
 const HOME_SESSION_SEARCH_RESULTS_ID = "home-session-search-results"
 const HOME_SEARCH_RESULT_ROW =
   "flex h-10 w-full shrink-0 cursor-default items-center gap-2 border-0 py-3 pl-[18px] pr-6 text-left transition-[background-color] duration-[120ms] ease-in-out hover:bg-v2-overlay-simple-overlay-hover focus-visible:bg-v2-overlay-simple-overlay-hover focus-visible:outline-none"
@@ -152,6 +156,7 @@ export function NewHome() {
   const [state, setState] = createStore({
     search: "",
     searchFocused: false,
+    mode: "projects" as HomeDashboardMode,
   })
   const selection = layout.home.selection
 
@@ -297,10 +302,12 @@ export function NewHome() {
   })
 
   function focusServer(conn: ServerConnection.Any) {
+    setState("mode", "projects")
     setSelection({ server: ServerConnection.key(conn) })
   }
 
   function selectProject(conn: ServerConnection.Any, directory: string) {
+    setState("mode", "projects")
     const key = ServerConnection.key(conn)
     if (global.servers.health[key]?.healthy === false) return
     if (
@@ -431,78 +438,89 @@ export function NewHome() {
           unseenCount={unseenCount}
           openSettings={openSettings}
           openHelp={() => platform.openLink("https://opencode.ai/desktop-feedback")}
+          mode={state.mode}
+          setMode={(mode) => setState("mode", mode)}
           language={language}
         />
 
         <section
           class="min-h-0 min-w-0 flex-1 flex flex-col pt-6 lg:pt-12"
-          aria-label={language.t("sidebar.project.recentSessions")}
+          aria-label={state.mode === "projects" ? language.t("sidebar.project.recentSessions") : "Routines"}
         >
-          <HomeSessionSearch
-            value={state.search}
-            placeholder={searchPlaceholder()}
-            open={searchOpen()}
-            loading={sessionLoad.isLoading}
-            results={searchResults()}
-            showProjectName={!selectedProject()}
-            server={selection().server}
-            activeServer={selection().server === server.key}
-            noResultsLabel={language.t("home.sessions.search.noResults", { query: search() })}
-            bindFocus={(focus) => {
-              focusSessionSearch = focus
-            }}
-            onInput={(value) => setState("search", value)}
-            onFocus={() => setState("searchFocused", true)}
-            onClose={closeSearch}
-            onSelect={selectSearchSession}
-          />
-          <ScrollView class="mt-3 -mr-3 min-h-0 flex-1">
-            <Show
-              when={!sessionLoad.isLoading}
-              fallback={
-                <div class="pt-3">
-                  <HomeSessionSkeleton label={language.t("common.loading")} />
-                </div>
-              }
-            >
-              <Show
-                when={groups().length > 0}
-                fallback={<HomeSessionsEmpty onNewSession={newSessionProject() ? openNewSession : undefined} />}
-              >
-                <div class="flex flex-col gap-6 pt-3 pr-3 pb-16">
-                  <For each={groups()}>
-                    {(group, index) => (
-                      <div class="flex min-w-0 flex-col gap-4">
-                        <HomeSessionGroupHeader
-                          title={group.title}
-                          onNewSession={index() === 0 && newSessionProject() ? openNewSession : undefined}
-                        />
-                        <div class="flex min-w-0 flex-col gap-px">
-                          <For each={group.sessions}>
-                            {(record) => (
-                              <HomeSessionRow
-                                record={record}
-                                showProjectName={!selectedProject()}
-                                server={selection().server}
-                                activeServer={selection().server === server.key}
-                                openSession={openSession}
-                                archiveSession={archiveSession}
-                              />
-                            )}
-                          </For>
-                        </div>
-                      </div>
-                    )}
-                  </For>
-                </div>
-              </Show>
-            </Show>
-          </ScrollView>
+          <Switch>
+            <Match when={state.mode === "routines"}>
+              <HomeRoutinesDashboard />
+            </Match>
+            <Match when={true}>
+              <HomeSessionSearch
+                value={state.search}
+                placeholder={searchPlaceholder()}
+                open={searchOpen()}
+                loading={sessionLoad.isLoading}
+                results={searchResults()}
+                showProjectName={!selectedProject()}
+                server={selection().server}
+                activeServer={selection().server === server.key}
+                noResultsLabel={language.t("home.sessions.search.noResults", { query: search() })}
+                bindFocus={(focus) => {
+                  focusSessionSearch = focus
+                }}
+                onInput={(value) => setState("search", value)}
+                onFocus={() => setState("searchFocused", true)}
+                onClose={closeSearch}
+                onSelect={selectSearchSession}
+              />
+              <ScrollView class="mt-3 -mr-3 min-h-0 flex-1">
+                <Show
+                  when={!sessionLoad.isLoading}
+                  fallback={
+                    <div class="pt-3">
+                      <HomeSessionSkeleton label={language.t("common.loading")} />
+                    </div>
+                  }
+                >
+                  <Show
+                    when={groups().length > 0}
+                    fallback={<HomeSessionsEmpty onNewSession={newSessionProject() ? openNewSession : undefined} />}
+                  >
+                    <div class="flex flex-col gap-6 pt-3 pr-3 pb-16">
+                      <For each={groups()}>
+                        {(group, index) => (
+                          <div class="flex min-w-0 flex-col gap-4">
+                            <HomeSessionGroupHeader
+                              title={group.title}
+                              onNewSession={index() === 0 && newSessionProject() ? openNewSession : undefined}
+                            />
+                            <div class="flex min-w-0 flex-col gap-px">
+                              <For each={group.sessions}>
+                                {(record) => (
+                                  <HomeSessionRow
+                                    record={record}
+                                    showProjectName={!selectedProject()}
+                                    server={selection().server}
+                                    activeServer={selection().server === server.key}
+                                    openSession={openSession}
+                                    archiveSession={archiveSession}
+                                  />
+                                )}
+                              </For>
+                            </div>
+                          </div>
+                        )}
+                      </For>
+                    </div>
+                  </Show>
+                </Show>
+              </ScrollView>
+            </Match>
+          </Switch>
         </section>
         <HomeUtilityNav
           class="flex lg:hidden"
           openSettings={openSettings}
           openHelp={() => platform.openLink("https://opencode.ai/desktop-feedback")}
+          mode={state.mode}
+          setMode={(mode) => setState("mode", mode)}
           language={language}
         />
       </div>
@@ -523,6 +541,8 @@ function HomeProjectColumn(props: {
   unseenCount: (server: ServerConnection.Any, project: LocalProject) => number
   openSettings: () => void
   openHelp: () => void
+  mode: HomeDashboardMode
+  setMode: (mode: HomeDashboardMode) => void
   language: ReturnType<typeof useLanguage>
 }) {
   const global = useGlobal()
@@ -598,20 +618,195 @@ function HomeProjectColumn(props: {
         class="mt-4 hidden lg:flex"
         openSettings={props.openSettings}
         openHelp={props.openHelp}
+        mode={props.mode}
+        setMode={props.setMode}
         language={props.language}
       />
     </aside>
   )
 }
 
+function createHomePolledJson<T>(url: string, intervalMs = 10000) {
+  const [data, setData] = createStore<{ value?: T; error?: string; loading: boolean }>({ loading: true })
+  const refresh = async () => {
+    setData("loading", true)
+    try {
+      const response = await fetch(url, { cache: "no-store" })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok || body?.ok === false) throw new Error(body?.error ?? `Request failed: ${response.status}`)
+      setData({ value: body as T, error: undefined, loading: false })
+    } catch (error) {
+      setData({ value: data.value, error: error instanceof Error ? error.message : String(error), loading: false })
+    }
+  }
+  createEffect(() => {
+    void refresh()
+    const timer = window.setInterval(() => void refresh(), intervalMs)
+    onCleanup(() => window.clearInterval(timer))
+  })
+  return { data, refresh }
+}
+
+function HomeRoutinesDashboard() {
+  const routines = createHomePolledJson<any>("/experimental/routines/jobs", 10000)
+  const [selectedID, setSelectedID] = createSignal<string | undefined>()
+  const [draftOpen, setDraftOpen] = createSignal(false)
+  const jobs = createMemo(() => routines.data.value?.routines ?? [])
+  const selected = createMemo(() => jobs().find((job: any) => job.id === selectedID()) ?? jobs()[0])
+
+  createEffect(() => {
+    const first = jobs()[0]?.id
+    if (!selectedID() && first) setSelectedID(first)
+  })
+
+  return (
+    <div class="flex min-h-0 flex-1 flex-col">
+      <div class="flex h-9 min-w-0 items-center justify-between pl-3 pr-1">
+        <div class={HOME_SECTION_LABEL}>Routines</div>
+        <ButtonV2
+          data-action="home-routine-new"
+          variant="ghost-muted"
+          size="normal"
+          icon="edit"
+          class="h-7 px-2 [font-weight:530]"
+          onClick={() => setDraftOpen(true)}
+        >
+          Schedule new
+        </ButtonV2>
+      </div>
+      <Show when={routines.data.error}>
+        {(error) => (
+          <div class="mt-3 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-layer-01 p-3 text-[13px] leading-5 text-v2-text-text-muted">
+            {error()}
+          </div>
+        )}
+      </Show>
+      <div class="mt-3 grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(220px,0.85fr)_minmax(0,1.15fr)]">
+        <ScrollView class="-mr-3 min-h-0">
+          <div class="flex min-w-0 flex-col gap-px pr-3">
+            <For each={jobs()}>
+              {(routine: any) => (
+                <button
+                  type="button"
+                  class={`${HOME_ROW} min-h-12 flex-col items-stretch gap-1 px-3 py-2`}
+                  data-selected={selected()?.id === routine.id ? "" : undefined}
+                  onClick={() => setSelectedID(routine.id)}
+                >
+                  <div class="flex min-w-0 items-center justify-between gap-3">
+                    <span class="min-w-0 truncate text-v2-text-text-base [font-weight:530]">{routine.name}</span>
+                    <span class="shrink-0 rounded-[4px] bg-v2-background-bg-layer-02 px-1.5 py-0.5 text-[11px] text-v2-text-text-muted">
+                      {routine.enabled ? "enabled" : "off"}
+                    </span>
+                  </div>
+                  <span class="min-w-0 truncate text-left text-[12px] text-v2-text-text-muted">{routine.schedule ?? "No schedule"}</span>
+                </button>
+              )}
+            </For>
+            <Show when={!routines.data.loading && jobs().length === 0}>
+              <div class="flex min-h-40 items-center justify-center rounded-[8px] border border-v2-border-border-base p-6 text-center text-[13px] text-v2-text-text-muted">
+                No routines configured yet.
+              </div>
+            </Show>
+            <Show when={routines.data.loading && jobs().length === 0}>
+              <HomeSessionSkeleton label="Loading routines" />
+            </Show>
+          </div>
+        </ScrollView>
+        <div class="min-h-0 overflow-hidden rounded-[10px] border border-v2-border-border-base bg-v2-background-bg-layer-01">
+          <Show
+            when={selected()}
+            fallback={
+              <div class="flex h-full min-h-64 items-center justify-center p-6 text-center text-[13px] text-v2-text-text-muted">
+                Select a routine to see status, logs, and source context.
+              </div>
+            }
+          >
+            {(routine) => (
+              <div class="flex h-full min-h-0 flex-col">
+                <div class="border-b border-v2-border-border-base px-4 py-3">
+                  <div class="flex min-w-0 items-center justify-between gap-3">
+                    <div class="min-w-0">
+                      <div class="truncate text-[14px] text-v2-text-text-base [font-weight:600]">{routine().name}</div>
+                      <div class="mt-1 text-[12px] text-v2-text-text-muted">{routine().description ?? "No description"}</div>
+                    </div>
+                    <span class="shrink-0 rounded-[5px] bg-v2-background-bg-layer-02 px-2 py-1 text-[12px] text-v2-text-text-muted">
+                      {routine().enabled ? "enabled" : "off"}
+                    </span>
+                  </div>
+                </div>
+                <ScrollView class="min-h-0 flex-1">
+                  <div class="grid gap-3 p-4">
+                    <HomeRoutineInfo label="Schedule" value={routine().schedule} />
+                    <HomeRoutineInfo label="Next run" value={formatHomeRoutineDate(routine().nextRunAt)} />
+                    <HomeRoutineInfo label="Last run" value={formatHomeRoutineDate(routine().lastRunAt)} />
+                    <HomeRoutineInfo label="Last status" value={routine().lastStatus ?? "never"} />
+                    <HomeRoutineInfo label="Source folder" value={routine().sourceFolder ?? routines.data.value?.status?.routinesDir ?? "Not available"} />
+                    <HomeRoutineInfo label="Store" value={routines.data.value?.status?.jobsFile} />
+                    <div class="rounded-[8px] bg-v2-background-bg-base p-3 text-[12px] leading-5 text-v2-text-text-muted">
+                      Routine creation, edits, manual runs, and deletes are approval-gated. This page currently lists jobs and opens a disabled draft flow until protected mutations are enabled.
+                    </div>
+                  </div>
+                </ScrollView>
+              </div>
+            )}
+          </Show>
+        </div>
+      </div>
+      <Show when={draftOpen()}>
+        <Portal>
+          <div class="fixed inset-0 z-[1000] flex items-center justify-center bg-v2-background-bg-deep/60 p-4 backdrop-blur-sm" onPointerDown={() => setDraftOpen(false)}>
+            <div class="w-[min(480px,calc(100vw-2rem))] rounded-[12px] border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-floating)]" onPointerDown={(event) => event.stopPropagation()}>
+              <div class="text-[14px] text-v2-text-text-base [font-weight:600]">Schedule new routine</div>
+              <div class="mt-2 text-[13px] leading-5 text-v2-text-text-muted">
+                Draft creation is held on the live public route. Enable the protected routines mutation flag after GitHub/Cloudflare Access is verified, then this modal can write disabled draft routines.
+              </div>
+              <div class="mt-4 flex justify-end">
+                <ButtonV2 variant="neutral" size="normal" onClick={() => setDraftOpen(false)}>Close</ButtonV2>
+              </div>
+            </div>
+          </div>
+        </Portal>
+      </Show>
+    </div>
+  )
+}
+
+function HomeRoutineInfo(props: { label: string; value?: string | number | boolean | null }) {
+  return (
+    <div class="min-w-0 border-b border-v2-border-border-base pb-2 last:border-b-0">
+      <div class="text-[11px] text-v2-text-text-muted">{props.label}</div>
+      <div class="break-words text-[13px] text-v2-text-text-base">{String(props.value ?? "Not available")}</div>
+    </div>
+  )
+}
+
+function formatHomeRoutineDate(value?: string) {
+  if (!value) return "Not available"
+  const date = DateTime.fromISO(value)
+  return date.isValid ? date.toLocaleString(DateTime.DATETIME_MED) : value
+}
+
 function HomeUtilityNav(props: {
   class?: string
   openSettings: () => void
   openHelp: () => void
+  mode: HomeDashboardMode
+  setMode: (mode: HomeDashboardMode) => void
   language: ReturnType<typeof useLanguage>
 }) {
   return (
     <div class={`${props.class ?? ""} min-w-0 flex-col gap-1`}>
+      <button
+        type="button"
+        class={`${HOME_PROJECT_NAV_ROW} text-v2-text-text-faint`}
+        data-selected={props.mode === "routines" ? "" : undefined}
+        onClick={() => props.setMode("routines")}
+      >
+        <span class="flex size-4 shrink-0 items-center justify-center rounded-[4px] bg-[#f97316]/15 text-[9px] leading-none text-[#f97316] [font-weight:650]">
+          R
+        </span>
+        <span class={HOME_PROJECT_NAV_LABEL}>Routines</span>
+      </button>
       <button
         type="button"
         class={`${HOME_PROJECT_NAV_ROW} text-v2-text-text-faint [&>[data-slot=icon-svg]]:text-v2-icon-icon-muted`}

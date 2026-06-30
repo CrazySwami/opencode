@@ -2,6 +2,7 @@ import { Effect, Schema } from "effect"
 import * as Tool from "./tool"
 import DESCRIPTION from "./resource-status.txt"
 import { execFile } from "node:child_process"
+import { readFile } from "node:fs/promises"
 import os from "node:os"
 import { promisify } from "node:util"
 
@@ -50,8 +51,18 @@ export type HostResourceStatus = {
     load1: number
     load5: number
     load15: number
+    loadPercent1?: number
+    loadPercent5?: number
+    loadPercent15?: number
   }
   memory?: {
+    totalBytes: number
+    freeBytes: number
+    usedBytes: number
+    usedPercent: number
+    source?: string
+  }
+  swap?: {
     totalBytes: number
     freeBytes: number
     usedBytes: number
@@ -92,9 +103,13 @@ export async function collectResourceStatus(target: ResourceTarget = "all"): Pro
 async function readServerStatus(): Promise<HostResourceStatus> {
   const checkedAt = new Date().toISOString()
   try {
-    const totalBytes = os.totalmem()
-    const freeBytes = os.freemem()
+    const meminfo = await readLinuxMemInfo()
+    const totalBytes = meminfo.MemTotal ?? os.totalmem()
+    const freeBytes = meminfo.MemAvailable ?? os.freemem()
+    const swapTotalBytes = meminfo.SwapTotal ?? 0
+    const swapFreeBytes = meminfo.SwapFree ?? 0
     const load = os.loadavg()
+    const cores = os.cpus().length
     return {
       target: "server",
       online: true,
@@ -103,12 +118,16 @@ async function readServerStatus(): Promise<HostResourceStatus> {
       platform: `${os.type()} ${os.release()}`,
       uptimeSeconds: Math.round(os.uptime()),
       cpu: {
-        cores: os.cpus().length,
+        cores,
         load1: load[0] ?? 0,
         load5: load[1] ?? 0,
         load15: load[2] ?? 0,
+        loadPercent1: percent(load[0] ?? 0, cores),
+        loadPercent5: percent(load[1] ?? 0, cores),
+        loadPercent15: percent(load[2] ?? 0, cores),
       },
-      memory: memoryPayload(totalBytes, freeBytes),
+      memory: { ...memoryPayload(totalBytes, freeBytes), source: meminfo.MemAvailable ? "/proc/meminfo MemAvailable" : "os.freemem" },
+      swap: memoryPayload(swapTotalBytes, swapFreeBytes),
       storage: await readLocalStorage(),
     }
   } catch (error) {
@@ -144,6 +163,7 @@ async function readMacStatus(): Promise<HostResourceStatus> {
       uptimeSeconds: parsed.uptimeSeconds,
       cpu: parsed.cpu,
       memory: parsed.memory,
+      swap: parsed.swap,
       storage: parsed.storage,
     }
   } catch (error) {
@@ -203,6 +223,24 @@ function memoryPayload(totalBytes: number, freeBytes: number) {
   }
 }
 
+async function readLinuxMemInfo() {
+  try {
+    const text = await readFile("/proc/meminfo", "utf8")
+    return Object.fromEntries(
+      text.split(/\r?\n/).flatMap((line) => {
+        const match = line.match(/^([A-Za-z_()]+):\s+(\d+)\s+kB$/)
+        if (!match) return []
+        const key = match[1]
+        const value = match[2]
+        if (!key || !value) return []
+        return [[key, Number(value) * 1024]]
+      }),
+    ) as Record<string, number>
+  } catch {
+    return {}
+  }
+}
+
 function percent(used: number, total: number) {
   if (!Number.isFinite(total) || total <= 0) return 0
   return Math.round((used / total) * 1000) / 10
@@ -244,6 +282,28 @@ function memoryPayload(totalBytes, freeBytes) {
   const usedBytes = Math.max(0, totalBytes - freeBytes)
   return { totalBytes, freeBytes, usedBytes, usedPercent: percent(usedBytes, totalBytes) }
 }
+function loadPercent(load, cores) {
+  return percent(load || 0, cores || 1)
+}
+function parseMacSwap() {
+  try {
+    const raw = execFileSync("sysctl", ["vm.swapusage"], { encoding: "utf8" })
+    const total = raw.match(/total = ([0-9.]+)([KMGTP])/) 
+    const used = raw.match(/used = ([0-9.]+)([KMGTP])/) 
+    const free = raw.match(/free = ([0-9.]+)([KMGTP])/) 
+    const toBytes = (match) => {
+      if (!match) return 0
+      const units = { K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4, P: 1024 ** 5 }
+      return Math.round(Number(match[1]) * (units[match[2]] || 1))
+    }
+    const totalBytes = toBytes(total)
+    const usedBytes = toBytes(used)
+    const freeBytes = toBytes(free) || Math.max(0, totalBytes - usedBytes)
+    return { totalBytes, usedBytes, freeBytes, usedPercent: percent(usedBytes, totalBytes) }
+  } catch {
+    return { totalBytes: 0, usedBytes: 0, freeBytes: 0, usedPercent: 0 }
+  }
+}
 function parseDf(stdout, fallbackPath) {
   const line = stdout.trim().split("\n")[1]
   if (!line) return undefined
@@ -255,6 +315,7 @@ function parseDf(stdout, fallbackPath) {
   return { filesystem: parts[0], path: parts.slice(5).join(" ") || fallbackPath, totalBytes, usedBytes, freeBytes, usedPercent: percent(usedBytes, totalBytes) }
 }
 const load = os.loadavg()
+const cores = os.cpus().length
 const storage = ["/"].flatMap((item) => {
   try {
     const parsed = parseDf(execFileSync("df", ["-kP", item], { encoding: "utf8" }), item)
@@ -267,8 +328,9 @@ process.stdout.write(JSON.stringify({
   hostname: os.hostname(),
   platform: os.type() + " " + os.release(),
   uptimeSeconds: Math.round(os.uptime()),
-  cpu: { cores: os.cpus().length, load1: load[0] || 0, load5: load[1] || 0, load15: load[2] || 0 },
-  memory: memoryPayload(os.totalmem(), os.freemem()),
+  cpu: { cores, load1: load[0] || 0, load5: load[1] || 0, load15: load[2] || 0, loadPercent1: loadPercent(load[0], cores), loadPercent5: loadPercent(load[1], cores), loadPercent15: loadPercent(load[2], cores) },
+  memory: { ...memoryPayload(os.totalmem(), os.freemem()), source: "os.freemem" },
+  swap: parseMacSwap(),
   storage
 }))
 `

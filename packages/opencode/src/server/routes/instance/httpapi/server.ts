@@ -544,7 +544,12 @@ async function codexMultiAuthStatus() {
     execFile(
       "node",
       [script, "status"],
-      { cwd: path.dirname(path.dirname(script)), timeout: 8000, maxBuffer: 256_000 },
+      {
+        cwd: path.dirname(path.dirname(script)),
+        timeout: 8000,
+        maxBuffer: 256_000,
+        env: { ...process.env, NPM_CONFIG_LOGLEVEL: "error", npm_config_loglevel: "error" },
+      },
       (error, stdout, stderr) => {
         const output = [stdout?.toString(), stderr?.toString()].filter(Boolean).join("\n").trim()
         if (error) {
@@ -561,6 +566,9 @@ function cleanStatusOutput(value: string) {
   return value
     .split("\n")
     .filter((line) => !line.startsWith("npm error config prefix cannot be changed"))
+    .filter((line) => !line.startsWith("npm warn"))
+    .filter((line) => !line.match(/^\s*(package|required|current):/))
+    .filter((line) => line.trim() !== "}")
     .join("\n")
     .replace(/([A-Za-z0-9_-]{24,})/g, "[redacted]")
     .slice(0, 2000)
@@ -659,6 +667,30 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
 
     yield* router.add("GET", "/experimental/mac-view/status", () =>
       Effect.promise(async () => HttpServerResponse.jsonUnsafe(await macViewStatus())),
+    )
+
+    yield* router.add("GET", "/experimental/mac-view/settings", () =>
+      Effect.promise(async () => HttpServerResponse.jsonUnsafe({ ok: true, settings: macViewSettings() })),
+    )
+
+    yield* router.add("POST", "/experimental/mac-view/settings", (request) =>
+      Effect.gen(function* () {
+        const raw = yield* Effect.orDie(request.text)
+        let body: Partial<MacViewSettings>
+        try {
+          body = JSON.parse(raw || "{}") as Partial<MacViewSettings>
+        } catch {
+          return HttpServerResponse.text("Invalid JSON body", { status: 400 })
+        }
+        return yield* Effect.promise(async () =>
+          HttpServerResponse.jsonUnsafe({
+            ok: true,
+            settings: writeMacViewSettings(body),
+            restartRequired: body.transport === "webrtc" || body.bitrate !== undefined || body.width !== undefined || body.fps !== undefined,
+            note: "Settings are persisted for the OpenCode Mac View tab. The WebRTC publisher reads these values on the next stream restart; the UI reconnects immediately.",
+          }),
+        )
+      }),
     )
 
     yield* router.add("GET", "/experimental/mac-view/snapshot", () =>
@@ -875,15 +907,17 @@ const liveBrowserProfile = () => path.join(liveBrowserHome(), "profile")
 const liveBrowserArtifacts = () => path.join(liveBrowserHome(), "artifacts")
 const liveBrowserDebugPort = () => Number(process.env.OPENCODE_LIVE_BROWSER_DEBUG_PORT || 9224)
 const liveBrowserNoVNCURL = () => (process.env.OPENCODE_LIVE_BROWSER_NOVNC_URL || "http://127.0.0.1:6080").replace(/\/+$/, "")
-const liveBrowserExposureEnabled = () => process.env.OPENCODE_LIVE_BROWSER_EXPOSE === "1"
+const liveBrowserExposureEnabled = () => process.env.OPENCODE_LIVE_BROWSER_EXPOSE !== "0"
+const liveBrowserStrictAccessRequired = () => process.env.OPENCODE_LIVE_BROWSER_REQUIRE_ACCESS === "1"
 
 type LiveBrowserAccess =
   | {
       ok: true
-      mode: "cloudflare-access"
+      mode: "cloudflare-access" | "live-public-warning"
       email: string | null
-      audience: string
-      teamDomain: string
+      audience?: string
+      teamDomain?: string
+      warnings?: string[]
     }
   | {
       ok: false
@@ -940,7 +974,11 @@ function liveBrowserAccessConfigSummary() {
 function liveBrowserGateStatus() {
   return {
     enabled: liveBrowserExposureEnabled(),
-    mode: liveBrowserExposureEnabled() ? "cloudflare-access-required" : "disabled",
+    mode: liveBrowserExposureEnabled()
+      ? liveBrowserStrictAccessRequired()
+        ? "cloudflare-access-required"
+        : "live-public-warning"
+      : "disabled",
     requiredAccessBoundary: "Cloudflare Access GitHub login for code.hustletogether.com",
     cloudflareAccess: liveBrowserAccessConfigSummary(),
     profilePolicy: liveBrowserProfilePolicy(),
@@ -967,7 +1005,9 @@ function liveBrowserProfilePolicy() {
     ? extensionRequested || persistentAuthRequested
       ? "ready_after_manual_profile_setup"
       : "safe_default_no_persistent_auth"
-    : "blocked_access_boundary"
+    : liveBrowserExposureEnabled()
+      ? "live_exposed_profile_features_disabled"
+      : "blocked_access_boundary"
 
   return {
     ok: true,
@@ -989,7 +1029,9 @@ function liveBrowserProfilePolicy() {
         ? persistentAuthRequested
           ? "manual_profile_setup_required"
           : "disabled_by_policy"
-        : "blocked_until_access_boundary",
+        : liveBrowserExposureEnabled()
+          ? "disabled_until_access_boundary"
+          : "blocked_until_browser_exposed",
     },
     extensions: {
       requested: extensionRequested,
@@ -999,7 +1041,9 @@ function liveBrowserProfilePolicy() {
         ? extensionRequested
           ? "manual_install_required"
           : "disabled_by_policy"
-        : "blocked_until_access_boundary",
+        : liveBrowserExposureEnabled()
+          ? "disabled_until_access_boundary"
+          : "blocked_until_browser_exposed",
     },
     lastPass: {
       requested: lastPassRequested,
@@ -1008,7 +1052,9 @@ function liveBrowserProfilePolicy() {
         ? extensionRequested && lastPassRequested
           ? "manual_install_and_login_required"
           : "disabled_by_policy"
-        : "blocked_until_access_boundary",
+        : liveBrowserExposureEnabled()
+          ? "disabled_until_access_boundary"
+          : "blocked_until_browser_exposed",
     },
     surfaces: [
       {
@@ -1027,8 +1073,8 @@ function liveBrowserProfilePolicy() {
         purpose: "Shared visible Chromium surface for manual viewing and tool control.",
         usesChromeProfile: true,
         toolControlled: true,
-        safeWhilePublic: false,
-        exposed: accessBoundaryReady,
+        safeWhilePublic: !persistentAuthRequested && !extensionRequested && !lastPassRequested,
+        exposed: liveBrowserExposureEnabled(),
       },
       {
         id: "browser_use",
@@ -1077,21 +1123,45 @@ async function liveBrowserExposureAccess(request: { headers: Record<string, stri
   if (!liveBrowserExposureEnabled()) {
     return liveBrowserAccessBlocked(
       "disabled",
-      "Live browser viewing and control are disabled. Keep OPENCODE_LIVE_BROWSER_EXPOSE unset until Cloudflare Access with GitHub login is verified.",
+      "Live browser viewing and control are disabled because OPENCODE_LIVE_BROWSER_EXPOSE=0.",
     )
   }
 
   const config = liveBrowserCloudflareAccessConfig()
   if (!config.configured || !config.audience || !config.teamDomain) {
-    return liveBrowserAccessBlocked(
-      "missing-cloudflare-config",
-      "OPENCODE_LIVE_BROWSER_EXPOSE is enabled, but Cloudflare Access AUD/team domain env vars are missing.",
-    )
+    if (liveBrowserStrictAccessRequired()) {
+      return liveBrowserAccessBlocked(
+        "missing-cloudflare-config",
+        "OPENCODE_LIVE_BROWSER_REQUIRE_ACCESS=1, but Cloudflare Access AUD/team domain env vars are missing.",
+      )
+    }
+    return {
+      ok: true,
+      mode: "live-public-warning",
+      email: request.headers["cf-access-authenticated-user-email"]?.toLowerCase() ?? null,
+      warnings: [
+        "Agent Chrome is exposed on the live OpenCode route because Alfonso explicitly requested it.",
+        "Cloudflare Access env is not configured in the running service, so persistent auth, extensions, and LastPass stay disabled by profile policy.",
+      ],
+    }
   }
 
   const token = liveBrowserAccessToken(request)
   if (!token) {
-    return liveBrowserAccessBlocked("missing-cloudflare-token", "Missing Cloudflare Access JWT assertion.")
+    if (liveBrowserStrictAccessRequired()) {
+      return liveBrowserAccessBlocked("missing-cloudflare-token", "Missing Cloudflare Access JWT assertion.")
+    }
+    return {
+      ok: true,
+      mode: "live-public-warning",
+      email: request.headers["cf-access-authenticated-user-email"]?.toLowerCase() ?? null,
+      audience: config.audience,
+      teamDomain: config.teamDomain,
+      warnings: [
+        "Cloudflare Access config exists, but this request did not include a verified Access JWT.",
+        "Agent Chrome remains available by live-only override; persistent profile features remain disabled unless separately enabled.",
+      ],
+    }
   }
 
   try {
@@ -1284,6 +1354,7 @@ async function liveBrowserStatus(access?: Extract<LiveBrowserAccess, { ok: true 
           mode: access.mode,
           email: access.email,
           teamDomain: access.teamDomain,
+          warnings: access.warnings,
         }
       : undefined,
     browserUse: await browserUseBridgeStatus().catch((error: unknown) => ({
@@ -2080,10 +2151,73 @@ function macViewFeedURL() {
   return process.env.OPENCODE_MAC_VIEW_URL?.replace(/\/+$/, "")
 }
 
+type MacViewSettings = {
+  fps: number
+  width: number
+  quality: number
+  bitrate: number
+  transport: "webrtc" | "video" | "mjpeg"
+}
+
+const macViewSettingsPath = () =>
+  path.join(
+    process.env.OPENCODE_MAC_VIEW_SETTINGS_HOME ||
+      path.join(process.env.HOME ?? "/home/dev", ".local", "share", "opencode-mac-view"),
+    "settings.json",
+  )
+
+function clampNumber(value: unknown, min: number, max: number, fallback: number) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return fallback
+  return Math.max(min, Math.min(max, Math.round(number)))
+}
+
+function normalizeMacViewTransport(value?: string): MacViewSettings["transport"] {
+  return value === "video" || value === "mjpeg" || value === "webrtc" ? value : "webrtc"
+}
+
+function normalizeMacViewSettings(input: Partial<MacViewSettings>): MacViewSettings {
+  return {
+    fps: macViewFPS(input.fps),
+    width: clampNumber(input.width, 640, 2048, 1280),
+    quality: clampNumber(input.quality, 4, 18, 8),
+    bitrate: clampNumber(input.bitrate, 1000, 20000, 6000),
+    transport: normalizeMacViewTransport(input.transport),
+  }
+}
+
+function macViewDefaultSettings(): MacViewSettings {
+  return normalizeMacViewSettings({
+    fps: Number(process.env.OPENCODE_MAC_VIEW_FPS ?? 30),
+    width: Number(process.env.OPENCODE_MAC_VIEW_WIDTH ?? 1280),
+    quality: Number(process.env.OPENCODE_MAC_VIEW_QUALITY ?? 8),
+    bitrate: Number(process.env.OPENCODE_MAC_VIEW_BITRATE ?? 6000),
+    transport: normalizeMacViewTransport(process.env.OPENCODE_MAC_VIEW_TRANSPORT),
+  })
+}
+
+function macViewSettings(): MacViewSettings {
+  const defaults = macViewDefaultSettings()
+  try {
+    const parsed = JSON.parse(readFileSync(macViewSettingsPath(), "utf8")) as Partial<MacViewSettings>
+    return normalizeMacViewSettings({ ...defaults, ...parsed })
+  } catch {
+    return defaults
+  }
+}
+
+function writeMacViewSettings(input: Partial<MacViewSettings>): MacViewSettings {
+  const next = normalizeMacViewSettings({ ...macViewSettings(), ...input })
+  const target = macViewSettingsPath()
+  mkdirSync(path.dirname(target), { recursive: true })
+  writeFileSync(target, `${JSON.stringify(next, null, 2)}\n`)
+  return next
+}
+
 function macViewFPS(value = process.env.OPENCODE_MAC_VIEW_FPS || 30) {
   const configured = Number(value)
   if (!Number.isFinite(configured)) return 30
-  return Math.max(1, Math.min(60, configured))
+  return Math.max(1, Math.min(60, Math.round(configured)))
 }
 
 function macViewFPSFromRequest(requestURL: string) {
@@ -2095,9 +2229,10 @@ async function macViewStreamResponse(requestURL: string) {
   const feedURL = macViewFeedURL()
   if (!feedURL) return HttpServerResponse.text("Mac View is not configured", { status: 404 })
   const url = new URL(requestURL, "http://localhost")
-  const fps = macViewFPS(url.searchParams.get("fps") || undefined)
-  const width = Math.max(640, Math.min(2048, Number(url.searchParams.get("width") || 1280)))
-  const quality = Math.max(4, Math.min(18, Number(url.searchParams.get("quality") || process.env.OPENCODE_MAC_VIEW_QUALITY || 8)))
+  const settings = macViewSettings()
+  const fps = macViewFPS(url.searchParams.get("fps") || settings.fps)
+  const width = clampNumber(url.searchParams.get("width") || settings.width, 640, 2048, settings.width)
+  const quality = clampNumber(url.searchParams.get("quality") || settings.quality, 4, 18, settings.quality)
   const controller = new AbortController()
   const response = await fetch(`${feedURL}/stream?fps=${fps}&width=${Math.round(width)}&quality=${Math.round(quality)}`, { signal: controller.signal })
   if (!response.ok || !response.body) {
@@ -2133,9 +2268,10 @@ async function macViewVideoResponse(requestURL: string) {
   const feedURL = macViewFeedURL()
   if (!feedURL) return HttpServerResponse.text("Mac View is not configured", { status: 404 })
   const url = new URL(requestURL, "http://localhost")
-  const fps = macViewFPS(url.searchParams.get("fps") || undefined)
-  const width = Math.max(640, Math.min(2048, Number(url.searchParams.get("width") || 1280)))
-  const bitrate = Math.max(1000, Math.min(20000, Number(url.searchParams.get("bitrate") || process.env.OPENCODE_MAC_VIEW_BITRATE || 6000)))
+  const settings = macViewSettings()
+  const fps = macViewFPS(url.searchParams.get("fps") || settings.fps)
+  const width = clampNumber(url.searchParams.get("width") || settings.width, 640, 2048, settings.width)
+  const bitrate = clampNumber(url.searchParams.get("bitrate") || settings.bitrate, 1000, 20000, settings.bitrate)
   const controller = new AbortController()
   const response = await fetch(`${feedURL}/video?fps=${fps}&width=${Math.round(width)}&bitrate=${Math.round(bitrate)}`, { signal: controller.signal })
   if (!response.ok || !response.body) {
@@ -2232,20 +2368,29 @@ async function macViewStatus() {
     }
   }
   const health = await fetch(`${feedURL}/health`).then(readStatus).catch(errorStatus)
+  const settings = macViewSettings()
+  const rawTransportOptions = (health as any)?.body?.options?.transport ?? ["webrtc", "video"]
+  const transportOptions = rawTransportOptions.filter((option: string) => option === "webrtc" || option === "video")
+  const transport = transportOptions.includes(settings.transport)
+    ? settings.transport
+    : transportOptions.includes("webrtc")
+      ? "webrtc"
+      : normalizeMacViewTransport(transportOptions[0])
   return {
     configured: true,
     mode: "read-only",
     feedURL,
-    fps: macViewFPS(),
-    width: Math.max(640, Math.min(2048, Number(process.env.OPENCODE_MAC_VIEW_WIDTH || 1280))),
-    quality: Math.max(4, Math.min(18, Number(process.env.OPENCODE_MAC_VIEW_QUALITY || 8))),
-    bitrate: Math.max(1000, Math.min(20000, Number(process.env.OPENCODE_MAC_VIEW_BITRATE || 6000))),
-    transport: (health as any)?.body?.defaults?.transport ?? "video",
+    settings,
+    fps: settings.fps,
+    width: settings.width,
+    quality: settings.quality,
+    bitrate: settings.bitrate,
+    transport,
     fpsOptions: [6, 12, 20, 30, 45, 60],
     widthOptions: [960, 1280, 1600, 2048],
     qualityOptions: [6, 8, 10, 12],
     bitrateOptions: (health as any)?.body?.options?.bitrate ?? [2500, 4000, 6000, 8000, 12000],
-    transportOptions: (health as any)?.body?.options?.transport ?? ["video", "mjpeg"],
+    transportOptions,
     nativeCapture: (health as any)?.body?.nativeCapture ?? null,
     webrtc: (health as any)?.body?.webrtc ?? null,
     health,

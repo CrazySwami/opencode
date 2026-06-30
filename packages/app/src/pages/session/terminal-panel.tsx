@@ -22,8 +22,6 @@ import { createSizing, focusTerminalById } from "@/pages/session/helpers"
 import { getTerminalHandoff, setTerminalHandoff } from "@/pages/session/handoff"
 import { useSessionLayout } from "@/pages/session/session-layout"
 
-const PANEL_TERMINAL_TAB = "panel://terminal"
-
 export function TerminalPanel() {
   const delays = [120, 240]
   const layout = useLayout()
@@ -32,8 +30,8 @@ export function TerminalPanel() {
   const language = useLanguage()
   const command = useCommand()
   const settings = useSettings()
-  const { workspaceKey, view, tabs } = useSessionLayout()
-  const sidePanelOwnsTerminal = createMemo(() => tabs().all().includes(PANEL_TERMINAL_TAB))
+  const { workspaceKey, view } = useSessionLayout()
+  const sidePanelOwnsTerminal = () => true
 
   const opened = createMemo(() => !sidePanelOwnsTerminal() && view().terminal.opened())
   const size = createSizing()

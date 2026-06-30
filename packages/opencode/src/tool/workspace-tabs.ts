@@ -187,13 +187,40 @@ export function workspaceTabsStatus() {
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
-    registryVersion: 1,
-    tabs: workspaceTabs,
+    registryVersion: 2,
+    activeStateSource: "OpenCode web client",
+    tabs: workspaceTabs.map((tab) => ({
+      ...tab,
+      runtimeState: {
+        tabID: tab.id,
+        stateRoute: "route" in tab ? tab.route : null,
+        localClientState:
+          tab.id === "panel://preview" || tab.id === "panel://file-browser"
+            ? "stored in browser localStorage"
+            : "owned by visible client",
+        canOpenFromTool: true,
+        canFocusFromTool: true,
+        canCloseFromTool: true,
+      },
+      toolContract: {
+        list: { tool: "workspace_tabs", action: "list" },
+        state: { tool: "workspace_tabs", action: "state", tab: tab.id },
+        open: { tool: "workspace_tabs", action: "open", tab: tab.id },
+        focus: { tool: "workspace_tabs", action: "focus", tab: tab.id },
+        close: { tool: "workspace_tabs", action: "close", tab: tab.id },
+        attachToChat: { tool: "workspace_tabs", action: "attach_to_chat", tab: tab.id },
+      },
+    })),
     contracts: {
       clientCanOpenTabs: true,
       serverCanRequestTabs: true,
       serverCannotInspectBrowserLocalTabState: true,
       openRequestShape: { tool: "workspace_tabs", action: "open", tab: "panel://browser" },
+      clientEventShape: {
+        event: "opencode:workspace-tab-action",
+        detail: { type: "workspace_tab", action: "open", tab: "panel://browser" },
+      },
+      note: "The backend returns the canonical registry and requested client actions. The web client owns the currently visible/open tab set and applies matching workspace tab events.",
     },
   }
 }
@@ -217,6 +244,7 @@ export function workspaceTabsAction(input: Schema.Schema.Type<typeof Parameters>
         type: "workspace_tab_action",
         tab: tab.id,
         action: input.tabAction,
+        event: "opencode:workspace-tab-action",
       },
       note: "The OpenCode web client owns visible tab state. This tool returns the exact client action request for the UI/chat bridge.",
     }
@@ -240,6 +268,7 @@ export function workspaceTabsAction(input: Schema.Schema.Type<typeof Parameters>
       type: "workspace_tab",
       action: input.action,
       tab: tab?.id,
+      event: "opencode:workspace-tab-action",
     },
     note: "The web client can use this structured response to open, focus, or close a tab.",
   }

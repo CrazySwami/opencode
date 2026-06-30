@@ -23,7 +23,6 @@ import { selectionFromLines, useFile, type FileSelection, type SelectedLineRange
 import { createStore } from "solid-js/store"
 import { ResizeHandle } from "@opencode-ai/ui/resize-handle"
 import { Select } from "@opencode-ai/ui/select"
-import { Tabs } from "@opencode-ai/ui/tabs"
 import { createAutoScroll } from "@opencode-ai/ui/hooks"
 import { previewSelectedLines } from "@opencode-ai/session-ui/pierre/selection-bridge"
 import { Button } from "@opencode-ai/ui/button"
@@ -1685,42 +1684,51 @@ export default function Page() {
   }
 
   const mobileTabs = (compact = false, bottom = false) => (
-    <Tabs value={store.mobileTab} class="h-auto">
-      <Tabs.List
+    <div
+      class="grid grid-cols-2 overflow-hidden border-border-weaker-base bg-background-base"
+      classList={{
+        "h-9": compact,
+        "border-t": bottom,
+        "border-b": !bottom,
+      }}
+      role="tablist"
+      aria-label="Mobile session workspace switcher"
+    >
+      <button
+        type="button"
+        role="tab"
+        aria-selected={store.mobileTab === "session"}
+        class="h-full px-3 text-13-regular transition-colors"
         classList={{
-          "!h-9": compact,
-          "[&::after]:!border-b-0 [&::after]:!border-t [&::after]:!border-border-weak-base": bottom,
+          "bg-background-stronger text-text-base": store.mobileTab === "session",
+          "text-text-weak hover:text-text-base": store.mobileTab !== "session",
+          "py-2": compact,
+          "border-r border-border-weaker-base": true,
         }}
+        onClick={() => setStore("mobileTab", "session")}
       >
-        <Tabs.Trigger
-          value="session"
-          classList={{
-            "!w-1/2 !max-w-none": true,
-            "!border-b-0 !border-t !border-border-weak-base [&:has([data-selected])]:!border-t-transparent": bottom,
-          }}
-          classes={{ button: compact ? "w-full !py-2" : "w-full" }}
-          onClick={() => setStore("mobileTab", "session")}
-        >
-          {language.t("session.tab.session")}
-        </Tabs.Trigger>
-        <Tabs.Trigger
-          value="workspace"
-          classList={{
-            "!w-1/2 !max-w-none !border-r-0": true,
-            "!border-b-0 !border-t !border-border-weak-base [&:has([data-selected])]:!border-t-transparent": bottom,
-          }}
-          classes={{ button: compact ? "w-full !py-2" : "w-full" }}
-          onClick={() => setStore("mobileTab", "workspace")}
-        >
-          <div class="flex items-center justify-center gap-1.5">
-            <span>Workspace</span>
-            <Show when={hasReview()}>
-              <span class="text-12-regular text-text-weak">{reviewCount()}</span>
-            </Show>
-          </div>
-        </Tabs.Trigger>
-      </Tabs.List>
-    </Tabs>
+        {language.t("session.tab.session")}
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={store.mobileTab === "workspace"}
+        class="h-full px-3 text-13-regular transition-colors"
+        classList={{
+          "bg-background-stronger text-text-base": store.mobileTab === "workspace",
+          "text-text-weak hover:text-text-base": store.mobileTab !== "workspace",
+          "py-2": compact,
+        }}
+        onClick={() => setStore("mobileTab", "workspace")}
+      >
+        <div class="flex items-center justify-center gap-1.5">
+          <span>Workspace</span>
+          <Show when={hasReview()}>
+            <span class="text-12-regular text-text-weak">{reviewCount()}</span>
+          </Show>
+        </div>
+      </button>
+    </div>
   )
   const mobileTabsBottom = createMemo(
     () => !isDesktop() && settings.general.newLayoutDesigns() && settings.general.mobileTitlebarPosition() === "bottom",

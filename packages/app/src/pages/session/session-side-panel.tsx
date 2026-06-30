@@ -17,7 +17,7 @@ import { useDialog } from "@opencode-ai/ui/context/dialog"
 import FileTree from "@/components/file-tree"
 import { Terminal } from "@/components/terminal"
 import { SessionContextUsage } from "@/components/session-context-usage"
-import { SessionContextTab, SortableTab, FileVisual } from "@/components/session"
+import { SessionContextTab, SortableTab, SortableTerminalTab, FileVisual } from "@/components/session"
 import { useCommand } from "@/context/command"
 import { useFile, type SelectedLineRange } from "@/context/file"
 import { useLanguage } from "@/context/language"
@@ -31,6 +31,7 @@ import { terminalTabLabel } from "@/pages/session/terminal-label"
 import {
   createOpenSessionFileTab,
   createSessionTabs,
+  focusTerminalById,
   getTabReorderIndex,
   shouldShowFileTree,
   type Sizing,
@@ -192,7 +193,12 @@ function PanelMenuButton(props: { tab: string; onSelect: () => void }) {
 function SessionTerminalTab() {
   const terminal = useTerminal()
   const language = useLanguage()
+  const command = useCommand()
   const { view } = useSessionLayout()
+  const [store, setStore] = createStore({
+    activeDraggable: undefined as string | undefined,
+    recovered: {} as Record<string, boolean>,
+  })
 
   createEffect(() => {
     if (view().terminal.opened()) view().terminal.close()
@@ -204,79 +210,156 @@ function SessionTerminalTab() {
     terminal.new()
   })
 
+  const all = terminal.all
+  const ids = createMemo(() => all().map((pty) => pty.id))
+
+  const focus = (id: string) => {
+    focusTerminalById(id)
+    const frame = requestAnimationFrame(() => {
+      if (terminal.active() !== id) return
+      focusTerminalById(id)
+    })
+    const timer = window.setTimeout(() => {
+      if (terminal.active() !== id) return
+      focusTerminalById(id)
+    }, 180)
+    return () => {
+      cancelAnimationFrame(frame)
+      clearTimeout(timer)
+    }
+  }
+
+  createEffect(() => {
+    const id = terminal.active()
+    if (!id) return
+    const stop = focus(id)
+    onCleanup(stop)
+  })
+
+  const recoverTerminal = (key: string, id: string, clone: (id: string) => Promise<void>) => {
+    if (store.recovered[key]) return
+    setStore("recovered", key, true)
+    void clone(id)
+  }
+
+  const terminalRecoveryKey = (pty: { id: string; title: string; titleNumber: number }) => {
+    return String(pty.titleNumber || pty.title || pty.id)
+  }
+
+  const markTerminalConnected = (key: string, id: string, trim: (id: string) => void) => {
+    setStore("recovered", key, false)
+    trim(id)
+  }
+
+  const handleTerminalDragStart = (event: unknown) => {
+    const id = getDraggableId(event)
+    if (!id) return
+    setStore("activeDraggable", id)
+  }
+
+  const handleTerminalDragOver = (event: DragEvent) => {
+    const { draggable, droppable } = event
+    if (!draggable || !droppable) return
+    const terminals = terminal.all()
+    const fromIndex = terminals.findIndex((t) => t.id === draggable.id.toString())
+    const toIndex = terminals.findIndex((t) => t.id === droppable.id.toString())
+    if (fromIndex !== -1 && toIndex !== -1 && fromIndex !== toIndex) {
+      terminal.move(draggable.id.toString(), toIndex)
+    }
+  }
+
+  const handleTerminalDragEnd = () => {
+    setStore("activeDraggable", undefined)
+    const activeId = terminal.active()
+    if (!activeId) return
+    requestAnimationFrame(() => {
+      if (terminal.active() !== activeId) return
+      focusTerminalById(activeId)
+    })
+  }
+
   return (
-    <div class="h-full min-h-0 flex flex-col bg-background-stronger">
+    <TabChrome title="Terminal" iconTab={PANEL_TERMINAL_TAB} bodyClass="flex min-h-0 flex-1 flex-col overflow-hidden p-0">
       <Show
         when={terminal.ready()}
         fallback={
           <div class="flex-1 flex items-center justify-center text-12-regular text-text-weak">Loading terminal...</div>
         }
       >
-        <Tabs variant="alt" value={terminal.active()} onChange={(id) => terminal.open(id)} class="!h-auto !flex-none">
-          <Tabs.List class="h-10 border-b border-border-weaker-base">
-            <For each={terminal.all()}>
-              {(pty) => (
-                <Tabs.Trigger
-                  value={pty.id}
-                  closeButton={
+        <DragDropProvider
+          onDragStart={handleTerminalDragStart}
+          onDragEnd={handleTerminalDragEnd}
+          onDragOver={handleTerminalDragOver}
+          collisionDetector={closestCenter}
+        >
+          <DragDropSensors />
+          <ConstrainDragYAxis />
+          <div class="flex min-h-0 flex-1 flex-col">
+            <Tabs variant="alt" value={terminal.active()} onChange={(id) => terminal.open(id)} class="!h-auto !flex-none">
+              <Tabs.List class="h-10 border-b border-border-weaker-base">
+                <SortableProvider ids={ids()}>
+                  <For each={all()}>{(pty) => <SortableTerminalTab terminal={pty} />}</For>
+                </SortableProvider>
+                <div class="h-full flex items-center justify-center">
+                  <TooltipKeybind
+                    title={language.t("command.terminal.new")}
+                    keybind={command.keybind("terminal.new")}
+                    class="flex items-center"
+                  >
                     <IconButton
-                      icon="close-small"
+                      icon="plus-small"
                       variant="ghost"
-                      class="h-5 w-5"
-                      onPointerDown={(event) => event.stopPropagation()}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        void terminal.close(pty.id)
-                      }}
-                      aria-label={language.t("terminal.close")}
+                      iconSize="large"
+                      onClick={terminal.new}
+                      aria-label={language.t("command.terminal.new")}
                     />
-                  }
-                  hideCloseButton
-                  onMiddleClick={() => void terminal.close(pty.id)}
-                >
-                  {terminalTabLabel({
-                    title: pty.title,
-                    titleNumber: pty.titleNumber,
-                    t: language.t as (key: string, vars?: Record<string, string | number | boolean>) => string,
-                  })}
-                </Tabs.Trigger>
-              )}
-            </For>
-            <div class="h-full flex items-center justify-center">
-              <IconButton
-                icon="plus-small"
-                variant="ghost"
-                iconSize="large"
-                onClick={terminal.new}
-                aria-label={language.t("command.terminal.new")}
-              />
+                  </TooltipKeybind>
+                </div>
+              </Tabs.List>
+            </Tabs>
+            <div class="flex-1 min-h-0 relative">
+              <Show when={terminal.active()} keyed>
+                {(id) => {
+                  const ops = terminal.bind()
+                  return (
+                    <Show when={all().find((pty) => pty.id === id)}>
+                      {(pty) => (
+                        <div id={`terminal-wrapper-${id}`} class="absolute inset-0">
+                          <Terminal
+                            pty={pty()}
+                            autoFocus
+                            onConnect={() => markTerminalConnected(terminalRecoveryKey(pty()), id, ops.trim)}
+                            onCleanup={ops.update}
+                            onConnectError={() => recoverTerminal(terminalRecoveryKey(pty()), id, ops.clone)}
+                          />
+                        </div>
+                      )}
+                    </Show>
+                  )
+                }}
+              </Show>
             </div>
-          </Tabs.List>
-        </Tabs>
-        <div class="flex-1 min-h-0 relative">
-          <Show when={terminal.active()} keyed>
-            {(id) => {
-              const ops = terminal.bind()
-              return (
-                <Show when={terminal.all().find((pty) => pty.id === id)}>
-                  {(pty) => (
-                    <div class="absolute inset-0">
-                      <Terminal
-                        pty={pty()}
-                        autoFocus
-                        onConnect={() => terminal.trim(id)}
-                        onCleanup={ops.update}
-                        onConnectError={() => undefined}
-                      />
+          </div>
+          <DragOverlay>
+            <Show when={store.activeDraggable} keyed>
+              {(id) => (
+                <Show when={all().find((pty) => pty.id === id)}>
+                  {(t) => (
+                    <div class="relative p-1 h-10 flex items-center bg-background-stronger text-14-regular">
+                      {terminalTabLabel({
+                        title: t().title,
+                        titleNumber: t().titleNumber,
+                        t: language.t as (key: string, vars?: Record<string, string | number | boolean>) => string,
+                      })}
                     </div>
                   )}
                 </Show>
-              )
-            }}
-          </Show>
-        </div>
+              )}
+            </Show>
+          </DragOverlay>
+        </DragDropProvider>
       </Show>
-    </div>
+    </TabChrome>
   )
 }
 
@@ -301,6 +384,11 @@ type LiveBrowserStatus = {
     extensions?: { enabled?: boolean; status?: string }
     lastPass?: { enabled?: boolean; status?: string }
     surfaces?: Array<{ id?: string; label?: string; purpose?: string; exposed?: boolean; safeWhilePublic?: boolean }>
+  }
+  access?: {
+    mode?: string
+    email?: string | null
+    warnings?: string[]
   }
   browserUse?: {
     ok?: boolean
@@ -624,8 +712,11 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
   })
 
   return (
-    <div class="h-full min-h-0 flex flex-col bg-background-base">
-      <div class="h-12 shrink-0 border-b border-border-weaker-base bg-background-stronger px-2 py-1.5">
+    <TabChrome
+      iconTab={PANEL_BROWSER_TAB}
+      headerClass="h-12 shrink-0 border-b border-border-weaker-base bg-background-stronger px-2 py-1.5"
+      bodyClass="relative min-h-0 flex-1 overflow-hidden bg-background-base p-0"
+      toolbar={
         <div class="flex h-full min-w-0 items-center gap-1 rounded-md border border-border-weaker-base bg-background-base px-1.5">
           <IconButton icon="arrow-left" variant="ghost" class="h-7 w-7 shrink-0" disabled={controlsDisabled()} onClick={() => void runLiveInput({ action: "back" })} aria-label="Back" />
           <IconButton icon="arrow-right" variant="ghost" class="h-7 w-7 shrink-0" disabled={controlsDisabled()} onClick={() => void runLiveInput({ action: "forward" })} aria-label="Forward" />
@@ -729,6 +820,13 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
                 <StatusPill label="LastPass" value={profilePolicy()?.lastPass?.status ?? "unknown"} active={!!profilePolicy()?.lastPass?.enabled} />
               </div>
               <Show when={browserError()}>{(error) => <div class="text-12-regular text-text-weak break-all">{error()}</div>}</Show>
+              <Show when={(status().access?.warnings ?? []).length > 0}>
+                <div class="rounded border border-[#f97316]/30 bg-[#f97316]/10 p-2 text-12-regular text-[#f97316]">
+                  <For each={status().access?.warnings ?? []}>
+                    {(warning) => <div>{warning}</div>}
+                  </For>
+                </div>
+              </Show>
               <Show when={lastArtifact()}>{(artifact) => <div class="text-12-regular text-text-weak">Saved <a class="text-text-strong underline" href={artifact().url} target="_blank" rel="noreferrer">{artifact().name}</a></div>}</Show>
             </div>
           </details>
@@ -741,9 +839,10 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
             aria-label="Open in external browser"
           />
         </div>
-      </div>
+      }
+    >
       <div
-        class="relative min-h-0 flex-1 bg-background-base outline-none"
+        class="relative size-full bg-background-base outline-none"
         tabIndex={0}
         onClick={handleViewportClick}
         onWheel={handleViewportWheel}
@@ -830,7 +929,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
           </Show>
         </Show>
       </div>
-    </div>
+    </TabChrome>
   )
 }
 
@@ -873,9 +972,90 @@ function PreviewTabContent() {
   const initial = readPreviewState().url ?? ""
   const [address, setAddress] = createSignal(initial)
   const [currentURL, setCurrentURL] = createSignal(initial)
+  const [externalMode, setExternalMode] = createSignal<"idle" | "loading" | "ready" | "failed">("idle")
+  const [externalError, setExternalError] = createSignal<string | undefined>()
+  const [externalKey, setExternalKey] = createSignal(Date.now())
+  let externalImageRef: HTMLImageElement | undefined
   const currentKind = createMemo(() => previewURLKind(currentURL()))
+  const externalStreamURL = createMemo(() => `/experimental/browser/live/stream?t=${externalKey()}`)
+
+  const runExternalInput = async (body: Record<string, unknown>) => {
+    const response = await fetch("/experimental/browser/live/input", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })
+    const result = await response.json().catch(() => ({}))
+    if (!response.ok || result?.ok === false) throw new Error(result?.error ?? "External preview action failed")
+    setExternalKey(Date.now())
+  }
+
+  const externalPointForEvent = (event: MouseEvent) => {
+    const image = externalImageRef
+    if (!image) return
+    const rect = image.getBoundingClientRect()
+    return {
+      x: Math.round(((event.clientX - rect.left) / rect.width) * 1440),
+      y: Math.round(((event.clientY - rect.top) / rect.height) * 1000),
+    }
+  }
+
+  const handleExternalClick: JSX.EventHandler<HTMLDivElement, MouseEvent> = (event) => {
+    event.currentTarget.focus()
+    const point = externalPointForEvent(event)
+    if (!point) return
+    void runExternalInput({ action: "click", ...point }).catch((error) => {
+      setExternalError(error instanceof Error ? error.message : String(error))
+      setExternalMode("failed")
+    })
+  }
+
+  const handleExternalWheel: JSX.EventHandler<HTMLDivElement, WheelEvent> = (event) => {
+    event.preventDefault()
+    void runExternalInput({ action: "scroll", deltaX: event.deltaX, deltaY: event.deltaY }).catch((error) => {
+      setExternalError(error instanceof Error ? error.message : String(error))
+      setExternalMode("failed")
+    })
+  }
+
+  const handleExternalKeyDown: JSX.EventHandler<HTMLDivElement, KeyboardEvent> = (event) => {
+    if (event.metaKey || event.ctrlKey || event.altKey) return
+    if (event.key.length === 1) {
+      event.preventDefault()
+      void runExternalInput({ action: "type", text: event.key }).catch((error) => {
+        setExternalError(error instanceof Error ? error.message : String(error))
+        setExternalMode("failed")
+      })
+      return
+    }
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Backspace", "Delete", "Enter", "Escape", "Tab"].includes(event.key)) return
+    event.preventDefault()
+    void runExternalInput({ action: "key", key: event.key }).catch((error) => {
+      setExternalError(error instanceof Error ? error.message : String(error))
+      setExternalMode("failed")
+    })
+  }
 
   createEffect(() => writePreviewState({ url: currentURL() || address() }))
+
+  createEffect(() => {
+    const url = currentURL()
+    if (!url || currentKind() !== "external") {
+      setExternalMode("idle")
+      setExternalError(undefined)
+      return
+    }
+    setExternalMode("loading")
+    setExternalError(undefined)
+    runExternalInput({ action: "goto", url })
+      .then(() => {
+        setExternalMode("ready")
+      })
+      .catch((error) => {
+        setExternalError(error instanceof Error ? error.message : String(error))
+        setExternalMode("failed")
+      })
+  })
 
   const openAddress = () => {
     const next = normalizePreviewURL(address())
@@ -936,18 +1116,49 @@ function PreviewTabContent() {
           <Show
             when={currentKind() !== "external"}
             fallback={
-              <div class="flex flex-1 items-center justify-center p-6 text-center">
-                <div class="max-w-md rounded-lg border border-border-weaker-base bg-background-base p-5 text-13-regular text-text-weak">
-                  <div class="mb-2 text-14-medium text-text-strong">External sites do not reliably render in Preview</div>
-                  <div>
-                    Preview is an embedded renderer for same-origin routes, file views, and project preview URLs. Public sites often block iframe embedding, so use Agent Chrome or open the URL externally.
+              <div
+                class="relative size-full overflow-auto bg-background-base outline-none"
+                tabIndex={0}
+                onClick={handleExternalClick}
+                onWheel={handleExternalWheel}
+                onKeyDown={handleExternalKeyDown}
+              >
+                <Show
+                  when={externalMode() !== "failed"}
+                  fallback={
+                    <div class="flex size-full items-center justify-center p-6 text-center">
+                      <div class="max-w-md rounded-lg border border-border-weaker-base bg-background-base p-5 text-13-regular text-text-weak">
+                        <div class="mb-2 text-14-medium text-text-strong">External preview failed</div>
+                        <div>{externalError() ?? "The Chromium preview renderer could not open this URL."}</div>
+                        <div class="mt-4 flex justify-center gap-2">
+                          <button type="button" class="rounded-md border border-border-weaker-base px-3 py-1.5 text-12-regular text-text-strong hover:bg-surface-raised-base-hover" onClick={() => window.open(url(), "_blank", "noopener,noreferrer")}>
+                            Open external
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  }
+                >
+                  <Show when={externalMode() === "loading"}>
+                    <div class="absolute inset-0 z-10 flex items-center justify-center bg-background-base/70 text-12-regular text-text-weak">
+                      Opening external site in Chromium preview...
+                    </div>
+                  </Show>
+                  <img
+                    ref={(el) => (externalImageRef = el)}
+                    src={externalStreamURL()}
+                    alt="External site preview"
+                    class="block h-auto w-full select-none bg-white"
+                    onLoad={() => setExternalMode("ready")}
+                    onError={() => {
+                      setExternalError("Chromium preview stream is unavailable.")
+                      setExternalMode("failed")
+                    }}
+                  />
+                  <div class="absolute bottom-3 left-3 rounded bg-background-base/90 px-2 py-1 text-11-regular text-text-weak shadow">
+                    external-browser-render
                   </div>
-                  <div class="mt-4 flex justify-center gap-2">
-                    <button type="button" class="rounded-md border border-border-weaker-base px-3 py-1.5 text-12-regular text-text-strong hover:bg-surface-raised-base-hover" onClick={() => window.open(url(), "_blank", "noopener,noreferrer")}>
-                      Open external
-                    </button>
-                  </div>
-                </div>
+                </Show>
               </div>
             }
           >
@@ -1031,7 +1242,7 @@ function TabChrome(props: {
     <Show when={definition()}>
       {(tab) => (
         <div
-          class="absolute right-0 top-7 z-[1001] w-72 rounded-lg border border-border-base bg-background-stronger p-3 shadow-lg"
+          class="absolute left-0 top-7 z-[1001] w-72 rounded-lg border border-border-base bg-background-stronger/95 p-2 shadow-lg backdrop-blur"
           onPointerDown={(event) => event.stopPropagation()}
         >
           <Show when={props.menu === "tab"}>
@@ -1158,12 +1369,12 @@ function TabChrome(props: {
   const PanelTopMenus = () => (
     <Show when={definition()}>
       {(_) => (
-        <div class="relative ml-auto flex shrink-0 items-center gap-0.5">
+        <div class="relative flex shrink-0 items-center gap-0.5">
           <For each={["tab", "view", "tools", "actions"] as const}>
             {(menu) => (
               <button
                 type="button"
-                class="hidden h-7 rounded px-2 text-12-regular capitalize text-text-weak hover:bg-surface-base-hover hover:text-text-strong md:block"
+                class="hidden h-7 rounded-md px-2.5 text-12-regular capitalize text-text-weak hover:bg-surface-base-hover hover:text-text-strong md:block"
                 classList={{ "bg-surface-base-active text-text-strong": openMenu() === menu }}
                 onClick={(event) => {
                   event.stopPropagation()
@@ -1202,17 +1413,19 @@ function TabChrome(props: {
             when={props.toolbar}
             fallback={
               <>
-                <Show when={props.title}>
-                  {(title) => (
-                    <div class="flex items-center gap-2 text-14-medium text-text-strong">
-                      <PanelGlyph tab={props.iconTab} />
-                      <span>{title()}</span>
-                    </div>
-                  )}
-                </Show>
-                <div class="ml-auto flex items-center gap-1">
-                  {props.actions}
+                <div class="flex min-w-0 flex-1 items-center gap-3">
                   <PanelTopMenus />
+                  <Show when={props.title}>
+                    {(title) => (
+                      <div class="flex min-w-0 items-center gap-2 text-14-medium text-text-strong">
+                        <PanelGlyph tab={props.iconTab} />
+                        <span class="truncate">{title()}</span>
+                      </div>
+                    )}
+                  </Show>
+                </div>
+                <div class="flex items-center gap-1">
+                  {props.actions}
                   <Show when={!!props.onRefresh}>
                     <IconButton icon="reset" variant="ghost" class="h-7 w-7" onClick={() => props.onRefresh?.()} aria-label="Refresh" />
                   </Show>
@@ -1222,8 +1435,8 @@ function TabChrome(props: {
           >
             {(toolbar) => (
               <div class="flex h-full min-w-0 flex-1 items-center gap-1">
-                <div class="min-w-0 flex-1">{toolbar()}</div>
                 <PanelTopMenus />
+                <div class="min-w-0 flex-1">{toolbar()}</div>
               </div>
             )}
           </Show>
@@ -1388,6 +1601,44 @@ function MacViewTabContent() {
     if (next === "webrtc" || next === "video" || next === "mjpeg") setTransport(next)
   })
 
+  const saveSettings = async (patch: Partial<{ fps: number; width: number; quality: number; bitrate: number; transport: "webrtc" | "video" | "mjpeg" }>) => {
+    const next = {
+      fps: fps(),
+      width: width(),
+      quality: quality(),
+      bitrate: bitrate(),
+      transport: transport(),
+      ...patch,
+    }
+    setFps(next.fps)
+    setWidth(next.width)
+    setQuality(next.quality)
+    setBitrate(next.bitrate)
+    setTransport(next.transport)
+    if (patch.transport) setTransportTouched(true)
+    setStreamKey(Date.now())
+    try {
+      const response = await fetch("/experimental/mac-view/settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(next),
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok || body?.ok === false) throw new Error(body?.error ?? "Mac View settings update failed")
+      const settings = body.settings ?? next
+      setFps(Number(settings.fps) || next.fps)
+      setWidth(Number(settings.width) || next.width)
+      setQuality(Number(settings.quality) || next.quality)
+      setBitrate(Number(settings.bitrate) || next.bitrate)
+      if (settings.transport === "webrtc" || settings.transport === "video" || settings.transport === "mjpeg") setTransport(settings.transport)
+      void status.refresh()
+    } catch {
+      void status.refresh()
+    } finally {
+      setStreamKey(Date.now())
+    }
+  }
+
   const transportURL = createMemo(() =>
     transport() === "webrtc"
       ? `${status.data()?.webrtcURL ?? "/experimental/mac-view/webrtc/mac-view/"}?fps=${fps()}&width=${width()}&bitrate=${bitrate()}&t=${streamKey()}`
@@ -1435,7 +1686,7 @@ function MacViewTabContent() {
                       "bg-background-base text-text-strong": fps() === option,
                       "text-text-weak hover:bg-surface-raised-base-hover hover:text-text-strong": fps() !== option,
                     }}
-                    onClick={() => { setFps(option); setStreamKey(Date.now()) }}
+                    onClick={() => void saveSettings({ fps: option })}
                   >
                     {option} fps
                   </button>
@@ -1445,7 +1696,7 @@ function MacViewTabContent() {
             <select
               class="hidden h-7 rounded-md border border-border-weaker-base bg-background-base px-2 text-11-regular text-text-strong md:block"
               value={width()}
-              onChange={(event) => { setWidth(Number(event.currentTarget.value)); setStreamKey(Date.now()) }}
+              onChange={(event) => void saveSettings({ width: Number(event.currentTarget.value) })}
               aria-label="Mac View width"
             >
               <For each={status.data()?.widthOptions ?? [960, 1280, 1600]}>
@@ -1455,7 +1706,7 @@ function MacViewTabContent() {
             <select
               class="hidden h-7 rounded-md border border-border-weaker-base bg-background-base px-2 text-11-regular text-text-strong md:block"
               value={quality()}
-              onChange={(event) => { setQuality(Number(event.currentTarget.value)); setStreamKey(Date.now()) }}
+              onChange={(event) => void saveSettings({ quality: Number(event.currentTarget.value) })}
               aria-label="Mac View quality"
             >
               <For each={status.data()?.qualityOptions ?? [6, 8, 10, 12]}>
@@ -1468,19 +1719,18 @@ function MacViewTabContent() {
               onChange={(event) => {
                 const next = event.currentTarget.value
                 setTransportTouched(true)
-                setTransport(next === "webrtc" ? "webrtc" : next === "mjpeg" ? "mjpeg" : "video")
-                setStreamKey(Date.now())
+                void saveSettings({ transport: next === "webrtc" ? "webrtc" : next === "mjpeg" ? "mjpeg" : "video" })
               }}
               aria-label="Mac View transport"
             >
-              <For each={status.data()?.transportOptions ?? ["video", "mjpeg"]}>
+              <For each={status.data()?.transportOptions ?? ["webrtc", "video"]}>
                 {(option: string) => <option value={option}>{option === "webrtc" ? "WebRTC" : option === "video" ? "Video" : "MJPEG"}</option>}
               </For>
             </select>
             <select
               class="hidden h-7 rounded-md border border-border-weaker-base bg-background-base px-2 text-11-regular text-text-strong md:block"
               value={bitrate()}
-              onChange={(event) => { setBitrate(Number(event.currentTarget.value)); setStreamKey(Date.now()) }}
+              onChange={(event) => void saveSettings({ bitrate: Number(event.currentTarget.value) })}
               aria-label="Mac View bitrate"
             >
               <For each={status.data()?.bitrateOptions ?? [2500, 4000, 6000, 8000, 12000]}>
@@ -1988,7 +2238,9 @@ function ResourceHostCard(props: { title: string; status?: any }) {
         <StatusRow label="Last checked" value={status()?.checkedAt} />
         <StatusRow label="Uptime" value={formatDuration(status()?.uptimeSeconds)} />
         <StatusRow label="CPU" value={formatCpu(status()?.cpu)} />
+        <StatusRow label="CPU pressure" value={formatCpuPressure(status()?.cpu)} />
         <ResourceMeter label="RAM" used={status()?.memory?.usedBytes} total={status()?.memory?.totalBytes} />
+        <ResourceMeter label="Swap" used={status()?.swap?.usedBytes} total={status()?.swap?.totalBytes} />
         <For each={status()?.storage ?? []}>
           {(disk: any) => <ResourceMeter label={`Storage ${disk.path}`} used={disk.usedBytes} total={disk.totalBytes} />}
         </For>
@@ -2038,13 +2290,22 @@ function formatDuration(seconds?: number) {
   return days > 0 ? `${days}d ${hours}h` : `${hours}h ${minutes}m`
 }
 
-function formatCpu(cpu?: { cores?: number; load1?: number; load5?: number; load15?: number }) {
+function formatCpu(cpu?: { cores?: number; load1?: number; load5?: number; load15?: number; loadPercent1?: number; loadPercent5?: number; loadPercent15?: number }) {
   if (!cpu) return "n/a"
   return `${cpu.cores ?? 0} cores, load ${formatLoad(cpu.load1)} / ${formatLoad(cpu.load5)} / ${formatLoad(cpu.load15)}`
 }
 
+function formatCpuPressure(cpu?: { loadPercent1?: number; loadPercent5?: number; loadPercent15?: number }) {
+  if (!cpu) return "n/a"
+  return `${formatPercent(cpu.loadPercent1)} / ${formatPercent(cpu.loadPercent5)} / ${formatPercent(cpu.loadPercent15)}`
+}
+
 function formatLoad(value?: number) {
   return Number.isFinite(value) ? (value ?? 0).toFixed(2) : "0.00"
+}
+
+function formatPercent(value?: number) {
+  return Number.isFinite(value) ? `${Math.round(value ?? 0)}%` : "n/a"
 }
 
 function ArtifactsTabContent(props: { sessionID?: string }) {
@@ -2679,6 +2940,10 @@ export function SessionSidePanel(props: {
     return file.tree.children("").length === 0
   })
 
+  createEffect(() => {
+    if (view().terminal.opened()) view().terminal.close()
+  })
+
   const normalizeTab = (tab: string) => {
     if (!tab.startsWith("file://")) return tab
     return file.tab(tab)
@@ -2771,7 +3036,7 @@ export function SessionSidePanel(props: {
     openTab(tab)
   }
 
-  const [browserLaunch] = createSignal<BrowserLaunchRequest | undefined>()
+  const [browserLaunch, setBrowserLaunch] = createSignal<BrowserLaunchRequest | undefined>()
   const [panelMenuOpen, setPanelMenuOpen] = createSignal(false)
   const [panelMenuPosition, setPanelMenuPosition] = createSignal({ left: 0, top: 0 })
 
@@ -2812,6 +3077,36 @@ export function SessionSidePanel(props: {
   const launchOpenDesign = () => {
     openPanelTab(PANEL_OPEN_DESIGN_TAB)
   }
+
+  createEffect(() => {
+    const handleWorkspaceTabAction = (event: Event) => {
+      const detail = (event as CustomEvent<any>).detail ?? {}
+      const action = typeof detail.action === "string" ? detail.action : undefined
+      const tab = typeof detail.tab === "string" ? detail.tab : typeof detail.target === "string" ? detail.target : undefined
+      if (!tab) return
+
+      if (action === "close") {
+        tabs().close(tab)
+      } else if (isPanelTab(tab)) {
+        openPanelTab(tab)
+        if (tab === PANEL_BROWSER_TAB && typeof detail.url === "string") {
+          setBrowserLaunch({ url: detail.url, nonce: Date.now() })
+        }
+      }
+
+      window.dispatchEvent(new CustomEvent("opencode:workspace-tab-action-applied", {
+        detail: {
+          ok: true,
+          action,
+          tab,
+          activeTab: activeTab(),
+        },
+      }))
+    }
+
+    window.addEventListener("opencode:workspace-tab-action", handleWorkspaceTabAction)
+    onCleanup(() => window.removeEventListener("opencode:workspace-tab-action", handleWorkspaceTabAction))
+  })
 
   const [store, setStore] = createStore({
     activeDraggable: undefined as string | undefined,
