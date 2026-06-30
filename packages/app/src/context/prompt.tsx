@@ -35,6 +35,7 @@ export interface AgentPart extends PartBase {
 }
 
 export type ToolPartSource =
+  | "swami"
   | "browser"
   | "terminal"
   | "open_design"

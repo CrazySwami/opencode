@@ -72,6 +72,13 @@ export const layer = Layer.effect(
             `  Today's date: ${new Date().toDateString()}`,
             `</env>`,
           ].join("\n"),
+          [
+            "Alfonso OS / Swami workspace convention:",
+            "- When the user tags @Swami or @Alfonso-OS, or asks about the operating setup, use Alfonso OS as the source of truth before acting.",
+            "- Mac source of truth: /Users/alfonso/Documents/GitHub/alfonso-os. CT100 source of truth when present: /home/dev/repos/alfonso-os.",
+            "- Shared/global skills belong in $HOME/.agents/skills/<skill-name>/. Project skills can live under the repo's .agents/skills/ but should usually be duplicated to the shared high-level skill folder unless sensitive or intentionally project-only.",
+            "- Use Alfonso OS docs to orient around OpenCode, Open Design, Mac, CT100/server routes, MCPs, plugins, account lanes, watcher state, and prompt/config surfaces; verify live state for drift-prone facts.",
+          ].join("\n"),
           references.length === 0
             ? undefined
             : [

@@ -181,7 +181,50 @@ describe("buildRequestParts", () => {
     expect(toolContext?.type === "text" ? toolContext.text : "").toContain(
       "@mcp__cloudflare_api__execute: MCP/tool id=mcp__cloudflare_api__execute",
     )
-    expect((toolContext?.metadata as { tools?: unknown[] } | undefined)?.tools).toHaveLength(2)
+    const metadata = toolContext?.type === "text" ? toolContext.metadata : undefined
+    expect((metadata as { tools?: unknown[] } | undefined)?.tools).toHaveLength(2)
+  })
+
+  test("adds Swami context for Alfonso OS tool tags", () => {
+    const result = buildRequestParts({
+      prompt: [
+        {
+          type: "tool",
+          id: "swami",
+          name: "Swami",
+          source: "swami",
+          content: "@Swami",
+          start: 0,
+          end: 6,
+        },
+        {
+          type: "tool",
+          id: "alfonso-os",
+          name: "Alfonso-OS",
+          source: "swami",
+          content: "@Alfonso-OS",
+          start: 7,
+          end: 18,
+        },
+      ],
+      context: [],
+      images: [],
+      text: "@Swami @Alfonso-OS",
+      messageID: "msg_swami_tags",
+      sessionID: "ses_swami_tags",
+      sessionDirectory: "/repo",
+    })
+
+    const toolContext = result.requestParts.find(
+      (part) => part.type === "text" && part.synthetic && part.metadata?.type === "tool-tags",
+    )
+    const text = toolContext?.type === "text" ? toolContext.text : ""
+
+    expect(text).toContain("@Swami: Swami/Alfonso-OS context id=swami")
+    expect(text).toContain("@Alfonso-OS: Swami/Alfonso-OS context id=alfonso-os")
+    expect(text).toContain("/Users/alfonso/Documents/GitHub/alfonso-os")
+    expect(text).toContain("/home/dev/.agents/skills")
+    expect(text).toContain("Default to a project copy plus shared high-level copy")
   })
 
   test("handles Windows paths correctly (simulated on macOS)", () => {

@@ -55,6 +55,9 @@ export const ToolMentionIcon: Component<{ source: ToolPartSource; icon?: string 
         when={props.icon}
         fallback={
           <Switch>
+            <Match when={props.source === "swami"}>
+              <span class="text-[8px] leading-none font-semibold tracking-[0]">SW</span>
+            </Match>
             <Match when={props.source === "browser"}>
               <Icon name="window-cursor" size="small" />
             </Match>

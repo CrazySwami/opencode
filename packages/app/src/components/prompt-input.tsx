@@ -214,6 +214,8 @@ const BUILT_IN_TOOL_IDS = new Set([
 
 const classifyToolMention = (id: string): ToolPartSource => {
   const normalized = id.toLowerCase()
+  if (normalized === "swami" || normalized === "alfonso-os" || normalized === "alfonso_os" || normalized === "alfonsoos")
+    return "swami"
   if (normalized === "browser") return "browser"
   if (normalized === "terminal" || normalized === "bash") return "terminal"
   if (normalized === "open_design" || normalized.startsWith("open_design_")) return "open_design"
@@ -228,8 +230,8 @@ const classifyToolMention = (id: string): ToolPartSource => {
 
 const toolMentionName = (id: string) => id
 
-const optionForToolMention = (input: { id: string; description?: string; icon?: string }): AtOption => {
-  const name = toolMentionName(input.id)
+const optionForToolMention = (input: { id: string; name?: string; description?: string; icon?: string }): AtOption => {
+  const name = input.name ?? toolMentionName(input.id)
   return {
     type: "tool",
     id: input.id,
@@ -240,6 +242,19 @@ const optionForToolMention = (input: { id: string; description?: string; icon?: 
     icon: input.icon,
   }
 }
+
+const SWAMI_TOOL_MENTIONS = [
+  optionForToolMention({
+    id: "swami",
+    name: "Swami",
+    description: "Alfonso OS setup, skills, MCPs, plugins, server, Mac, OpenCode, and Open Design context.",
+  }),
+  optionForToolMention({
+    id: "alfonso-os",
+    name: "Alfonso-OS",
+    description: "Alias for Swami operating context and Alfonso OS source of truth.",
+  }),
+]
 
 export const PromptInput: Component<PromptInputProps> = (props) => {
   const sdk = useSDK()
@@ -695,16 +710,17 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
           if (a.type !== "tool" || b.type !== "tool") return 0
           const rank = (item: AtOption) => {
             if (item.type !== "tool") return 99
-            if (item.source === "browser") return 0
-            if (item.source === "terminal") return 1
-            if (item.source === "open_design") return 2
-            if (item.source === "mac_view") return 3
-            if (item.source === "resource") return 4
-            if (item.source === "artifact") return 5
-            if (item.source === "file_browser") return 6
-            if (item.source === "account") return 7
-            if (item.source === "mcp") return 8
-            return 9
+            if (item.source === "swami") return 0
+            if (item.source === "browser") return 1
+            if (item.source === "terminal") return 2
+            if (item.source === "open_design") return 3
+            if (item.source === "mac_view") return 4
+            if (item.source === "resource") return 5
+            if (item.source === "artifact") return 6
+            if (item.source === "file_browser") return 7
+            if (item.source === "account") return 8
+            if (item.source === "mcp") return 9
+            return 10
           }
           return rank(a) - rank(b) || a.name.localeCompare(b.name)
         })
@@ -722,14 +738,14 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
               description: tool.description,
             }),
           )
-          return sort(options)
+          return sort([...SWAMI_TOOL_MENTIONS, ...options])
         } catch {
           // Fall through to the model-independent list so @tool mentions still work while models load.
         }
       }
 
       const response = await sdk().client.tool.ids({ directory: input.directory })
-      return sort((response.data ?? []).map((id) => optionForToolMention({ id })))
+      return sort([...SWAMI_TOOL_MENTIONS, ...(response.data ?? []).map((id) => optionForToolMention({ id }))])
     },
   )
 

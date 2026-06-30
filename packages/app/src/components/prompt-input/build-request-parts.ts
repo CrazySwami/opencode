@@ -53,9 +53,26 @@ const isFileAttachment = (part: Prompt[number]): part is FileAttachmentPart => p
 const isAgentAttachment = (part: Prompt[number]): part is AgentPart => part.type === "agent"
 const isToolAttachment = (part: Prompt[number]): part is ToolPart => part.type === "tool"
 
+const SWAMI_TOOL_IDS = new Set(["swami", "alfonso-os", "alfonso_os", "alfonsoos"])
+
+const hasSwamiTag = (tool: ToolPart) => tool.source === "swami" || SWAMI_TOOL_IDS.has(tool.id.toLowerCase())
+
+const swamiContext = [
+  "Swami / Alfonso OS context requested:",
+  "- Treat Alfonso OS as the source of truth for Alfonso's workspace, setup, logs, runbooks, prompt surfaces, and route/account maps.",
+  "- Canonical Mac repo: /Users/alfonso/Documents/GitHub/alfonso-os; compatibility path: /Users/alfonso/Desktop/alfonso-os.",
+  "- Canonical CT100 repo when present: /home/dev/repos/alfonso-os; OpenCode live release root: /opt/opencode-workspace-suite/current.",
+  "- Start with AGENTS.md, REGISTRY.md, docs/agents/SWAMI-MAIN-AGENT.md, docs/accounts/AGENT-PROMPT-SURFACES.md, and the relevant docs/server or goal-watcher state.",
+  "- Shared skill roots: /Users/alfonso/.agents/skills on Mac and /home/dev/.agents/skills on CT100. Project skills may live under .agents/skills in the active repo.",
+  "- When creating skills, decide project-only versus shared. Default to a project copy plus shared high-level copy unless sensitive or truly project-specific; document the choice in README.md and CHANGELOG.md.",
+  "- Use Alfonso OS docs and live read-only checks to discover MCPs, plugins, OpenCode, Open Design, Mac, server, browser/profile, account, and skill surfaces.",
+  "- Never copy secrets, cookies, tokens, private keys, browser profiles, or raw credential files into chat, docs, skills, or synthetic context.",
+].join("\n")
+
 const formatToolTag = (tool: ToolPart) => {
   const description = tool.description?.trim()
-  const source = tool.source === "mcp" ? "MCP/tool" : `${tool.source} tool`
+  const source =
+    tool.source === "mcp" ? "MCP/tool" : tool.source === "swami" ? "Swami/Alfonso-OS context" : `${tool.source} tool`
   const details = description ? ` - ${description}` : ""
   return `- @${tool.name}: ${source} id=${tool.id}${details}`
 }
@@ -148,6 +165,7 @@ export function buildRequestParts(input: BuildRequestPartsInput) {
             "Tagged tools for this request:",
             ...tools.map(formatToolTag),
             "Use these tagged tools when they are relevant to the user's request.",
+            ...(tools.some(hasSwamiTag) ? ["", swamiContext] : []),
           ].join("\n"),
           synthetic: true,
           metadata: {
