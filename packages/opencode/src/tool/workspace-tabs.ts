@@ -5,26 +5,29 @@ import DESCRIPTION from "./workspace-tabs.txt"
 const workspaceTabs = [
   {
     id: "panel://browser",
-    label: "Agent Chrome",
-    tools: ["browser", "browser_use", "workspace_tabs"],
-    mentions: ["@browser", "@browser_use", "@agent_chrome", "@chrome"],
+    label: "Browser",
+    tools: ["browser", "browser_use", "workspace_tabs", "file_browser", "artifact"],
+    mentions: ["@browser", "@browser_use", "@agent_chrome", "@chrome", "@preview", "@project_preview", "@viewer"],
     actions: ["refresh", "open_external", "snapshot", "attach_to_chat", "tools", "settings"],
-    safetyPolicy: "Persistent profiles and extensions require the approved GitHub/Cloudflare Access boundary.",
+    safetyPolicy: "The Browser is interactive and tool-controlled. Extensions and password managers require separate explicit approval.",
     canSnapshot: true,
     canAttachToChat: true,
     route: "/experimental/browser/live/status",
-    description: "Real Chrome/Chromium surface shared by Alfonso and model browser tools.",
+    description: "Real Chrome/Chromium surface for public sites, local apps, Open Design, product previews, and model browser tools.",
   },
   {
     id: "panel://preview",
-    label: "Preview",
-    tools: ["workspace_tabs", "file_browser", "artifact"],
-    mentions: ["@preview", "@project_preview", "@viewer"],
+    label: "Browser",
+    hidden: true,
+    aliasFor: "panel://browser",
+    tools: ["browser", "browser_use", "workspace_tabs"],
+    mentions: [],
     actions: ["refresh", "open_external", "snapshot", "attach_to_chat", "tools"],
-    safetyPolicy: "Preview is for same-origin/project routes and safe viewer URLs; arbitrary public sites may block embedding.",
+    safetyPolicy: "Compatibility alias. Opens the unified Browser tab.",
     canSnapshot: true,
     canAttachToChat: true,
-    description: "Lightweight renderer for local/server project URLs, file previews, and Open Design.",
+    route: "/experimental/browser/live/status",
+    description: "Compatibility alias for older saved Preview tabs. New preview requests open the unified Browser.",
   },
   {
     id: "panel://terminal",
@@ -141,7 +144,7 @@ export const Parameters = Schema.Struct({
     description: "Workspace tab operation to describe or request.",
   }),
   tab: Schema.optional(Schema.String).annotate({
-    description: "Tab id such as panel://browser, panel://preview, panel://routines, or panel://accounts.",
+    description: "Tab id such as panel://browser, panel://preview, panel://routines, or panel://accounts. panel://preview is a compatibility alias for panel://browser.",
   }),
   tabID: Schema.optional(Schema.String).annotate({
     description: "Alias for tab. Accepted by the HTTP API and tool for client payload compatibility.",
@@ -187,15 +190,16 @@ export function workspaceTabsStatus() {
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
-    registryVersion: 2,
+    registryVersion: 3,
     activeStateSource: "OpenCode web client",
     tabs: workspaceTabs.map((tab) => ({
       ...tab,
       runtimeState: {
         tabID: tab.id,
+        canonicalTabID: canonicalWorkspaceTab(tab.id),
         stateRoute: "route" in tab ? tab.route : null,
         localClientState:
-          tab.id === "panel://preview" || tab.id === "panel://file-browser"
+          tab.id === "panel://file-browser"
             ? "stored in browser localStorage"
             : "owned by visible client",
         canOpenFromTool: true,
@@ -227,7 +231,8 @@ export function workspaceTabsStatus() {
 
 export function workspaceTabsAction(input: Schema.Schema.Type<typeof Parameters>) {
   const requestedTab = input.tab ?? input.tabID
-  const tab = requestedTab ? workspaceTabs.find((item) => item.id === requestedTab) : undefined
+  const canonicalTab = requestedTab ? canonicalWorkspaceTab(requestedTab) : undefined
+  const tab = canonicalTab ? workspaceTabs.find((item) => item.id === canonicalTab) : undefined
   if ((input.action === "open" || input.action === "focus" || input.action === "close" || input.action === "actions" || input.action === "run_action" || input.action === "attach_to_chat") && !tab) {
     return { ok: false, error: `Unknown or missing tab: ${requestedTab ?? "(none)"}`, availableTabs: workspaceTabs.map((item) => item.id) }
   }
@@ -243,6 +248,7 @@ export function workspaceTabsAction(input: Schema.Schema.Type<typeof Parameters>
       clientAction: {
         type: "workspace_tab_action",
         tab: tab.id,
+        requestedTab,
         action: input.tabAction,
         event: "opencode:workspace-tab-action",
       },
@@ -254,10 +260,11 @@ export function workspaceTabsAction(input: Schema.Schema.Type<typeof Parameters>
       ok: true,
       tab,
       attachmentRequest: {
-        type: "workspace_tab_snapshot",
-        tab: tab?.id,
-        includeTools: true,
-        includeRouteState: true,
+      type: "workspace_tab_snapshot",
+      tab: tab?.id,
+      requestedTab,
+      includeTools: true,
+      includeRouteState: true,
       },
     }
   }
@@ -268,8 +275,13 @@ export function workspaceTabsAction(input: Schema.Schema.Type<typeof Parameters>
       type: "workspace_tab",
       action: input.action,
       tab: tab?.id,
+      requestedTab,
       event: "opencode:workspace-tab-action",
     },
     note: "The web client can use this structured response to open, focus, or close a tab.",
   }
+}
+
+function canonicalWorkspaceTab(tab: string) {
+  return tab === "panel://preview" ? "panel://browser" : tab
 }

@@ -1061,28 +1061,20 @@ function liveBrowserProfilePolicy() {
     },
     surfaces: [
       {
-        id: "preview",
-        label: "Preview",
-        tab: "Preview",
-        purpose: "Interactive renderer for hosted routes, local project URLs, and viewable files.",
-        usesChromeProfile: false,
-        toolControlled: false,
-        safeWhilePublic: true,
-      },
-      {
-        id: "agent_chrome",
-        label: "Agent Chrome",
-        tab: "Agent Chrome",
-        purpose: "Shared visible Chromium surface for manual viewing and tool control.",
+        id: "browser",
+        label: "Browser",
+        tab: "Browser",
+        purpose: "Unified interactive Chromium surface for hosted routes, local project URLs, public websites, Open Design, and model browser tools.",
         usesChromeProfile: true,
         toolControlled: true,
+        aliases: ["Preview", "Agent Chrome", "Project Preview"],
         safeWhilePublic: !persistentAuthRequested && !extensionRequested && !lastPassRequested,
         exposed: liveBrowserExposureEnabled(),
       },
       {
         id: "browser_use",
         label: "Browser Use",
-        tab: "Agent Chrome",
+        tab: "Browser",
         purpose: "Browser Use OSS bridge for model-driven browser tasks.",
         usesChromeProfile: persistentAuthRequested,
         toolControlled: true,
@@ -1143,7 +1135,7 @@ async function liveBrowserExposureAccess(request: { headers: Record<string, stri
       mode: "live-public-warning",
       email: request.headers["cf-access-authenticated-user-email"]?.toLowerCase() ?? null,
       warnings: [
-        "Agent Chrome is exposed on the live OpenCode route because Alfonso explicitly requested it.",
+        "Browser is exposed on the live OpenCode route because Alfonso explicitly requested it.",
         "Cloudflare Access env is not configured in the running service, so persistent auth, extensions, and LastPass stay disabled by profile policy.",
       ],
     }
@@ -1162,7 +1154,7 @@ async function liveBrowserExposureAccess(request: { headers: Record<string, stri
       teamDomain: config.teamDomain,
       warnings: [
         "Cloudflare Access config exists, but this request did not include a verified Access JWT.",
-        "Agent Chrome remains available by live-only override; persistent profile features remain disabled unless separately enabled.",
+        "Browser remains available by live-only override; persistent profile features remain disabled unless separately enabled.",
       ],
     }
   }
@@ -1186,7 +1178,7 @@ async function liveBrowserExposureAccess(request: { headers: Record<string, stri
           ? request.headers["cf-access-authenticated-user-email"].toLowerCase()
           : null
     if (config.allowedEmails.length > 0 && (!email || !config.allowedEmails.includes(email))) {
-      return liveBrowserAccessBlocked("invalid-cloudflare-token", "Cloudflare Access user is not allowlisted for Agent Chrome.")
+      return liveBrowserAccessBlocked("invalid-cloudflare-token", "Cloudflare Access user is not allowlisted for Browser.")
     }
     return {
       ok: true,
@@ -1928,7 +1920,7 @@ async function liveOnlyEnvironmentStatus() {
       status: liveBrowserAccessConfigSummary().configured ? "cloudflare_access_configured" : "approval_required",
       warning: liveBrowserAccessConfigSummary().configured
         ? null
-        : "Cloudflare Access GitHub login is not configured in the running service environment. Do not expose Agent Chrome until Access AUD/team-domain env vars are set and verified.",
+        : "Cloudflare Access GitHub login is not configured in the running service environment. Do not expose Browser until Access AUD/team-domain env vars are set and verified.",
       cloudflareAccess: liveBrowserAccessConfigSummary(),
       secretValuesExposed: false,
     },

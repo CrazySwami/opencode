@@ -217,8 +217,14 @@ const classifyToolMention = (id: string): ToolPartSource => {
   const normalized = id.toLowerCase()
   if (normalized === "swami" || normalized === "alfonso-os" || normalized === "alfonso_os" || normalized === "alfonsoos")
     return "swami"
-  if (normalized === "browser" || normalized === "browser_use" || normalized === "agent_chrome") return "browser"
-  if (normalized === "preview" || normalized === "project_preview" || normalized === "viewer") return "preview"
+  if (
+    normalized === "browser" ||
+    normalized === "browser_use" ||
+    normalized === "agent_chrome" ||
+    normalized === "preview" ||
+    normalized === "project_preview" ||
+    normalized === "viewer"
+  ) return "browser"
   if (normalized === "terminal" || normalized === "bash") return "terminal"
   if (normalized === "open_design" || normalized.startsWith("open_design_")) return "open_design"
   if (normalized === "mac_view" || normalized.startsWith("mac_view_")) return "mac_view"

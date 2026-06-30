@@ -71,6 +71,10 @@ function isPanelTab(tab: string) {
   return PANEL_TABS.has(tab) || tab.startsWith(ARTIFACT_VIEWER_TAB_PREFIX)
 }
 
+function canonicalPanelTab(tab: string) {
+  return tab === PANEL_PREVIEW_TAB ? PANEL_BROWSER_TAB : tab
+}
+
 function artifactViewerTab(file: any) {
   return `${ARTIFACT_VIEWER_TAB_PREFIX}${encodeURIComponent(
     JSON.stringify({
@@ -116,7 +120,7 @@ function panelTabLabel(tab: string) {
   const artifact = artifactFromTab(tab)
   if (artifact) return artifact.name ?? "Artifact"
   if (tab === PANEL_TERMINAL_TAB) return "Terminal"
-  const definition = WORKSPACE_PANEL_TAB_BY_ID[tab as WorkspacePanelTabID]
+  const definition = WORKSPACE_PANEL_TAB_BY_ID[canonicalPanelTab(tab) as WorkspacePanelTabID]
   if (definition) return definition.label
   if (tab === PANEL_QUEUE_TAB) return "Queue"
   return tab
@@ -127,7 +131,7 @@ function panelTabIcon(tab: string) {
   if (artifact?.kind === "image") return <Icon name="photo" size="small" />
   if (artifact?.kind === "video" || artifact?.kind === "audio") return <Icon name="photo" size="small" />
   if (artifact) return <Icon name="code" size="small" />
-  const definition = WORKSPACE_PANEL_TAB_BY_ID[tab as WorkspacePanelTabID]
+  const definition = WORKSPACE_PANEL_TAB_BY_ID[canonicalPanelTab(tab) as WorkspacePanelTabID]
   if (definition?.badge) return <span class="text-[9px] leading-none font-semibold tracking-[0]">{definition.badge}</span>
   if (definition?.icon) return <Icon name={definition.icon as any} size="small" />
   if (tab === PANEL_QUEUE_TAB) return <Icon name="checklist" size="small" />
@@ -2972,13 +2976,21 @@ export function SessionSidePanel(props: {
   const contextOpen = tabState.contextOpen
   const openedTabs = tabState.openedTabs
   const activeTab = tabState.activeTab
-  const openedPanelTabs = createMemo(() => openedTabs().filter((tab) => isPanelTab(tab) && tab !== PANEL_QUEUE_TAB))
+  const openedPanelTabs = createMemo(() => {
+    const result: string[] = []
+    for (const tab of openedTabs()) {
+      if (!isPanelTab(tab) || tab === PANEL_QUEUE_TAB) continue
+      const canonical = canonicalPanelTab(tab)
+      if (!result.includes(canonical)) result.push(canonical)
+    }
+    return result
+  })
   const openedFileTabs = createMemo(() => openedTabs().filter((tab) => !isPanelTab(tab)))
   const activePanelTab = createMemo(() => {
     const active = activeTab()
     if (!active) return
     if (active === PANEL_QUEUE_TAB) return undefined
-    return isPanelTab(active) ? active : undefined
+    return isPanelTab(active) ? canonicalPanelTab(active) : undefined
   })
   const activeFileTab = createMemo(() => {
     const active = activeTab()
@@ -3018,27 +3030,47 @@ export function SessionSidePanel(props: {
   }
 
   const openPanelTab = (tab: string) => {
+    const nextTab = canonicalPanelTab(tab)
     setPanelMenuOpen(false)
     openReviewPanel()
-    if (tab === PANEL_TERMINAL_TAB && view().terminal.opened()) view().terminal.close()
-    tabs().open(tab)
-    tabs().setActive(tab)
+    if (nextTab === PANEL_TERMINAL_TAB && view().terminal.opened()) view().terminal.close()
+    tabs().open(nextTab)
+    tabs().setActive(nextTab)
+    if (tab === PANEL_PREVIEW_TAB) {
+      const previewURL = readPreviewState().url
+      if (previewURL) setBrowserLaunch({ url: previewURL, nonce: Date.now() })
+    }
   }
 
   const changeActiveTab = (tab: string) => {
     setPanelMenuOpen(false)
     if (isPanelTab(tab) || tab === "review" || tab === "context" || tab === "empty") {
-      if (isPanelTab(tab)) tabs().open(tab)
-      tabs().setActive(tab)
-      if (tab === PANEL_TERMINAL_TAB && view().terminal.opened()) view().terminal.close()
+      const nextTab = isPanelTab(tab) ? canonicalPanelTab(tab) : tab
+      if (isPanelTab(nextTab)) tabs().open(nextTab)
+      tabs().setActive(nextTab)
+      if (nextTab === PANEL_TERMINAL_TAB && view().terminal.opened()) view().terminal.close()
       return
     }
     openTab(tab)
   }
 
+  const closePanelTab = (tab: string) => {
+    tabs().close(tab)
+    if (tab === PANEL_BROWSER_TAB) tabs().close(PANEL_PREVIEW_TAB)
+  }
+
   const [browserLaunch, setBrowserLaunch] = createSignal<BrowserLaunchRequest | undefined>()
   const [panelMenuOpen, setPanelMenuOpen] = createSignal(false)
   const [panelMenuPosition, setPanelMenuPosition] = createSignal({ left: 0, top: 0 })
+
+  createEffect(() => {
+    if (activeTab() !== PANEL_PREVIEW_TAB) return
+    const previewURL = readPreviewState().url
+    tabs().open(PANEL_BROWSER_TAB)
+    tabs().setActive(PANEL_BROWSER_TAB)
+    tabs().close(PANEL_PREVIEW_TAB)
+    if (previewURL) setBrowserLaunch({ url: previewURL, nonce: Date.now() })
+  })
 
   const setPanelMenuAnchor = (element: HTMLElement) => {
     const rect = element.getBoundingClientRect()
@@ -3245,7 +3277,7 @@ export function SessionSidePanel(props: {
                             </div>
                           </Tabs.Trigger>
                         </Show>
-                        <For each={openedPanelTabs()}>{(tab) => <PanelTab tab={tab} onClose={tabs().close} onActivate={changeActiveTab} />}</For>
+                        <For each={openedPanelTabs()}>{(tab) => <PanelTab tab={tab} onClose={closePanelTab} onActivate={changeActiveTab} />}</For>
                         <SortableProvider ids={openedFileTabs()}>
                           <For each={openedFileTabs()}>
                             {(tab) => <SortableTab tab={tab} onTabClose={tabs().close} />}
@@ -3289,7 +3321,7 @@ export function SessionSidePanel(props: {
                           >
                             Files
                           </button>
-                          <For each={WORKSPACE_PANEL_TABS}>
+                          <For each={WORKSPACE_PANEL_TABS.filter((tab) => !tab.hidden)}>
                             {(tab) => (
                               <PanelMenuButton
                                 tab={tab.id}
