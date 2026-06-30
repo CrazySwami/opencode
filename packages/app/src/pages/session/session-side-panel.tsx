@@ -37,37 +37,30 @@ import {
 } from "@/pages/session/helpers"
 import { setSessionHandoff } from "@/pages/session/handoff"
 import { useSessionLayout } from "@/pages/session/session-layout"
+import {
+  WORKSPACE_PANEL_TAB_BY_ID,
+  WORKSPACE_PANEL_TAB_IDS,
+  WORKSPACE_PANEL_TABS,
+  type WorkspacePanelTabID,
+} from "@/workspace-tabs/registry"
 
 type RenderDiff = (SnapshotFileDiff & { file: string }) | VcsFileDiff
-const PANEL_TERMINAL_TAB = "panel://terminal"
-const PANEL_BROWSER_TAB = "panel://browser"
-const PANEL_PREVIEW_TAB = "panel://preview"
-const PANEL_OPEN_DESIGN_TAB = "panel://open-design"
-const PANEL_MAC_VIEW_TAB = "panel://mac-view"
-const PANEL_ACCOUNTS_TAB = "panel://accounts"
-const PANEL_ROUTINES_TAB = "panel://routines"
-const PANEL_ENVIRONMENT_TAB = "panel://environment"
-const PANEL_RESOURCES_TAB = "panel://resources"
-const PANEL_ARTIFACTS_TAB = "panel://artifacts"
-const PANEL_FILE_BROWSER_TAB = "panel://file-browser"
+const PANEL_TERMINAL_TAB = "panel://terminal" satisfies WorkspacePanelTabID
+const PANEL_BROWSER_TAB = "panel://browser" satisfies WorkspacePanelTabID
+const PANEL_PREVIEW_TAB = "panel://preview" satisfies WorkspacePanelTabID
+const PANEL_OPEN_DESIGN_TAB = "panel://open-design" satisfies WorkspacePanelTabID
+const PANEL_MAC_VIEW_TAB = "panel://mac-view" satisfies WorkspacePanelTabID
+const PANEL_ACCOUNTS_TAB = "panel://accounts" satisfies WorkspacePanelTabID
+const PANEL_ROUTINES_TAB = "panel://routines" satisfies WorkspacePanelTabID
+const PANEL_ENVIRONMENT_TAB = "panel://environment" satisfies WorkspacePanelTabID
+const PANEL_RESOURCES_TAB = "panel://resources" satisfies WorkspacePanelTabID
+const PANEL_ARTIFACTS_TAB = "panel://artifacts" satisfies WorkspacePanelTabID
+const PANEL_FILE_BROWSER_TAB = "panel://file-browser" satisfies WorkspacePanelTabID
 const PANEL_QUEUE_TAB = "panel://queue"
 const ARTIFACT_VIEWER_TAB_PREFIX = "artifact://"
 const FILE_BROWSER_STATE_KEY = "opencode:workspace-suite:file-browser"
 const PREVIEW_STATE_KEY = "opencode:workspace-suite:preview"
-const PANEL_TABS = new Set([
-  PANEL_TERMINAL_TAB,
-  PANEL_BROWSER_TAB,
-  PANEL_PREVIEW_TAB,
-  PANEL_OPEN_DESIGN_TAB,
-  PANEL_MAC_VIEW_TAB,
-  PANEL_ACCOUNTS_TAB,
-  PANEL_ROUTINES_TAB,
-  PANEL_ENVIRONMENT_TAB,
-  PANEL_RESOURCES_TAB,
-  PANEL_ARTIFACTS_TAB,
-  PANEL_FILE_BROWSER_TAB,
-  PANEL_QUEUE_TAB,
-])
+const PANEL_TABS = new Set([...WORKSPACE_PANEL_TAB_IDS, PANEL_QUEUE_TAB])
 
 function renderDiff(value: SnapshotFileDiff | VcsFileDiff): value is RenderDiff {
   return typeof value.file === "string"
@@ -122,16 +115,8 @@ function panelTabLabel(tab: string) {
   const artifact = artifactFromTab(tab)
   if (artifact) return artifact.name ?? "Artifact"
   if (tab === PANEL_TERMINAL_TAB) return "Terminal"
-  if (tab === PANEL_BROWSER_TAB) return "Agent Chrome"
-  if (tab === PANEL_PREVIEW_TAB) return "Preview"
-  if (tab === PANEL_OPEN_DESIGN_TAB) return "Open Design"
-  if (tab === PANEL_MAC_VIEW_TAB) return "Mac View"
-  if (tab === PANEL_ACCOUNTS_TAB) return "Accounts"
-  if (tab === PANEL_ROUTINES_TAB) return "Routines"
-  if (tab === PANEL_ENVIRONMENT_TAB) return "Environment"
-  if (tab === PANEL_RESOURCES_TAB) return "Resources"
-  if (tab === PANEL_ARTIFACTS_TAB) return "Artifacts"
-  if (tab === PANEL_FILE_BROWSER_TAB) return "File Browser"
+  const definition = WORKSPACE_PANEL_TAB_BY_ID[tab as WorkspacePanelTabID]
+  if (definition) return definition.label
   if (tab === PANEL_QUEUE_TAB) return "Queue"
   return tab
 }
@@ -141,17 +126,9 @@ function panelTabIcon(tab: string) {
   if (artifact?.kind === "image") return <Icon name="photo" size="small" />
   if (artifact?.kind === "video" || artifact?.kind === "audio") return <Icon name="photo" size="small" />
   if (artifact) return <Icon name="code" size="small" />
-  if (tab === PANEL_TERMINAL_TAB) return <Icon name="terminal" size="small" />
-  if (tab === PANEL_BROWSER_TAB) return <Icon name="window-cursor" size="small" />
-  if (tab === PANEL_PREVIEW_TAB) return <Icon name="window-cursor" size="small" />
-  if (tab === PANEL_OPEN_DESIGN_TAB) return <span class="text-[10px] leading-none font-semibold tracking-[0]">OD</span>
-  if (tab === PANEL_MAC_VIEW_TAB) return <Icon name="eye" size="small" />
-  if (tab === PANEL_ACCOUNTS_TAB) return <Icon name="providers" size="small" />
-  if (tab === PANEL_ROUTINES_TAB) return <Icon name="checklist" size="small" />
-  if (tab === PANEL_ENVIRONMENT_TAB) return <span class="text-[9px] leading-none font-semibold tracking-[0]">ENV</span>
-  if (tab === PANEL_RESOURCES_TAB) return <span class="text-[9px] leading-none font-semibold tracking-[0]">CPU</span>
-  if (tab === PANEL_ARTIFACTS_TAB) return <Icon name="photo" size="small" />
-  if (tab === PANEL_FILE_BROWSER_TAB) return <Icon name="folder" size="small" />
+  const definition = WORKSPACE_PANEL_TAB_BY_ID[tab as WorkspacePanelTabID]
+  if (definition?.badge) return <span class="text-[9px] leading-none font-semibold tracking-[0]">{definition.badge}</span>
+  if (definition?.icon) return <Icon name={definition.icon as any} size="small" />
   if (tab === PANEL_QUEUE_TAB) return <Icon name="checklist" size="small" />
 }
 
@@ -347,7 +324,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
   const [browserBusy, setBrowserBusy] = createSignal(false)
   const [browserError, setBrowserError] = createSignal<string | undefined>()
   const [previewReady, setPreviewReady] = createSignal(false)
-  const [useNoVNC, setUseNoVNC] = createSignal(true)
+  const [useNoVNC, setUseNoVNC] = createSignal(false)
   const [annotating, setAnnotating] = createSignal(false)
   const [drawing, setDrawing] = createSignal(false)
   const [lastArtifact, setLastArtifact] = createSignal<{ url: string; name: string } | undefined>()
@@ -449,13 +426,13 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
 
   const browserKey = (key: string) => {
     const aliases: Record<string, string> = {
-      ArrowLeft: "Left",
-      ArrowRight: "Right",
-      ArrowUp: "Up",
-      ArrowDown: "Down",
-      Backspace: "BackSpace",
+      ArrowLeft: "ArrowLeft",
+      ArrowRight: "ArrowRight",
+      ArrowUp: "ArrowUp",
+      ArrowDown: "ArrowDown",
+      Backspace: "Backspace",
       Delete: "Delete",
-      Enter: "Return",
+      Enter: "Enter",
       Escape: "Escape",
       Tab: "Tab",
     }
@@ -669,7 +646,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
             <IconButton icon="enter" variant="ghost" class="h-7 w-7 shrink-0" disabled={controlsDisabled()} onClick={submitBrowserUrl} aria-label="Open URL" />
           </form>
           <div class="hidden min-w-0 items-center gap-1 md:flex">
-            <span class="max-w-40 truncate px-1 text-11-regular text-text-weak">{browserExposureBlocked() ? "blocked" : browserBusy() ? "working" : useNoVNC() && interactiveUrl() && !annotating() ? "noVNC" : previewReady() ? "live" : "connecting"}</span>
+            <span class="max-w-40 truncate px-1 text-11-regular text-text-weak">{browserExposureBlocked() ? "blocked" : browserBusy() ? "working" : useNoVNC() && interactiveUrl() && !annotating() ? "VNC fallback" : previewReady() ? "CDP live" : "connecting"}</span>
             <span
               class="h-2 w-2 shrink-0 rounded-full"
               classList={{
@@ -741,10 +718,10 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
                       setUseNoVNC(!useNoVNC())
                     }}
                   >
-                    {useNoVNC() ? "Use stream" : "Use noVNC"}
+                    {useNoVNC() ? "Use CDP live" : "Use VNC fallback"}
                   </button>
                 </Show>
-                <Show when={status().browserUse?.liveURL}>{(url) => <button class="rounded px-2 py-0.5 text-text-strong hover:bg-surface-raised-base-hover disabled:text-text-disabled" type="button" disabled={browserExposureBlocked()} onClick={() => window.open(url(), "_blank", "noopener,noreferrer")}>Open noVNC</button>}</Show>
+                <Show when={status().browserUse?.liveURL}>{(url) => <button class="rounded px-2 py-0.5 text-text-strong hover:bg-surface-raised-base-hover disabled:text-text-disabled" type="button" disabled={browserExposureBlocked()} onClick={() => window.open(url(), "_blank", "noopener,noreferrer")}>Open VNC fallback</button>}</Show>
               </div>
               <div class="grid grid-cols-1 gap-2 text-12-regular text-text-weak md:grid-cols-3">
                 <StatusPill label="Profile" value={profilePolicy()?.persistentAuth?.status ?? "unknown"} active={!!profilePolicy()?.persistentAuth?.enabled} />
@@ -799,7 +776,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
         >
           <Show when={!previewReady() && (!interactiveUrl() || annotating())}>
             <div class="absolute inset-0 flex items-center justify-center text-center text-12-regular text-text-weak">
-              Starting live Chromium...
+              Starting CDP live Chromium...
             </div>
           </Show>
           <Show
@@ -1047,7 +1024,95 @@ function TabChrome(props: {
   bodyClass?: string
   children: JSX.Element
 }) {
+  const [openMenu, setOpenMenu] = createSignal<"tab" | "view" | "tools" | "actions" | undefined>()
+  const definition = createMemo(() => WORKSPACE_PANEL_TAB_BY_ID[props.iconTab as WorkspacePanelTabID])
   const hasHeader = createMemo(() => !!props.title || !!props.toolbar || !!props.onRefresh || !!props.actions)
+  const MenuContent = (props: { menu: "tab" | "view" | "tools" | "actions" }) => (
+    <Show when={definition()}>
+      {(tab) => (
+        <div
+          class="absolute right-0 top-7 z-[1001] w-72 rounded-lg border border-border-base bg-background-stronger p-3 shadow-lg"
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <Show when={props.menu === "tab"}>
+            <div class="flex flex-col gap-2">
+              <div class="flex items-center gap-2 text-13-medium text-text-strong">
+                <PanelGlyph tab={tab().id} />
+                <span>{tab().label}</span>
+              </div>
+              <StatusRow label="Tab id" value={tab().id} />
+              <StatusRow label="Mentions" value={tab().mentionIDs.map((id) => `@${id}`).join(", ")} />
+            </div>
+          </Show>
+          <Show when={props.menu === "view"}>
+            <div class="flex flex-col gap-2">
+              <div class="text-13-medium text-text-strong">View</div>
+              <div class="text-12-regular text-text-weak">{tab().description}</div>
+              <StatusRow label="Safety" value={tab().safetyPolicy} />
+              <StatusRow label="Snapshot" value={tab().canSnapshot ? "available" : "not available"} />
+              <StatusRow label="Attach to chat" value={tab().canAttachToChat ? "available" : "not available"} />
+            </div>
+          </Show>
+          <Show when={props.menu === "tools"}>
+            <div class="flex flex-col gap-2">
+              <div class="text-13-medium text-text-strong">Tools</div>
+              <div class="text-12-regular text-text-weak">LLM-visible tools and command tags for this tab.</div>
+              <div class="flex flex-wrap gap-1">
+                <For each={tab().toolIDs}>
+                  {(tool) => <span class="rounded bg-background-base px-2 py-1 text-11-regular text-text-strong">@{tool}</span>}
+                </For>
+              </div>
+            </div>
+          </Show>
+          <Show when={props.menu === "actions"}>
+            <div class="flex flex-col gap-2">
+              <div class="text-13-medium text-text-strong">Actions</div>
+              <div class="text-12-regular text-text-weak">Actions exposed through the tab registry and `workspace_tabs` tool.</div>
+              <div class="flex flex-wrap gap-1">
+                <For each={tab().actions}>
+                  {(action) => <span class="rounded bg-background-base px-2 py-1 text-11-regular text-text-weak">{action.replaceAll("_", " ")}</span>}
+                </For>
+              </div>
+            </div>
+          </Show>
+        </div>
+      )}
+    </Show>
+  )
+  const PanelTopMenus = () => (
+    <Show when={definition()}>
+      {(_) => (
+        <div class="relative ml-auto flex shrink-0 items-center gap-0.5">
+          <For each={["tab", "view", "tools", "actions"] as const}>
+            {(menu) => (
+              <button
+                type="button"
+                class="hidden h-7 rounded px-2 text-12-regular capitalize text-text-weak hover:bg-surface-base-hover hover:text-text-strong md:block"
+                classList={{ "bg-surface-base-active text-text-strong": openMenu() === menu }}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  setOpenMenu((current) => (current === menu ? undefined : menu))
+                }}
+              >
+                {menu}
+              </button>
+            )}
+          </For>
+          <IconButton
+            icon="dot-grid"
+            variant="ghost"
+            class="h-7 w-7 md:hidden"
+            onClick={(event) => {
+              event.stopPropagation()
+              setOpenMenu((current) => (current === "tools" ? undefined : "tools"))
+            }}
+            aria-label="Tab tools"
+          />
+          <Show when={openMenu()}>{(menu) => <MenuContent menu={menu()} />}</Show>
+        </div>
+      )}
+    </Show>
+  )
   return (
     <div class="h-full min-h-0 flex flex-col bg-background-base">
       <Show when={hasHeader()}>
@@ -1066,6 +1131,7 @@ function TabChrome(props: {
                 </Show>
                 <div class="ml-auto flex items-center gap-1">
                   {props.actions}
+                  <PanelTopMenus />
                   <Show when={!!props.onRefresh}>
                     <IconButton icon="reset" variant="ghost" class="h-7 w-7" onClick={() => props.onRefresh?.()} aria-label="Refresh" />
                   </Show>
@@ -1073,7 +1139,12 @@ function TabChrome(props: {
               </>
             }
           >
-            {(toolbar) => toolbar()}
+            {(toolbar) => (
+              <div class="flex h-full min-w-0 flex-1 items-center gap-1">
+                <div class="min-w-0 flex-1">{toolbar()}</div>
+                <PanelTopMenus />
+              </div>
+            )}
           </Show>
         </div>
       </Show>
@@ -2842,17 +2913,14 @@ export function SessionSidePanel(props: {
                           >
                             Files
                           </button>
-                          <PanelMenuButton tab={PANEL_TERMINAL_TAB} onSelect={() => openPanelTab(PANEL_TERMINAL_TAB)} />
-                          <PanelMenuButton tab={PANEL_BROWSER_TAB} onSelect={() => openPanelTab(PANEL_BROWSER_TAB)} />
-                          <PanelMenuButton tab={PANEL_PREVIEW_TAB} onSelect={() => openPanelTab(PANEL_PREVIEW_TAB)} />
-                          <PanelMenuButton tab={PANEL_OPEN_DESIGN_TAB} onSelect={launchOpenDesign} />
-                          <PanelMenuButton tab={PANEL_MAC_VIEW_TAB} onSelect={() => openPanelTab(PANEL_MAC_VIEW_TAB)} />
-                          <PanelMenuButton tab={PANEL_ACCOUNTS_TAB} onSelect={() => openPanelTab(PANEL_ACCOUNTS_TAB)} />
-                          <PanelMenuButton tab={PANEL_ROUTINES_TAB} onSelect={() => openPanelTab(PANEL_ROUTINES_TAB)} />
-                          <PanelMenuButton tab={PANEL_ENVIRONMENT_TAB} onSelect={() => openPanelTab(PANEL_ENVIRONMENT_TAB)} />
-                          <PanelMenuButton tab={PANEL_RESOURCES_TAB} onSelect={() => openPanelTab(PANEL_RESOURCES_TAB)} />
-                          <PanelMenuButton tab={PANEL_ARTIFACTS_TAB} onSelect={() => openPanelTab(PANEL_ARTIFACTS_TAB)} />
-                          <PanelMenuButton tab={PANEL_FILE_BROWSER_TAB} onSelect={() => openPanelTab(PANEL_FILE_BROWSER_TAB)} />
+                          <For each={WORKSPACE_PANEL_TABS}>
+                            {(tab) => (
+                              <PanelMenuButton
+                                tab={tab.id}
+                                onSelect={() => (tab.id === PANEL_OPEN_DESIGN_TAB ? launchOpenDesign() : openPanelTab(tab.id))}
+                              />
+                            )}
+                          </For>
                         </div>
                       </Portal>
                     </Show>

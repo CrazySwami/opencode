@@ -41,6 +41,8 @@ export const AccountStatusTool = Tool.define<typeof Parameters, Metadata, never>
               "artifact",
               "file_browser",
               "account_status",
+              "routines",
+              "workspace_tabs",
             ],
             ...(detail === "environment"
               ? {

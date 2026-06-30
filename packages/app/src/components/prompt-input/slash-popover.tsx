@@ -61,6 +61,9 @@ export const ToolMentionIcon: Component<{ source: ToolPartSource; icon?: string 
             <Match when={props.source === "browser"}>
               <Icon name="window-cursor" size="small" />
             </Match>
+            <Match when={props.source === "preview"}>
+              <Icon name="window-cursor" size="small" />
+            </Match>
             <Match when={props.source === "terminal"}>
               <Icon name="terminal" size="small" />
             </Match>

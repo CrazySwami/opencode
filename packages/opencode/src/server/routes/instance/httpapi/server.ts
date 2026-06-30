@@ -121,6 +121,7 @@ import { schemaErrorLayer } from "./middleware/schema-error"
 import { captureBrowserScreenshot, runBrowserAction, sessionPaths, type BrowserActionInput } from "@/tool/browser"
 import { collectResourceStatus } from "@/tool/resource-status"
 import { routineLogs, routinesAction, routinesStatus } from "@/tool/routines"
+import { workspaceTabsAction, workspaceTabsStatus } from "@/tool/workspace-tabs"
 
 export const context = Context.makeUnsafe<unknown>(new Map())
 
@@ -589,7 +590,9 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
             "file_browser",
             "account_status",
             "routines",
+            "workspace_tabs",
           ],
+          workspaceTabs: workspaceTabsStatus(),
           openDesign: await openDesignStatus(),
           macView: await macViewStatus(),
           routines: await routinesStatus(),
@@ -608,6 +611,18 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
 
     yield* router.add("GET", "/experimental/workspace-suite/environments", () =>
       Effect.promise(async () => HttpServerResponse.jsonUnsafe(await liveOnlyEnvironmentStatus())),
+    )
+
+    yield* router.add("GET", "/experimental/workspace-tabs/status", () =>
+      Effect.promise(async () => HttpServerResponse.jsonUnsafe(workspaceTabsStatus())),
+    )
+
+    yield* router.add("POST", "/experimental/workspace-tabs/action", (request) =>
+      Effect.gen(function* () {
+        const raw = yield* Effect.orDie(request.text)
+        const body = raw ? JSON.parse(raw) : {}
+        return yield* Effect.promise(async () => HttpServerResponse.jsonUnsafe(workspaceTabsAction(body as any)))
+      }),
     )
 
     yield* router.add("GET", "/experimental/resources/status", (request) =>
@@ -1229,7 +1244,9 @@ async function liveBrowserStatus(access?: Extract<LiveBrowserAccess, { ok: true 
   const cdp = await currentLiveBrowserURL().catch(() => undefined)
   return {
     ok: browser.ok,
-    mode: "ct100-xvfb-chrome",
+    mode: "ct100-cdp-chrome",
+    primaryTransport: "cdp",
+    fallbackTransport: "vnc",
     display: liveBrowserDisplay(),
     profile: liveBrowserProfile(),
     profilePolicy: liveBrowserProfilePolicy(),
@@ -1240,6 +1257,7 @@ async function liveBrowserStatus(access?: Extract<LiveBrowserAccess, { ok: true 
     screenshotURL: "/experimental/browser/live/snapshot",
     streamURL: "/experimental/browser/live/stream",
     proxiedLiveURL: "/experimental/browser/novnc/opencode-lite.html?path=websockify",
+    actions: ["goto", "back", "forward", "reload", "click", "type", "key", "scroll", "screenshot", "selector"],
     access: access
       ? {
           mode: access.mode,
@@ -1303,48 +1321,51 @@ async function runLiveBrowserInput(input: LiveBrowserInput) {
     case "goto": {
       const url = normalizeBrowserURL(input.url)
       if (!url) return { ok: false, error: "Missing URL" }
-      await cdpEvaluate(`location.href = ${JSON.stringify(url)}`)
+      await cdpCommand("Page.navigate", { url })
       await delay(900)
-      await raiseLiveBrowserWindow()
       return { ok: true, currentURL: url }
     }
     case "back":
       await cdpEvaluate("history.back()")
       await delay(400)
-      await raiseLiveBrowserWindow()
       return { ok: true }
     case "forward":
       await cdpEvaluate("history.forward()")
       await delay(400)
-      await raiseLiveBrowserWindow()
       return { ok: true }
     case "reload":
-      await cdpEvaluate("location.reload()")
+      await cdpCommand("Page.reload", { ignoreCache: false })
       await delay(600)
-      await raiseLiveBrowserWindow()
       return { ok: true }
     case "click": {
       const x = Math.max(0, Math.round(input.x ?? 0))
       const y = Math.max(0, Math.round(input.y ?? 0))
-      await execText("xdotool", ["mousemove", "--sync", String(x), String(y), "click", "1"], liveBrowserDisplay())
+      await cdpCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none" })
+      await cdpCommand("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 })
+      await cdpCommand("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 })
       return { ok: true, x, y }
     }
     case "type": {
       if (!input.text) return { ok: false, error: "Missing text" }
-      await execText("xdotool", ["type", "--delay", "1", input.text], liveBrowserDisplay())
+      await cdpCommand("Input.insertText", { text: input.text })
       return { ok: true }
     }
     case "key": {
       if (!input.key) return { ok: false, error: "Missing key" }
-      await execText("xdotool", ["key", input.key], liveBrowserDisplay())
+      await dispatchCDPKey(input.key)
       return { ok: true }
     }
     case "scroll": {
-      const dy = input.deltaY ?? 0
-      const button = dy < 0 ? "4" : "5"
-      const steps = Math.min(8, Math.max(1, Math.round(Math.abs(dy) / 160)))
-      for (let idx = 0; idx < steps; idx += 1) await execText("xdotool", ["click", button], liveBrowserDisplay())
-      return { ok: true, steps, deltaY: dy }
+      const deltaX = input.deltaX ?? 0
+      const deltaY = input.deltaY ?? 0
+      await cdpCommand("Input.dispatchMouseEvent", {
+        type: "mouseWheel",
+        x: 720,
+        y: 500,
+        deltaX,
+        deltaY,
+      })
+      return { ok: true, deltaX, deltaY }
     }
   }
 }
@@ -1382,14 +1403,15 @@ function multipartBrowserFrame(image: Buffer) {
   return frame
 }
 
-async function captureLiveBrowserImage(options: { transient?: boolean } = {}) {
+async function captureLiveBrowserImage(_options: { transient?: boolean } = {}) {
   await ensureLiveBrowser()
-  await raiseLiveBrowserWindow()
-  const file = options.transient
-    ? path.join(liveBrowserHome(), `live-frame-${process.pid}.png`)
-    : path.join(liveBrowserArtifacts(), `snapshot-${Date.now()}.png`)
-  await execText("import", ["-window", "root", "-resize", "1280x889", file], liveBrowserDisplay())
-  return readFileSync(file)
+  const result = (await cdpCommand("Page.captureScreenshot", {
+    format: "png",
+    fromSurface: true,
+    captureBeyondViewport: false,
+  })) as { data?: string }
+  if (!result.data) throw new Error("CDP screenshot returned no data")
+  return Buffer.from(result.data, "base64")
 }
 
 async function saveLiveBrowserScreenshot(
@@ -1510,6 +1532,35 @@ async function visibleChromeWindows() {
 }
 
 async function cdpEvaluate(expression: string) {
+  const body = await cdpCommand("Runtime.evaluate", { expression, returnByValue: true })
+  return (body as any)?.result?.value ?? body
+}
+
+async function dispatchCDPKey(key: string) {
+  const normalized = key === "Return" ? "Enter" : key === "BackSpace" ? "Backspace" : key
+  const codes: Record<string, { code: string; windowsVirtualKeyCode: number }> = {
+    Enter: { code: "Enter", windowsVirtualKeyCode: 13 },
+    Tab: { code: "Tab", windowsVirtualKeyCode: 9 },
+    Escape: { code: "Escape", windowsVirtualKeyCode: 27 },
+    Backspace: { code: "Backspace", windowsVirtualKeyCode: 8 },
+    Delete: { code: "Delete", windowsVirtualKeyCode: 46 },
+    ArrowLeft: { code: "ArrowLeft", windowsVirtualKeyCode: 37 },
+    ArrowUp: { code: "ArrowUp", windowsVirtualKeyCode: 38 },
+    ArrowRight: { code: "ArrowRight", windowsVirtualKeyCode: 39 },
+    ArrowDown: { code: "ArrowDown", windowsVirtualKeyCode: 40 },
+  }
+  const info = codes[normalized] ?? { code: normalized, windowsVirtualKeyCode: normalized.charCodeAt(0) || 0 }
+  const params = {
+    key: normalized,
+    code: info.code,
+    windowsVirtualKeyCode: info.windowsVirtualKeyCode,
+    nativeVirtualKeyCode: info.windowsVirtualKeyCode,
+  }
+  await cdpCommand("Input.dispatchKeyEvent", { ...params, type: "keyDown" })
+  await cdpCommand("Input.dispatchKeyEvent", { ...params, type: "keyUp" })
+}
+
+async function cdpCommand(method: string, params: Record<string, unknown> = {}) {
   const page = await liveBrowserPage()
   const ws = page.webSocketDebuggerUrl
   if (!ws) throw new Error("Live browser CDP websocket is unavailable")
@@ -1524,7 +1575,7 @@ async function cdpEvaluate(expression: string) {
       reject(new Error("Live browser CDP request timed out"))
     }, 5000)
     socket.addEventListener("open", () => {
-      socket.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression, returnByValue: true } }))
+      socket.send(JSON.stringify({ id: 1, method, params }))
     })
     socket.addEventListener("message", (event: MessageEvent) => {
       try {
@@ -1533,7 +1584,7 @@ async function cdpEvaluate(expression: string) {
         clearTimeout(timeout)
         socket.close()
         if (body.error) reject(new Error(body.error.message || "CDP evaluate failed"))
-        else resolve(body.result?.result?.value ?? body.result)
+        else resolve(body.result ?? {})
       } catch (error) {
         clearTimeout(timeout)
         socket.close()

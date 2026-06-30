@@ -49,6 +49,7 @@ import { usePermission } from "@/context/permission"
 import { useLanguage } from "@/context/language"
 import { usePlatform } from "@/context/platform"
 import { createSessionTabs } from "@/pages/session/helpers"
+import { WORKSPACE_PANEL_TABS, workspacePanelTabForTool } from "@/workspace-tabs/registry"
 import { createTextFragment, getCursorPosition, setCursorPosition, setRangeEdge } from "./prompt-input/editor-dom"
 import { createPromptAttachments } from "./prompt-input/attachments"
 import { ACCEPTED_FILE_TYPES, pickAttachmentFiles } from "./prompt-input/files"
@@ -216,7 +217,8 @@ const classifyToolMention = (id: string): ToolPartSource => {
   const normalized = id.toLowerCase()
   if (normalized === "swami" || normalized === "alfonso-os" || normalized === "alfonso_os" || normalized === "alfonsoos")
     return "swami"
-  if (normalized === "browser") return "browser"
+  if (normalized === "browser" || normalized === "browser_use" || normalized === "agent_chrome") return "browser"
+  if (normalized === "preview" || normalized === "project_preview" || normalized === "viewer") return "preview"
   if (normalized === "terminal" || normalized === "bash") return "terminal"
   if (normalized === "open_design" || normalized.startsWith("open_design_")) return "open_design"
   if (normalized === "mac_view" || normalized.startsWith("mac_view_")) return "mac_view"
@@ -256,6 +258,26 @@ const SWAMI_TOOL_MENTIONS = [
     description: "Alias for Swami operating context and Alfonso OS source of truth.",
   }),
 ]
+
+const WORKSPACE_TOOL_MENTIONS = WORKSPACE_PANEL_TABS.map((tab) =>
+  optionForToolMention({
+    id: tab.mentionIDs[0] ?? tab.toolIDs[0] ?? tab.id,
+    name: tab.label,
+    description: tab.description,
+    icon: tab.icon,
+  }),
+)
+
+const uniqueToolMentions = (items: AtOption[]) => {
+  const seen = new Set<string>()
+  return items.filter((item) => {
+    if (item.type !== "tool") return true
+    const key = item.id.toLowerCase()
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
 
 export const PromptInput: Component<PromptInputProps> = (props) => {
   const sdk = useSDK()
@@ -713,16 +735,17 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
             if (item.type !== "tool") return 99
             if (item.source === "swami") return 0
             if (item.source === "browser") return 1
-            if (item.source === "terminal") return 2
-            if (item.source === "open_design") return 3
-            if (item.source === "mac_view") return 4
-            if (item.source === "resource") return 5
-            if (item.source === "artifact") return 6
-              if (item.source === "file_browser") return 7
-              if (item.source === "account") return 8
-              if (item.source === "routines") return 9
-              if (item.source === "mcp") return 10
-              return 11
+            if (item.source === "preview") return 2
+            if (item.source === "terminal") return 3
+            if (item.source === "open_design") return 4
+            if (item.source === "mac_view") return 5
+            if (item.source === "resource") return 6
+            if (item.source === "artifact") return 7
+            if (item.source === "file_browser") return 8
+            if (item.source === "account") return 9
+            if (item.source === "routines") return 10
+            if (item.source === "mcp") return 11
+            return 12
           }
           return rank(a) - rank(b) || a.name.localeCompare(b.name)
         })
@@ -740,14 +763,20 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
               description: tool.description,
             }),
           )
-          return sort([...SWAMI_TOOL_MENTIONS, ...options])
+          return sort(uniqueToolMentions([...SWAMI_TOOL_MENTIONS, ...WORKSPACE_TOOL_MENTIONS, ...options]))
         } catch {
           // Fall through to the model-independent list so @tool mentions still work while models load.
         }
       }
 
       const response = await sdk().client.tool.ids({ directory: input.directory })
-      return sort([...SWAMI_TOOL_MENTIONS, ...(response.data ?? []).map((id) => optionForToolMention({ id }))])
+      return sort(
+        uniqueToolMentions([
+          ...SWAMI_TOOL_MENTIONS,
+          ...WORKSPACE_TOOL_MENTIONS,
+          ...(response.data ?? []).map((id) => optionForToolMention({ id })),
+        ]),
+      )
     },
   )
 
@@ -756,6 +785,12 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     if (option.type === "agent") {
       addPart({ type: "agent", name: option.name, content: "@" + option.name, start: 0, end: 0 })
     } else if (option.type === "tool") {
+      const panelTab = workspacePanelTabForTool(option.id, option.source)
+      if (panelTab) {
+        props.controls.session.reviewPanel.open()
+        void props.controls.session.tabs.open(panelTab)
+        props.controls.session.tabs.setActive(panelTab)
+      }
       addPart({
         type: "tool",
         id: option.id,
