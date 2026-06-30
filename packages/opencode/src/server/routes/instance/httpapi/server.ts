@@ -121,7 +121,7 @@ import { schemaErrorLayer } from "./middleware/schema-error"
 import { captureBrowserScreenshot, runBrowserAction, sessionPaths, type BrowserActionInput } from "@/tool/browser"
 import { collectResourceStatus } from "@/tool/resource-status"
 import { createRoutineDraft, routineLogs, routinesAction, routinesStatus } from "@/tool/routines"
-import { workspaceTabsAction, workspaceTabsStatus } from "@/tool/workspace-tabs"
+import { ackWorkspaceTabsAction, updateWorkspaceTabsClientState, workspaceTabsAction, workspaceTabsPendingActions, workspaceTabsStatus } from "@/tool/workspace-tabs"
 
 export const context = Context.makeUnsafe<unknown>(new Map())
 
@@ -630,6 +630,29 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
         const raw = yield* Effect.orDie(request.text)
         const body = raw ? JSON.parse(raw) : {}
         return yield* Effect.promise(async () => HttpServerResponse.jsonUnsafe(workspaceTabsAction(body as any)))
+      }),
+    )
+
+    yield* router.add("POST", "/experimental/workspace-tabs/client-state", (request) =>
+      Effect.gen(function* () {
+        const raw = yield* Effect.orDie(request.text)
+        const body = raw ? JSON.parse(raw) : {}
+        return yield* Effect.promise(async () => HttpServerResponse.jsonUnsafe(updateWorkspaceTabsClientState(body as any)))
+      }),
+    )
+
+    yield* router.add("GET", "/experimental/workspace-tabs/pending", (request) =>
+      Effect.promise(async () => {
+        const url = new URL(request.url, "http://localhost")
+        return HttpServerResponse.jsonUnsafe(workspaceTabsPendingActions(url.searchParams.get("sessionID") || undefined))
+      }),
+    )
+
+    yield* router.add("POST", "/experimental/workspace-tabs/ack", (request) =>
+      Effect.gen(function* () {
+        const raw = yield* Effect.orDie(request.text)
+        const body = raw ? JSON.parse(raw) : {}
+        return yield* Effect.promise(async () => HttpServerResponse.jsonUnsafe(ackWorkspaceTabsAction(body as any)))
       }),
     )
 

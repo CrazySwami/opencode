@@ -3,6 +3,7 @@ import { Portal } from "solid-js/web"
 import { createStore } from "solid-js/store"
 import { createMediaQuery } from "@solid-primitives/media"
 import { Tabs } from "@opencode-ai/ui/tabs"
+import { MenuV2 } from "@opencode-ai/ui/v2/menu-v2"
 import { IconButton } from "@opencode-ai/ui/icon-button"
 import { Icon } from "@opencode-ai/ui/icon"
 import { TooltipKeybind } from "@opencode-ai/ui/tooltip"
@@ -42,6 +43,7 @@ import {
   WORKSPACE_PANEL_TAB_BY_ID,
   WORKSPACE_PANEL_TAB_IDS,
   WORKSPACE_PANEL_TABS,
+  canonicalWorkspacePanelTab,
   type WorkspacePanelTabID,
 } from "@/workspace-tabs/registry"
 
@@ -72,7 +74,7 @@ function isPanelTab(tab: string) {
 }
 
 function canonicalPanelTab(tab: string) {
-  return tab === PANEL_PREVIEW_TAB ? PANEL_BROWSER_TAB : tab
+  return canonicalWorkspacePanelTab(tab) ?? tab
 }
 
 function artifactViewerTab(file: any) {
@@ -1229,6 +1231,7 @@ function StatusPill(props: { label: string; value?: string | number | boolean | 
   )
 }
 
+
 function TabChrome(props: {
   title?: string
   iconTab: string
@@ -1239,60 +1242,39 @@ function TabChrome(props: {
   bodyClass?: string
   children: JSX.Element
 }) {
-  const [openMenu, setOpenMenu] = createSignal<"tab" | "view" | "tools" | "actions" | undefined>()
-  const definition = createMemo(() => WORKSPACE_PANEL_TAB_BY_ID[props.iconTab as WorkspacePanelTabID])
+  const [toolsOpen, setToolsOpen] = createSignal(false)
+  const definition = createMemo(() => WORKSPACE_PANEL_TAB_BY_ID[canonicalPanelTab(props.iconTab) as WorkspacePanelTabID])
   const hasHeader = createMemo(() => !!props.title || !!props.toolbar || !!props.onRefresh || !!props.actions)
-  const MenuContent = (props: { menu: "tab" | "view" | "tools" | "actions" }) => (
-    <Show when={definition()}>
-      {(tab) => (
-        <div
-          class="absolute left-0 top-7 z-[1001] w-72 rounded-lg border border-border-base bg-background-stronger/95 p-2 shadow-lg backdrop-blur"
-          onPointerDown={(event) => event.stopPropagation()}
-        >
-          <Show when={props.menu === "tab"}>
-            <div class="flex flex-col gap-2">
-              <div class="flex items-center gap-2 text-13-medium text-text-strong">
-                <PanelGlyph tab={tab().id} />
-                <span>{tab().label}</span>
-              </div>
-              <StatusRow label="Tab id" value={tab().id} />
-              <StatusRow label="Mentions" value={tab().mentionIDs.map((id) => `@${id}`).join(", ")} />
-            </div>
-          </Show>
-          <Show when={props.menu === "view"}>
-            <div class="flex flex-col gap-2">
-              <div class="text-13-medium text-text-strong">View</div>
-              <div class="text-12-regular text-text-weak">{tab().description}</div>
-              <StatusRow label="Safety" value={tab().safetyPolicy} />
-              <StatusRow label="Snapshot" value={tab().canSnapshot ? "available" : "not available"} />
-              <StatusRow label="Attach to chat" value={tab().canAttachToChat ? "available" : "not available"} />
-            </div>
-          </Show>
-          <Show when={props.menu === "tools"}>
-            <div class="flex flex-col gap-2">
-              <div class="text-13-medium text-text-strong">Tools</div>
-              <div class="text-12-regular text-text-weak">LLM-visible tools and command tags for this tab.</div>
-              <div class="flex flex-wrap gap-1">
-                <For each={tab().toolIDs}>
-                  {(tool) => <span class="rounded bg-background-base px-2 py-1 text-11-regular text-text-strong">@{tool}</span>}
-                </For>
-              </div>
-            </div>
-          </Show>
-          <Show when={props.menu === "actions"}>
-            <div class="flex flex-col gap-2">
-              <div class="text-13-medium text-text-strong">Actions</div>
-              <div class="text-12-regular text-text-weak">Actions exposed through the tab registry and `workspace_tabs` tool.</div>
-              <div class="flex flex-wrap gap-1">
-                <For each={tab().actions}>
-                  {(action) => <span class="rounded bg-background-base px-2 py-1 text-11-regular text-text-weak">{action.replaceAll("_", " ")}</span>}
-                </For>
-              </div>
-            </div>
-          </Show>
-        </div>
-      )}
-    </Show>
+  const copyTabState = async () => {
+    const tab = definition()
+    if (!tab || typeof navigator === "undefined" || !navigator.clipboard) return
+    await navigator.clipboard.writeText(
+      JSON.stringify(
+        {
+          tab,
+          tool: "workspace_tabs",
+          examples: [
+            { action: "state", tab: tab.id },
+            { action: "open", tab: tab.id },
+            { action: "run_action", tab: tab.id, tabAction: tab.actions[0] },
+          ],
+        },
+        null,
+        2,
+      ),
+    )
+  }
+  const MenuButton = (props: { label: string; children: JSX.Element }) => (
+    <MenuV2 gutter={5} modal={false} placement="bottom-start">
+      <MenuV2.Trigger class="h-7 rounded-md px-1.5 text-11-regular text-text-weak outline-none hover:bg-surface-base-hover hover:text-text-strong data-[expanded]:bg-surface-base-active data-[expanded]:text-text-strong sm:px-2 sm:text-12-regular">
+        {props.label}
+      </MenuV2.Trigger>
+      <MenuV2.Portal>
+        <MenuV2.Content class="min-w-[220px] max-w-[min(320px,calc(100vw-1rem))]">
+          {props.children}
+        </MenuV2.Content>
+      </MenuV2.Portal>
+    </MenuV2>
   )
   const ToolsModal = () => (
     <Show when={definition()}>
@@ -1300,7 +1282,7 @@ function TabChrome(props: {
         <Portal>
           <div
             class="fixed inset-0 z-[1200] flex items-center justify-center bg-background-base/60 p-4 backdrop-blur-sm"
-            onPointerDown={() => setOpenMenu(undefined)}
+            onPointerDown={() => setToolsOpen(false)}
           >
             <div
               class="flex max-h-[min(720px,calc(100vh-2rem))] w-[min(720px,calc(100vw-2rem))] flex-col overflow-hidden rounded-lg border border-border-base bg-background-stronger shadow-2xl"
@@ -1316,7 +1298,7 @@ function TabChrome(props: {
                   icon="close-small"
                   variant="ghost"
                   class="h-7 w-7"
-                  onClick={() => setOpenMenu(undefined)}
+                  onClick={() => setToolsOpen(false)}
                   aria-label="Close tools"
                 />
               </div>
@@ -1354,6 +1336,7 @@ function TabChrome(props: {
                         { action: "open", tab: tab().id },
                         { action: "focus", tab: tab().id },
                         { action: "run_action", tab: tab().id, tabAction: tab().actions[0] },
+                        { action: "attach_to_chat", tab: tab().id },
                       ],
                       canSnapshot: tab().canSnapshot,
                       canAttachToChat: tab().canAttachToChat,
@@ -1372,37 +1355,45 @@ function TabChrome(props: {
   )
   const PanelTopMenus = () => (
     <Show when={definition()}>
-      {(_) => (
-        <div class="relative flex shrink-0 items-center gap-0.5">
-          <For each={["tab", "view", "tools", "actions"] as const}>
-            {(menu) => (
-              <button
-                type="button"
-                class="hidden h-7 rounded-md px-2.5 text-12-regular capitalize text-text-weak hover:bg-surface-base-hover hover:text-text-strong md:block"
-                classList={{ "bg-surface-base-active text-text-strong": openMenu() === menu }}
-                onClick={(event) => {
-                  event.stopPropagation()
-                  setOpenMenu((current) => (current === menu ? undefined : menu))
-                }}
-              >
-                {menu}
-              </button>
-            )}
-          </For>
-          <IconButton
-            icon="dot-grid"
-            variant="ghost"
-            class="h-7 w-7 md:hidden"
-            onClick={(event) => {
-              event.stopPropagation()
-              setOpenMenu((current) => (current === "tools" ? undefined : "tools"))
-            }}
-            aria-label="Tab tools"
-          />
-          <Show when={openMenu() === "tools" ? undefined : openMenu()}>
-            {(menu) => <MenuContent menu={menu() as "tab" | "view" | "actions"} />}
-          </Show>
-          <Show when={openMenu() === "tools"}>
+      {(tab) => (
+        <div class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overflow-y-visible pr-1 [scrollbar-width:none]">
+          <MenuButton label="Tab">
+            <MenuV2.Group>
+              <MenuV2.GroupLabel>{tab().label}</MenuV2.GroupLabel>
+              <MenuV2.Item disabled>{tab().id}</MenuV2.Item>
+              <MenuV2.Separator />
+              <MenuV2.Item onSelect={() => setToolsOpen(true)}>Show tab tools</MenuV2.Item>
+              <MenuV2.Item onSelect={() => void copyTabState()}>Copy tab JSON</MenuV2.Item>
+            </MenuV2.Group>
+          </MenuButton>
+          <MenuButton label="View">
+            <MenuV2.Group>
+              <MenuV2.GroupLabel>View</MenuV2.GroupLabel>
+              <MenuV2.Item disabled>{tab().description}</MenuV2.Item>
+              <MenuV2.Separator />
+              <MenuV2.Item disabled={!props.onRefresh} onSelect={() => props.onRefresh?.()}>Refresh</MenuV2.Item>
+              <MenuV2.Item disabled={!tab().canSnapshot}>Snapshot available</MenuV2.Item>
+            </MenuV2.Group>
+          </MenuButton>
+          <MenuButton label="Tools">
+            <MenuV2.Group>
+              <MenuV2.GroupLabel>LLM-visible tools</MenuV2.GroupLabel>
+              <For each={tab().toolIDs}>{(tool) => <MenuV2.Item disabled>@{tool}</MenuV2.Item>}</For>
+              <MenuV2.Separator />
+              <MenuV2.Item onSelect={() => setToolsOpen(true)}>Open tools details</MenuV2.Item>
+            </MenuV2.Group>
+          </MenuButton>
+          <MenuButton label="Actions">
+            <MenuV2.Group>
+              <MenuV2.GroupLabel>Actions</MenuV2.GroupLabel>
+              <For each={tab().actions}>
+                {(action) => <MenuV2.Item disabled>{action.replaceAll("_", " ")}</MenuV2.Item>}
+              </For>
+              <MenuV2.Separator />
+              <MenuV2.Item disabled>{tab().safetyPolicy}</MenuV2.Item>
+            </MenuV2.Group>
+          </MenuButton>
+          <Show when={toolsOpen()}>
             <ToolsModal />
           </Show>
         </div>
@@ -1410,25 +1401,25 @@ function TabChrome(props: {
     </Show>
   )
   return (
-    <div class="h-full min-h-0 flex flex-col bg-background-base">
+    <div class="flex h-full min-h-0 flex-col bg-background-base">
       <Show when={hasHeader()}>
-        <div class={props.headerClass ?? "h-10 shrink-0 flex items-center justify-between gap-3 px-3 border-b border-border-weaker-base"}>
+        <div class={props.headerClass ?? "flex min-h-10 shrink-0 items-center justify-between gap-2 border-b border-border-weaker-base px-3 py-1"}>
           <Show
             when={props.toolbar}
             fallback={
               <>
-                <div class="flex min-w-0 flex-1 items-center gap-3">
+                <div class="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
                   <PanelTopMenus />
                   <Show when={props.title}>
                     {(title) => (
-                      <div class="flex min-w-0 items-center gap-2 text-14-medium text-text-strong">
+                      <div class="hidden min-w-0 items-center gap-2 text-14-medium text-text-strong xl:flex">
                         <PanelGlyph tab={props.iconTab} />
                         <span class="truncate">{title()}</span>
                       </div>
                     )}
                   </Show>
                 </div>
-                <div class="flex items-center gap-1">
+                <div class="hidden shrink-0 items-center gap-1 xl:flex">
                   {props.actions}
                   <Show when={!!props.onRefresh}>
                     <IconButton icon="reset" variant="ghost" class="h-7 w-7" onClick={() => props.onRefresh?.()} aria-label="Refresh" />
@@ -1438,7 +1429,7 @@ function TabChrome(props: {
             }
           >
             {(toolbar) => (
-              <div class="flex h-full min-w-0 flex-1 items-center gap-1">
+              <div class="flex h-full min-w-0 flex-1 items-center gap-2 overflow-hidden">
                 <PanelTopMenus />
                 <div class="min-w-0 flex-1">{toolbar()}</div>
               </div>
@@ -1446,7 +1437,7 @@ function TabChrome(props: {
           </Show>
         </div>
       </Show>
-      <div class={props.bodyClass ?? "flex-1 min-h-0 overflow-auto p-3"}>{props.children}</div>
+      <div class={props.bodyClass ?? "min-h-0 flex-1 overflow-auto p-3"}>{props.children}</div>
     </div>
   )
 }
@@ -3004,6 +2995,31 @@ export function SessionSidePanel(props: {
     return active
   })
 
+
+  createEffect(() => {
+    const active = activeTab()
+    if (!active || active === "empty" || active === "review" || active === "context") return
+    if (!isPanelTab(active)) return
+
+    const canonical = canonicalPanelTab(active)
+    if (canonical !== active) {
+      tabs().open(canonical)
+      tabs().setActive(canonical)
+      tabs().close(active)
+      return
+    }
+
+    if (!openedTabs().includes(canonical)) tabs().open(canonical)
+    if (!mobile() && !view().reviewPanel.opened()) view().reviewPanel.open()
+  })
+
+  createEffect(() => {
+    const openPanelIDs = openedPanelTabs()
+    const active = activePanelTab()
+    if (!active || openPanelIDs.includes(active)) return
+    tabs().open(active)
+  })
+
   createEffect(() => {
     if (activeTab() !== PANEL_QUEUE_TAB) return
     tabs().close(PANEL_QUEUE_TAB)
@@ -3055,13 +3071,130 @@ export function SessionSidePanel(props: {
   }
 
   const closePanelTab = (tab: string) => {
-    tabs().close(tab)
-    if (tab === PANEL_BROWSER_TAB) tabs().close(PANEL_PREVIEW_TAB)
+    const nextTab = canonicalPanelTab(tab)
+    tabs().close(nextTab)
+    if (nextTab === PANEL_BROWSER_TAB) tabs().close(PANEL_PREVIEW_TAB)
   }
 
   const [browserLaunch, setBrowserLaunch] = createSignal<BrowserLaunchRequest | undefined>()
   const [panelMenuOpen, setPanelMenuOpen] = createSignal(false)
   const [panelMenuPosition, setPanelMenuPosition] = createSignal({ left: 0, top: 0 })
+
+  const collectWorkspaceTabClientState = () => ({
+    sessionID: params.id,
+    route: typeof window === "undefined" ? undefined : window.location.pathname,
+    activeTab: activeTab(),
+    activePanelTab: activePanelTab(),
+    openTabs: openedTabs(),
+    openedTabs: openedTabs(),
+    openPanelTabs: openedPanelTabs(),
+    openedPanelTabs: openedPanelTabs(),
+    openFileTabs: openedFileTabs(),
+    openedFileTabs: openedFileTabs(),
+    reviewOpen: reviewOpen(),
+    panelOpen: open(),
+    mobile: mobile(),
+    desktop: isDesktop(),
+    selected: {
+      fileBrowser: readFileBrowserState(),
+      activeArtifact: activeArtifactTab(),
+      activeFile: activeFileTab(),
+    },
+    visibleControls: {
+      plusMenuOpen: panelMenuOpen(),
+      canReview: props.canReview(),
+      fileTreeOpen: fileOpen(),
+    },
+  })
+
+  const postWorkspaceTabClientState = async () => {
+    if (typeof window === "undefined") return
+    try {
+      await fetch("/experimental/workspace-tabs/client-state", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(collectWorkspaceTabClientState()),
+      })
+    } catch {
+      // Best-effort sync only; the visible UI must keep working if the status route is unavailable.
+    }
+  }
+
+  let workspaceTabStateTimer: ReturnType<typeof setTimeout> | undefined
+  createEffect(() => {
+    JSON.stringify({
+      activeTab: activeTab(),
+      openTabs: openedTabs(),
+      openPanelTabs: openedPanelTabs(),
+      panelOpen: open(),
+      mobile: mobile(),
+      fileBrowser: readFileBrowserState(),
+    })
+    if (workspaceTabStateTimer) clearTimeout(workspaceTabStateTimer)
+    workspaceTabStateTimer = setTimeout(() => void postWorkspaceTabClientState(), 250)
+  })
+  onCleanup(() => {
+    if (workspaceTabStateTimer) clearTimeout(workspaceTabStateTimer)
+  })
+
+  const ackWorkspaceTabAction = async (actionID: string, ok: boolean, error?: string) => {
+    try {
+      await fetch("/experimental/workspace-tabs/ack", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ actionID, ok, error, state: collectWorkspaceTabClientState() }),
+      })
+    } catch {
+      // The pending action will expire server-side by queue length if ack cannot be delivered.
+    }
+  }
+
+  const applyWorkspaceTabAction = async (pending: any) => {
+    const clientAction = pending?.clientAction ?? pending
+    const actionID = clientAction?.actionID ?? pending?.id
+    const action = clientAction?.action ?? pending?.action
+    const tab = clientAction?.tab ?? pending?.tab
+    if (!actionID || !action) return
+    try {
+      if (action === "close" && typeof tab === "string") {
+        closePanelTab(canonicalPanelTab(tab))
+      } else if ((action === "open" || action === "focus") && typeof tab === "string") {
+        openPanelTab(tab)
+      } else if (action === "run_action" && typeof tab === "string") {
+        openPanelTab(tab)
+        window.dispatchEvent(new CustomEvent("opencode:workspace-tab-run-action", { detail: clientAction }))
+      } else if ((action === "attach_to_chat" || action === "snapshot") && typeof tab === "string") {
+        openPanelTab(tab)
+      }
+      await ackWorkspaceTabAction(actionID, true)
+      void postWorkspaceTabClientState()
+    } catch (error) {
+      await ackWorkspaceTabAction(actionID, false, error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  const appliedWorkspaceActions = new Set<string>()
+  const pollWorkspaceTabActions = async () => {
+    if (typeof window === "undefined") return
+    try {
+      const query = params.id ? `?sessionID=${encodeURIComponent(params.id)}` : ""
+      const response = await fetch(`/experimental/workspace-tabs/pending${query}`)
+      if (!response.ok) return
+      const payload = await response.json()
+      for (const pending of payload.actions ?? []) {
+        const actionID = pending?.id ?? pending?.clientAction?.actionID
+        if (!actionID || appliedWorkspaceActions.has(actionID)) continue
+        appliedWorkspaceActions.add(actionID)
+        void applyWorkspaceTabAction(pending)
+      }
+    } catch {
+      // Polling is best-effort; manual tab controls remain authoritative.
+    }
+  }
+
+  const workspaceActionPoller = setInterval(() => void pollWorkspaceTabActions(), 1000)
+  onCleanup(() => clearInterval(workspaceActionPoller))
+
 
   createEffect(() => {
     if (activeTab() !== PANEL_PREVIEW_TAB) return
@@ -3227,9 +3360,9 @@ export function SessionSidePanel(props: {
                   <DragDropSensors />
                   <ConstrainDragYAxis />
                   <Tabs value={activeTab()} onChange={changeActiveTab}>
-                    <div class="sticky top-0 z-40 shrink-0 flex min-w-0">
+                    <div class="sticky top-0 z-40 flex min-w-0 shrink-0 overflow-visible">
                       <Tabs.List
-                        class="min-w-0"
+                        class="min-w-0 flex-1 overflow-x-auto overflow-y-visible pr-12 [scrollbar-width:none]"
                         ref={(el: HTMLDivElement) => {
                           const stop = createFileTabListSync({ el, contextOpen })
                           onCleanup(stop)
