@@ -537,38 +537,244 @@ const fileViewerRoute = HttpRouter.use((router) =>
   }),
 ).pipe(Layer.provide(authOnlyRouterLayer))
 
-async function codexMultiAuthStatus() {
-  const script = process.env.OPENCODE_CODEX_MULTI_AUTH_SCRIPT || "/home/dev/repos/LLM-Experiments/scripts/opencode-codex-multi-auth-profile.mjs"
-  if (!existsSync(script)) return { ok: false, configured: false, error: "Codex multi-auth status script not found" }
-  return new Promise((resolve) => {
+const codexMultiAuthScript = () =>
+  process.env.OPENCODE_CODEX_MULTI_AUTH_SCRIPT || "/home/dev/repos/LLM-Experiments/scripts/opencode-codex-multi-auth-profile.mjs"
+
+type CodexMultiAuthCommandResult = {
+  ok: boolean
+  configured: boolean
+  command?: string
+  output?: string
+  error?: string
+}
+
+async function runCodexMultiAuthCommand(command: string, timeout = 8000): Promise<CodexMultiAuthCommandResult> {
+  const script = codexMultiAuthScript()
+  if (!existsSync(script))
+    return { ok: false, configured: false, command: script + " " + command, error: "Codex multi-auth status script not found" }
+  return new Promise<CodexMultiAuthCommandResult>((resolve) => {
     execFile(
       "node",
-      [script, "status"],
+      [script, command],
       {
         cwd: path.dirname(path.dirname(script)),
-        timeout: 8000,
+        timeout,
         maxBuffer: 256_000,
         env: { ...process.env, NPM_CONFIG_LOGLEVEL: "error", npm_config_loglevel: "error" },
       },
       (error, stdout, stderr) => {
         const output = [stdout?.toString(), stderr?.toString()].filter(Boolean).join("\n").trim()
         if (error) {
-          resolve({ ok: false, configured: true, command: script + " status", error: cleanStatusOutput(output || error.message) })
+          resolve({ ok: false, configured: true, command: script + " " + command, error: cleanStatusOutput(output || error.message) })
           return
         }
-        resolve({ ok: true, configured: true, command: script + " status", output: cleanStatusOutput(output) })
+        resolve({ ok: true, configured: true, command: script + " " + command, output: cleanStatusOutput(output) })
       },
     )
   })
 }
 
+function parseCodexAccountCount(...values: Array<string | undefined>) {
+  const text = values.filter(Boolean).join("\n")
+  const explicit = text.match(/Accounts:\s*(\d+)/i)
+  if (explicit) return Number(explicit[1])
+  const listed = text.match(/Account\s+#?\d+/gi)
+  return listed?.length ?? 0
+}
+
+function parseCodexUsageSummary(value: string | undefined) {
+  if (!value) return null
+  const lines = value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => /remaining|weekly|limit|reset|usage/i.test(line))
+  return lines.slice(0, 3).join(" · ") || null
+}
+
+async function codexMultiAuthStatus() {
+  const status = await runCodexMultiAuthCommand("status")
+  const base = {
+    commands: ["login", "login-headless", "list", "status", "limits", "health", "run"],
+    loginRoute: "/experimental/codex-multi-auth/login",
+  }
+  if (!status.configured || !status.ok) return { ...status, ...base }
+  const list = await runCodexMultiAuthCommand("list", 8000)
+  const limits = await runCodexMultiAuthCommand("limits", 10000)
+  const health = await runCodexMultiAuthCommand("health", 8000)
+  const accountCount = parseCodexAccountCount(status.output, list.output, limits.output, health.output)
+  return {
+    ...status,
+    ...base,
+    providerID: "codex-multi-auth",
+    baseProviderID: "openai",
+    accountCount,
+    accountsConfigured: accountCount > 0,
+    activeAccount: null,
+    rotationStrategy: "auto",
+    usageSummary: parseCodexUsageSummary(limits.output),
+    listOutput: list.output ?? list.error,
+    limitsOutput: limits.output ?? limits.error,
+    healthOutput: health.output ?? health.error,
+  }
+}
+
+function parseCodexAuthStart(value: string | undefined) {
+  const text = value ?? ""
+  const url =
+    text.match(/https:\/\/auth\.openai\.com\/codex\/device[^\s)]*/i)?.[0] ??
+    text.match(/https?:\/\/[^\s)]+/i)?.[0] ??
+    null
+  const code =
+    text.match(/Enter code:\s*([A-Z0-9-]+)/i)?.[1] ??
+    text.match(/user[_ -]?code[:\s]+([A-Z0-9-]+)/i)?.[1] ??
+    text.match(/\b([A-Z0-9]{4}-[A-Z0-9]{4})\b/)?.[1] ??
+    null
+  return { url, code }
+}
+
+async function codexMultiAuthLoginStart() {
+  const script = codexMultiAuthScript()
+  const command = "cd /home/dev/repos/LLM-Experiments && node scripts/opencode-codex-multi-auth-profile.mjs login-headless"
+  if (!existsSync(script)) {
+    return {
+      ok: false,
+      configured: false,
+      terminalCommand: command,
+      error: "Codex multi-auth status script not found",
+      note: "The login wrapper is missing on this server.",
+    }
+  }
+
+  return new Promise((resolve) => {
+    const child = spawn("node", [script, "login-headless"], {
+      cwd: path.dirname(path.dirname(script)),
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        NPM_CONFIG_LOGLEVEL: "error",
+        npm_config_loglevel: "error",
+        NO_COLOR: "1",
+        FORCE_COLOR: "0",
+        TERM: "dumb",
+      },
+    })
+    let settled = false
+    let output = ""
+    const startedAt = new Date().toISOString()
+    let startupTimer: ReturnType<typeof setTimeout> | undefined
+    let hardStop: ReturnType<typeof setTimeout> | undefined
+    const killTree = () => {
+      if (!child.pid) return
+      try {
+        process.kill(-child.pid, "SIGTERM")
+      } catch {
+        try {
+          child.kill("SIGTERM")
+        } catch {}
+      }
+    }
+    const finish = (body: Record<string, unknown>, kill = false) => {
+      if (settled) return
+      settled = true
+      if (startupTimer) clearTimeout(startupTimer)
+      if (kill) killTree()
+      resolve(body)
+    }
+    const append = (chunk: Buffer) => {
+      output += chunk.toString()
+      if (output.length > 16_000) output = output.slice(-16_000)
+      const cleaned = cleanStatusOutput(output)
+      const parsed = parseCodexAuthStart(cleaned)
+      if (parsed.url && parsed.code) {
+        finish({
+          ok: true,
+          configured: true,
+          background: true,
+          pid: child.pid,
+          startedAt,
+          command: script + " login-headless",
+          terminalCommand: command,
+          authorizationURL: parsed.url,
+          userCode: parsed.code,
+          output: cleaned,
+          note: "Open the link, paste the code, approve the account, then refresh Accounts. Repeat once per Codex account.",
+        })
+      }
+    }
+    startupTimer = setTimeout(() => {
+      const cleaned = cleanStatusOutput(output)
+      finish(
+        {
+          ok: false,
+          configured: true,
+          background: false,
+          startedAt,
+          command: script + " login-headless",
+          terminalCommand: command,
+          error: cleaned || "Timed out before the login command printed a device-code URL.",
+          note: "The login command did not print a device-code URL. Check the command output below.",
+        },
+        true,
+      )
+    }, 18_000)
+    hardStop = setTimeout(killTree, 10 * 60_000)
+    child.stdout?.on("data", append)
+    child.stderr?.on("data", append)
+    child.on("error", (error) => {
+      if (hardStop) clearTimeout(hardStop)
+      finish(
+        {
+          ok: false,
+          configured: true,
+          background: false,
+          startedAt,
+          command: script + " login-headless",
+          terminalCommand: command,
+          error: error.message,
+          note: "The login command failed before it could print a device-code URL.",
+        },
+        true,
+      )
+    })
+    child.on("exit", (code, signal) => {
+      if (hardStop) clearTimeout(hardStop)
+      if (settled) return
+      const cleaned = cleanStatusOutput(output)
+      const parsed = parseCodexAuthStart(cleaned)
+      finish({
+        ok: !!(code === 0 || parsed.url || parsed.code),
+        configured: true,
+        background: false,
+        startedAt,
+        command: script + " login-headless",
+        terminalCommand: command,
+        authorizationURL: parsed.url,
+        userCode: parsed.code,
+        output: cleaned,
+        error: code === 0 ? undefined : `Login command exited with ${signal ?? code}`,
+        note:
+          parsed.url || parsed.code
+            ? "Open the link, paste the code, approve the account, then refresh Accounts. Repeat once per Codex account."
+            : "The login command exited before printing a device-code URL.",
+      })
+    })
+  })
+}
+
 function cleanStatusOutput(value: string) {
   return value
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1B[@-_][0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\r/g, "\n")
     .split("\n")
     .filter((line) => !line.startsWith("npm error config prefix cannot be changed"))
     .filter((line) => !line.startsWith("npm warn"))
     .filter((line) => !line.match(/^\s*(package|required|current):/))
+    .filter((line) => !line.match(/Waiting for authorization/i))
+    .filter((line) => !line.match(/^\s*[◒◐◓◑■]\s*/))
     .filter((line) => line.trim() !== "}")
+    .filter((line) => line.trim() !== "Canceled")
     .join("\n")
     .replace(/([A-Za-z0-9_-]{24,})/g, "[redacted]")
     .slice(0, 2000)
@@ -578,6 +784,14 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const projects = yield* Project.Service
     const sessions = yield* Session.Service
+
+    yield* router.add("GET", "/experimental/codex-multi-auth/status", () =>
+      Effect.promise(async () => HttpServerResponse.jsonUnsafe(await codexMultiAuthStatus())),
+    )
+
+    yield* router.add("POST", "/experimental/codex-multi-auth/login", () =>
+      Effect.promise(async () => HttpServerResponse.jsonUnsafe(await codexMultiAuthLoginStart())),
+    )
 
     yield* router.add("GET", "/experimental/workspace-suite/status", () =>
       Effect.gen(function* () {

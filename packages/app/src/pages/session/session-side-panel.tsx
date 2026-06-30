@@ -1799,6 +1799,27 @@ function MacViewTabContent() {
 function AccountsTabContent() {
   const status = createPolledJson<any>(() => "/experimental/workspace-suite/status")
   const workspace = createPolledJson<any>(() => "/__workspace-index", 15000)
+  const [loginStarting, setLoginStarting] = createSignal(false)
+  const [loginResult, setLoginResult] = createSignal<any>()
+
+  const startCodexLogin = async () => {
+    setLoginStarting(true)
+    try {
+      const response = await fetch("/experimental/codex-multi-auth/login", { method: "POST" })
+      const body = await response.json()
+      setLoginResult(body)
+      void status.refresh()
+    } catch (error) {
+      setLoginResult({ ok: false, error: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setLoginStarting(false)
+    }
+  }
+
+  const copyText = async (value: string | undefined | null) => {
+    if (!value || typeof navigator === "undefined" || !navigator.clipboard) return
+    await navigator.clipboard.writeText(value)
+  }
 
   return (
     <TabChrome
@@ -1817,11 +1838,95 @@ function AccountsTabContent() {
         <StatusRow label="Recent sessions" value={workspace.data()?.sessions?.length} />
         <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
           <div class="mb-2 flex items-center justify-between gap-3">
-            <div class="text-12-regular text-text-weak">Codex accounts</div>
+            <div>
+              <div class="text-12-regular text-text-weak">Codex accounts</div>
+              <div class="mt-0.5 text-11-regular text-text-weak">Authorize each Codex account into the isolated multi-auth profile.</div>
+            </div>
             <span class="rounded bg-background-base px-2 py-1 text-11-regular" classList={{ "text-text-strong": !!status.data()?.codexAccounts?.ok, "text-text-weak": !status.data()?.codexAccounts?.ok }}>
               {status.data()?.codexAccounts?.ok ? "connected" : status.data()?.codexAccounts?.configured ? "needs setup" : "not configured"}
             </span>
           </div>
+          <div class="mb-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              class="rounded-md border border-border-weaker-base bg-background-base px-3 py-1.5 text-12-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60"
+              disabled={loginStarting()}
+              onClick={startCodexLogin}
+            >
+              {loginStarting() ? "Starting auth..." : "Authenticate Codex account"}
+            </button>
+            <button
+              type="button"
+              class="rounded-md border border-border-weaker-base bg-background-base px-3 py-1.5 text-12-regular text-text-strong hover:bg-surface-raised-base-hover"
+              onClick={() => void status.refresh()}
+            >
+              Refresh status
+            </button>
+          </div>
+          <Show when={loginResult()}>
+            {(result) => (
+              <div class="mb-3 rounded-md border border-border-weaker-base bg-background-base p-3 text-12-regular">
+                <div class="mb-2 flex items-center justify-between gap-2">
+                  <div class="text-12-medium text-text-strong">Auth command</div>
+                  <button
+                    type="button"
+                    class="rounded px-2 py-1 text-11-regular text-text-weak hover:bg-surface-raised-base-hover hover:text-text-strong"
+                    onClick={() => void copyText(result().terminalCommand)}
+                  >
+                    Copy command
+                  </button>
+                </div>
+                <div class="break-all rounded bg-background-stronger px-2 py-1.5 font-mono text-11-regular text-text-strong">
+                  {result().terminalCommand ?? result().command ?? "Command not reported"}
+                </div>
+                <Show when={result().authorizationURL}>
+                  {(url) => (
+                    <div class="mt-3">
+                      <div class="mb-1 text-11-medium text-text-weak">Auth link</div>
+                      <div class="flex flex-wrap items-center gap-2">
+                        <a
+                          href={url()}
+                          target="_blank"
+                          rel="noreferrer"
+                          class="break-all text-12-regular text-[#f97316] hover:underline"
+                        >
+                          {url()}
+                        </a>
+                        <button
+                          type="button"
+                          class="rounded px-2 py-1 text-11-regular text-text-weak hover:bg-surface-raised-base-hover hover:text-text-strong"
+                          onClick={() => void copyText(url())}
+                        >
+                          Copy link
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </Show>
+                <Show when={result().userCode}>
+                  {(code) => (
+                    <div class="mt-3">
+                      <div class="mb-1 text-11-medium text-text-weak">Code</div>
+                      <div class="flex flex-wrap items-center gap-2">
+                        <span class="rounded bg-background-stronger px-2 py-1.5 font-mono text-14-medium text-text-strong">{code()}</span>
+                        <button
+                          type="button"
+                          class="rounded px-2 py-1 text-11-regular text-text-weak hover:bg-surface-raised-base-hover hover:text-text-strong"
+                          onClick={() => void copyText(code())}
+                        >
+                          Copy code
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </Show>
+                <div class="mt-3 text-12-regular text-text-weak">{result().note ?? "Run this once per Codex account."}</div>
+                <Show when={result().output ?? result().error}>
+                  {(output) => <pre class="mt-3 max-h-52 overflow-auto whitespace-pre-wrap break-words rounded bg-background-stronger p-2 text-11-regular text-text-weak">{output()}</pre>}
+                </Show>
+              </div>
+            )}
+          </Show>
           <div class="whitespace-pre-wrap break-words text-12-regular text-text-weak">
             {status.data()?.codexAccounts?.output ?? status.data()?.codexAccounts?.error ?? "No Codex account status reported yet."}
           </div>
