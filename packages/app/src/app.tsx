@@ -26,6 +26,7 @@ import {
   onCleanup,
   type ParentProps,
   Show,
+  Suspense,
 } from "solid-js"
 import { Dynamic } from "solid-js/web"
 import { CommandProvider } from "@/context/command"
@@ -235,7 +236,9 @@ function ResolvedDraftRoute(props: { draft: DraftTab }) {
             <SDKProvider directory={directory}>
               <DirectoryDataProvider directory={directory} server={serverKey}>
                 <DraftProviders>
-                  <NewSession />
+                  <Suspense>
+                    <NewSession />
+                  </Suspense>
                 </DraftProviders>
               </DirectoryDataProvider>
             </SDKProvider>
