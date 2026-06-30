@@ -879,10 +879,24 @@ function normalizePreviewURL(value: string) {
   return `https://${input}`
 }
 
+function previewURLKind(value: string) {
+  if (!value) return "empty"
+  if (value.startsWith("/")) return "same-origin"
+  try {
+    const parsed = new URL(value, window.location.origin)
+    if (parsed.origin === window.location.origin) return "same-origin"
+    if (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname.startsWith("100.") || parsed.hostname.endsWith(".tailf704e2.ts.net")) return "local"
+    return "external"
+  } catch {
+    return "invalid"
+  }
+}
+
 function PreviewTabContent() {
   const initial = readPreviewState().url ?? ""
   const [address, setAddress] = createSignal(initial)
   const [currentURL, setCurrentURL] = createSignal(initial)
+  const currentKind = createMemo(() => previewURLKind(currentURL()))
 
   createEffect(() => writePreviewState({ url: currentURL() || address() }))
 
@@ -942,13 +956,32 @@ function PreviewTabContent() {
         }
       >
         {(url) => (
-          <iframe
-            src={url()}
-            title="Preview"
-            class="block size-full border-0 bg-white"
-            sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-downloads"
-            allow="clipboard-read; clipboard-write"
-          />
+          <Show
+            when={currentKind() !== "external"}
+            fallback={
+              <div class="flex flex-1 items-center justify-center p-6 text-center">
+                <div class="max-w-md rounded-lg border border-border-weaker-base bg-background-base p-5 text-13-regular text-text-weak">
+                  <div class="mb-2 text-14-medium text-text-strong">External sites do not reliably render in Preview</div>
+                  <div>
+                    Preview is an embedded renderer for same-origin routes, file views, and project preview URLs. Public sites often block iframe embedding, so use Agent Chrome or open the URL externally.
+                  </div>
+                  <div class="mt-4 flex justify-center gap-2">
+                    <button type="button" class="rounded-md border border-border-weaker-base px-3 py-1.5 text-12-regular text-text-strong hover:bg-surface-raised-base-hover" onClick={() => window.open(url(), "_blank", "noopener,noreferrer")}>
+                      Open external
+                    </button>
+                  </div>
+                </div>
+              </div>
+            }
+          >
+            <iframe
+              src={url()}
+              title="Preview"
+              class="block size-full border-0 bg-white"
+              sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-downloads"
+              allow="clipboard-read; clipboard-write"
+            />
+          </Show>
         )}
       </Show>
     </TabChrome>
@@ -1170,7 +1203,7 @@ function MacViewTabContent() {
   const [width, setWidth] = createSignal(1280)
   const [quality, setQuality] = createSignal(8)
   const [bitrate, setBitrate] = createSignal(6000)
-  const [transport, setTransport] = createSignal<"webrtc" | "video" | "mjpeg">("video")
+  const [transport, setTransport] = createSignal<"webrtc" | "video" | "mjpeg">("webrtc")
   const [transportTouched, setTransportTouched] = createSignal(false)
   const streamReconnectMs = 30_000
 
@@ -1199,7 +1232,7 @@ function MacViewTabContent() {
   })
   createEffect(() => {
     if (transportTouched()) return
-    const next = status.data()?.transport
+    const next = status.data()?.transportOptions?.includes("webrtc") ? "webrtc" : status.data()?.transport
     if (next === "webrtc" || next === "video" || next === "mjpeg") setTransport(next)
   })
 
@@ -1337,7 +1370,7 @@ function MacViewTabContent() {
                 onError={() => {
                   if (transport() !== "video") return
                   setTransportTouched(true)
-                  setTransport("mjpeg")
+                  setTransport(status.data()?.transportOptions?.includes("webrtc") ? "webrtc" : "mjpeg")
                   setStreamKey(Date.now())
                   void status.refresh()
                 }}
@@ -1348,7 +1381,15 @@ function MacViewTabContent() {
                 src={transportURL()}
                 alt="Live Mac screen"
                 class="block h-auto w-full select-none"
-                onError={() => void status.refresh()}
+                onError={() => {
+                  if (transport() !== "mjpeg") return
+                  if (status.data()?.transportOptions?.includes("webrtc")) {
+                    setTransportTouched(true)
+                    setTransport("webrtc")
+                    setStreamKey(Date.now())
+                  }
+                  void status.refresh()
+                }}
               />
             </Match>
           </Switch>
