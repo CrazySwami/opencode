@@ -1913,7 +1913,7 @@ function RoutinesTabContent() {
           <EnvironmentSummaryCard
             label="Editing"
             value={jobs.data()?.status?.mutationsEnabled ? "enabled" : "held"}
-            detail={jobs.data()?.status?.mutationsEnabled ? "Protected write route is enabled." : "Create, edit, run, and delete stay held until Cloudflare Access protects code.hustletogether.com."}
+            detail={jobs.data()?.status?.mutationsEnabled ? "Disabled draft writes are enabled. Manual runs stay separate." : "Disabled draft writes are off on this server."}
             tone={jobs.data()?.status?.mutationsEnabled ? "ready" : "warn"}
           />
         </div>
@@ -1975,7 +1975,7 @@ function RoutinesTabContent() {
                   </Show>
 
                   <div class="rounded border border-border-weaker-base bg-background-base p-2 text-12-regular text-text-weak">
-                    Routine editing and manual run controls are intentionally held while `code.hustletogether.com` is public. Enable Cloudflare Access GitHub login first, then enable the server-side routines mutation flag.
+                    Disabled routine drafts can be created from the home Routines page. Enabling schedules and manual runs remain separate server-side controls.
                   </div>
 
                   <div>

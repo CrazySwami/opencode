@@ -651,13 +651,57 @@ function HomeRoutinesDashboard() {
   const routines = createHomePolledJson<any>("/experimental/routines/jobs", 10000)
   const [selectedID, setSelectedID] = createSignal<string | undefined>()
   const [draftOpen, setDraftOpen] = createSignal(false)
+  const [draftName, setDraftName] = createSignal("")
+  const [draftSchedule, setDraftSchedule] = createSignal("daily 09:00")
+  const [draftDescription, setDraftDescription] = createSignal("")
+  const [draftCommand, setDraftCommand] = createSignal("")
+  const [draftSaving, setDraftSaving] = createSignal(false)
+  const [draftError, setDraftError] = createSignal<string | undefined>()
   const jobs = createMemo(() => routines.data.value?.routines ?? [])
   const selected = createMemo(() => jobs().find((job: any) => job.id === selectedID()) ?? jobs()[0])
+  const mutationsEnabled = createMemo(() => routines.data.value?.status?.mutationsEnabled ?? false)
 
   createEffect(() => {
     const first = jobs()[0]?.id
     if (!selectedID() && first) setSelectedID(first)
   })
+
+  const openDraftDialog = () => {
+    setDraftName("")
+    setDraftSchedule("daily 09:00")
+    setDraftDescription("")
+    setDraftCommand("")
+    setDraftError(undefined)
+    setDraftOpen(true)
+  }
+
+  const submitDraftRoutine = async () => {
+    if (draftSaving()) return
+    setDraftSaving(true)
+    setDraftError(undefined)
+    try {
+      const response = await fetch("/experimental/routines/jobs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: draftName(),
+          schedule: draftSchedule(),
+          description: draftDescription(),
+          command: draftCommand(),
+        }),
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok || body?.ok === false) throw new Error(body?.error ?? `Request failed: ${response.status}`)
+      setSelectedID(body.routine?.id)
+      setDraftOpen(false)
+      showToast({ title: "Draft routine created", variant: "success" })
+      await routines.refresh()
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setDraftSaving(false)
+    }
+  }
 
   return (
     <div class="flex min-h-0 flex-1 flex-col">
@@ -669,7 +713,7 @@ function HomeRoutinesDashboard() {
           size="normal"
           icon="edit"
           class="h-7 px-2 [font-weight:530]"
-          onClick={() => setDraftOpen(true)}
+          onClick={openDraftDialog}
         >
           Schedule new
         </ButtonV2>
@@ -743,7 +787,7 @@ function HomeRoutinesDashboard() {
                     <HomeRoutineInfo label="Source folder" value={routine().sourceFolder ?? routines.data.value?.status?.routinesDir ?? "Not available"} />
                     <HomeRoutineInfo label="Store" value={routines.data.value?.status?.jobsFile} />
                     <div class="rounded-[8px] bg-v2-background-bg-base p-3 text-[12px] leading-5 text-v2-text-text-muted">
-                      Routine creation, edits, manual runs, and deletes are approval-gated. This page currently lists jobs and opens a disabled draft flow until protected mutations are enabled.
+                      Disabled draft creation is enabled on this live route. Manual runs, deletes, and enabling schedules stay separately gated.
                     </div>
                   </div>
                 </ScrollView>
@@ -757,11 +801,66 @@ function HomeRoutinesDashboard() {
           <div class="fixed inset-0 z-[1000] flex items-center justify-center bg-v2-background-bg-deep/60 p-4 backdrop-blur-sm" onPointerDown={() => setDraftOpen(false)}>
             <div class="w-[min(480px,calc(100vw-2rem))] rounded-[12px] border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-floating)]" onPointerDown={(event) => event.stopPropagation()}>
               <div class="text-[14px] text-v2-text-text-base [font-weight:600]">Schedule new routine</div>
-              <div class="mt-2 text-[13px] leading-5 text-v2-text-text-muted">
-                Draft creation is held on the live public route. Enable the protected routines mutation flag after GitHub/Cloudflare Access is verified, then this modal can write disabled draft routines.
-              </div>
-              <div class="mt-4 flex justify-end">
+              <Show
+                when={mutationsEnabled()}
+                fallback={
+                  <div class="mt-2 text-[13px] leading-5 text-v2-text-text-muted">
+                    Disabled draft creation is off on this server. Set <code>OPENCODE_ROUTINES_MUTATIONS=1</code> to allow writing disabled routine drafts.
+                  </div>
+                }
+              >
+                <div class="mt-3 grid gap-3">
+                  <label class="grid gap-1 text-[12px] text-v2-text-text-muted">
+                    Name
+                    <input
+                      class="h-9 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-layer-01 px-3 text-[13px] text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+                      value={draftName()}
+                      onInput={(event) => setDraftName(event.currentTarget.value)}
+                      placeholder="Daily repo health check"
+                    />
+                  </label>
+                  <label class="grid gap-1 text-[12px] text-v2-text-text-muted">
+                    Schedule
+                    <input
+                      class="h-9 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-layer-01 px-3 text-[13px] text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+                      value={draftSchedule()}
+                      onInput={(event) => setDraftSchedule(event.currentTarget.value)}
+                      placeholder="daily 09:00"
+                    />
+                  </label>
+                  <label class="grid gap-1 text-[12px] text-v2-text-text-muted">
+                    Description
+                    <textarea
+                      class="min-h-16 resize-y rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-layer-01 px-3 py-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+                      value={draftDescription()}
+                      onInput={(event) => setDraftDescription(event.currentTarget.value)}
+                      placeholder="What this routine should watch or prepare."
+                    />
+                  </label>
+                  <label class="grid gap-1 text-[12px] text-v2-text-text-muted">
+                    Command
+                    <textarea
+                      class="min-h-16 resize-y rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-layer-01 px-3 py-2 font-mono text-[12px] text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+                      value={draftCommand()}
+                      onInput={(event) => setDraftCommand(event.currentTarget.value)}
+                      placeholder="curl -fsS https://code.hustletogether.com/__health"
+                    />
+                  </label>
+                  <div class="rounded-[8px] bg-v2-background-bg-layer-01 p-3 text-[12px] leading-5 text-v2-text-text-muted">
+                    New routines are saved disabled. Enabling schedules and manual runs remain separate controls.
+                  </div>
+                </div>
+              </Show>
+              <Show when={draftError()}>
+                {(error) => <div class="mt-3 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-layer-01 p-3 text-[12px] text-v2-state-fg-danger">{error()}</div>}
+              </Show>
+              <div class="mt-4 flex justify-end gap-2">
                 <ButtonV2 variant="neutral" size="normal" onClick={() => setDraftOpen(false)}>Close</ButtonV2>
+                <Show when={mutationsEnabled()}>
+                  <ButtonV2 variant="contrast" size="normal" disabled={draftSaving() || !draftName().trim()} onClick={submitDraftRoutine}>
+                    {draftSaving() ? "Saving" : "Create draft"}
+                  </ButtonV2>
+                </Show>
               </div>
             </div>
           </div>

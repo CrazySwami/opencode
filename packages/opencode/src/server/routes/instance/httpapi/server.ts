@@ -120,7 +120,7 @@ import { fenceLayer } from "./middleware/fence"
 import { schemaErrorLayer } from "./middleware/schema-error"
 import { captureBrowserScreenshot, runBrowserAction, sessionPaths, type BrowserActionInput } from "@/tool/browser"
 import { collectResourceStatus } from "@/tool/resource-status"
-import { routineLogs, routinesAction, routinesStatus } from "@/tool/routines"
+import { createRoutineDraft, routineLogs, routinesAction, routinesStatus } from "@/tool/routines"
 import { workspaceTabsAction, workspaceTabsStatus } from "@/tool/workspace-tabs"
 
 export const context = Context.makeUnsafe<unknown>(new Map())
@@ -648,6 +648,21 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
 
     yield* router.add("GET", "/experimental/routines/jobs", () =>
       Effect.promise(async () => HttpServerResponse.jsonUnsafe(await routinesAction({ action: "list" }))),
+    )
+
+    yield* router.add("POST", "/experimental/routines/jobs", (request) =>
+      Effect.gen(function* () {
+        const raw = yield* Effect.orDie(request.text)
+        let body: { name?: string; description?: string; schedule?: string; command?: string }
+        try {
+          body = JSON.parse(raw || "{}") as { name?: string; description?: string; schedule?: string; command?: string }
+        } catch {
+          return HttpServerResponse.text("Invalid JSON body", { status: 400 })
+        }
+        const result = yield* Effect.promise(() => createRoutineDraft(body))
+        const error = result.ok ? undefined : (result as { error?: string }).error
+        return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : error?.includes("not enabled") ? 403 : 400 })
+      }),
     )
 
     yield* router.add("GET", "/experimental/routines/jobs/:id/logs", (request) =>

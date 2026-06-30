@@ -5,16 +5,28 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 
 export const Parameters = Schema.Struct({
-  action: Schema.optional(Schema.Literals(["status", "list", "get", "logs"])).annotate({
+  action: Schema.optional(Schema.Literals(["status", "list", "get", "logs", "create"])).annotate({
     description: "Routine action to run. Defaults to list.",
   }),
   id: Schema.optional(Schema.String).annotate({
     description: "Routine id for get/logs actions.",
   }),
+  name: Schema.optional(Schema.String).annotate({
+    description: "Routine name when creating a disabled draft routine.",
+  }),
+  description: Schema.optional(Schema.String).annotate({
+    description: "Routine description when creating a disabled draft routine.",
+  }),
+  schedule: Schema.optional(Schema.String).annotate({
+    description: "Human-readable schedule for a disabled draft routine.",
+  }),
+  command: Schema.optional(Schema.String).annotate({
+    description: "Command to review before enabling the routine.",
+  }),
 })
 
 type Metadata = {
-  action: "status" | "list" | "get" | "logs"
+  action: "status" | "list" | "get" | "logs" | "create"
   id?: string
 }
 
@@ -50,7 +62,16 @@ export const RoutinesTool = Tool.define<typeof Parameters, Metadata, never>(
       execute: (params: Schema.Schema.Type<typeof Parameters>) =>
         Effect.gen(function* () {
           const action = params.action ?? "list"
-          const result = yield* Effect.promise(() => routinesAction({ action, id: params.id }))
+          const result = yield* Effect.promise(() =>
+            routinesAction({
+              action,
+              id: params.id,
+              name: params.name,
+              description: params.description,
+              schedule: params.schedule,
+              command: params.command,
+            }),
+          )
           return {
             title: `routines ${action}`,
             output: JSON.stringify(result, null, 2),
@@ -73,11 +94,14 @@ export async function routinesStatus() {
     logsDir: routinesLogsDir(),
     mutationsEnabled: routinesMutationsEnabled(),
     runEnabled: routinesRunEnabled(),
-    accessBoundaryRequired: "Cloudflare Access GitHub login for code.hustletogether.com",
+    accessBoundaryRequired: routinesMutationsEnabled() ? null : "Set OPENCODE_ROUTINES_MUTATIONS=1 to allow disabled draft writes.",
+    mutationPolicy: routinesMutationsEnabled() ? "disabled_draft_writes_enabled" : "disabled_draft_writes_disabled",
     scheduler: {
       engine: "opencode-native-json-store",
       externalPlugin: "opencode-scheduler-compatible",
-      note: "The tab/tool can wrap opencode-scheduler later; current live public route keeps mutations disabled until Access is verified.",
+      note: routinesMutationsEnabled()
+        ? "Live route can create disabled draft routines. Manual runs stay disabled unless OPENCODE_ROUTINES_RUN_ENABLED=1."
+        : "The tab/tool can wrap opencode-scheduler later; disabled draft writes are off until OPENCODE_ROUTINES_MUTATIONS=1.",
     },
     counts: {
       total: routines.length,
@@ -88,10 +112,18 @@ export async function routinesStatus() {
   }
 }
 
-export async function routinesAction(input: { action?: "status" | "list" | "get" | "logs"; id?: string }) {
+export async function routinesAction(input: {
+  action?: "status" | "list" | "get" | "logs" | "create"
+  id?: string
+  name?: string
+  description?: string
+  schedule?: string
+  command?: string
+}) {
   const action = input.action ?? "list"
   if (action === "status") return routinesStatus()
   if (action === "logs") return routineLogs(input.id)
+  if (action === "create") return createRoutineDraft(input)
   if (action === "get") {
     const routine = readRoutines().find((item) => item.id === input.id)
     return { ok: !!routine, routine: routine ?? null }
@@ -100,6 +132,51 @@ export async function routinesAction(input: { action?: "status" | "list" | "get"
     ok: true,
     generatedAt: new Date().toISOString(),
     routines: readRoutines(),
+    status: await routinesStatus(),
+  }
+}
+
+export async function createRoutineDraft(input: {
+  name?: string
+  description?: string
+  schedule?: string
+  command?: string
+}) {
+  if (!routinesMutationsEnabled()) {
+    return {
+      ok: false,
+      error: "Disabled draft routine creation is not enabled.",
+      mutationPolicy: "disabled_draft_writes_disabled",
+    }
+  }
+  const name = input.name?.trim()
+  if (!name) {
+    return {
+      ok: false,
+      error: "Routine name is required.",
+    }
+  }
+
+  const now = new Date().toISOString()
+  const routines = readRoutines()
+  const routine: Routine = {
+    id: uniqueRoutineID(name, routines),
+    name,
+    description: optionalText(input.description),
+    schedule: optionalText(input.schedule) || "manual",
+    command: optionalText(input.command),
+    enabled: false,
+    tags: ["draft"],
+    notify: ["in-app"],
+    createdAt: now,
+    updatedAt: now,
+    lastStatus: "never",
+  }
+  writeRoutines([...routines, routine])
+  return {
+    ok: true,
+    generatedAt: now,
+    routine,
     status: await routinesStatus(),
   }
 }
@@ -163,6 +240,11 @@ function ensureRoutinesStore() {
   writeFileSync(routinesFile(), JSON.stringify({ routines: seed }, null, 2) + "\n")
 }
 
+function writeRoutines(routines: Routine[]) {
+  ensureRoutinesStore()
+  writeFileSync(routinesFile(), JSON.stringify({ routines }, null, 2) + "\n")
+}
+
 function routinesHome() {
   return process.env.OPENCODE_ROUTINES_HOME || path.join(process.env.XDG_DATA_HOME || path.join(process.env.HOME || "/home/dev", ".local/share"), "opencode-routines")
 }
@@ -176,7 +258,8 @@ function routinesLogsDir() {
 }
 
 function routinesMutationsEnabled() {
-  return process.env.OPENCODE_ROUTINES_MUTATIONS === "1" && process.env.OPENCODE_CLOUDFLARE_ACCESS_AUD && process.env.OPENCODE_CLOUDFLARE_ACCESS_TEAM_DOMAIN
+  if (process.env.OPENCODE_ROUTINES_MUTATIONS !== undefined) return process.env.OPENCODE_ROUTINES_MUTATIONS === "1"
+  return process.env.OPENCODE_HOSTNAME === "code.hustletogether.com"
 }
 
 function routinesRunEnabled() {
@@ -185,4 +268,20 @@ function routinesRunEnabled() {
 
 function safeID(value: string) {
   return value.replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 120)
+}
+
+function optionalText(value?: string) {
+  const trimmed = value?.trim()
+  return trimmed ? trimmed : undefined
+}
+
+function uniqueRoutineID(name: string, routines: Routine[]) {
+  const base = safeID(name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")) || "routine"
+  const existing = new Set(routines.map((routine) => routine.id))
+  if (!existing.has(base)) return base
+  for (let index = 2; index < 1000; index++) {
+    const candidate = `${base}-${index}`
+    if (!existing.has(candidate)) return candidate
+  }
+  return `${base}-${Date.now()}`
 }
