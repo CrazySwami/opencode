@@ -24,6 +24,7 @@ Keep this runbook in Alfonso OS and in the server OpenCode repo because the live
 - Main database: `/home/dev/.local/share/opencode/opencode.db`
 - Proxy script: `/usr/local/sbin/opencode-public-proxy.mjs`
 - Dev-root normalizer: `/usr/local/sbin/opencode-normalize-dev-root.py`
+- First-visit browser bootstrap: `https://code.hustletogether.com/` sets the `opencode_devroot_reset` cookie with a `302` redirect when missing.
 - Manual browser reset: `https://code.hustletogether.com/__reset`
 - Proxy health: `https://code.hustletogether.com/__health`
 
@@ -74,7 +75,7 @@ The public proxy now protects the server-backed default workspace in six places.
 
 4. **Browser reset/bootstrap**
 
-   First uncookied visits to `/` get a same-origin reset/bootstrap page, and `/__reset` can be opened manually when one browser or device still has stale local OpenCode state.
+   First uncookied visits to `/` get a same-origin bootstrap redirect that sets the reset-version cookie without clearing browser storage. `/__reset` can be opened manually when one browser or device still has stale local OpenCode state.
 
    The reset page clears:
 
@@ -84,7 +85,7 @@ The public proxy now protects the server-backed default workspace in six places.
    - IndexedDB
    - registered service workers
 
-   It also sends `Clear-Site-Data: "cache", "storage"` and writes the current reset-version cookie so each browser can converge on the same Dev Folder state.
+   Manual `/__reset` sends `Clear-Site-Data: "cache", "storage"` and writes the current reset-version cookie so a browser can deliberately converge on the same Dev Folder state. The normal first-visit path must not clear storage because that wipes workspace tab state, Preview/File Browser state, and composer follow-up queues.
 
 5. **Session active-project normalization**
 
