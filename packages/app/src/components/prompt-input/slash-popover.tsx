@@ -82,6 +82,9 @@ export const ToolMentionIcon: Component<{ source: ToolPartSource; icon?: string 
             <Match when={props.source === "account"}>
               <Icon name="providers" size="small" />
             </Match>
+            <Match when={props.source === "routines"}>
+              <Icon name="checklist" size="small" />
+            </Match>
             <Match when={props.source === "mcp"}>
               <span class="text-[8px] leading-none font-semibold tracking-[0]">MCP</span>
             </Match>

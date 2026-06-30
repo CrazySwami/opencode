@@ -44,6 +44,7 @@ export type ToolPartSource =
   | "artifact"
   | "file_browser"
   | "account"
+  | "routines"
   | "mcp"
   | "tool"
 

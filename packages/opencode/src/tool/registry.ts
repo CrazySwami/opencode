@@ -24,6 +24,7 @@ import { ResourceStatusTool } from "./resource-status"
 import { ArtifactTool } from "./artifact"
 import { FileBrowserTool } from "./file-browser"
 import { AccountStatusTool } from "./account-status"
+import { RoutinesTool } from "./routines"
 import * as Tool from "./tool"
 import { Config } from "@/config/config"
 import { type ToolContext as PluginToolContext, type ToolDefinition } from "@opencode-ai/plugin"
@@ -121,6 +122,7 @@ export const layer = Layer.effect(
     const artifact = yield* ArtifactTool
     const fileBrowser = yield* FileBrowserTool
     const accountStatus = yield* AccountStatusTool
+    const routines = yield* RoutinesTool
     const agent = yield* Agent.Service
 
     const state = yield* InstanceState.make<State>(
@@ -232,6 +234,7 @@ export const layer = Layer.effect(
           artifact: Tool.init(artifact),
           fileBrowser: Tool.init(fileBrowser),
           accountStatus: Tool.init(accountStatus),
+          routines: Tool.init(routines),
           patch: Tool.init(patchtool),
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
@@ -271,6 +274,7 @@ export const layer = Layer.effect(
             tool.artifact,
             tool.fileBrowser,
             tool.accountStatus,
+            tool.routines,
             tool.patch,
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),

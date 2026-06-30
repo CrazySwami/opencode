@@ -120,6 +120,7 @@ import { fenceLayer } from "./middleware/fence"
 import { schemaErrorLayer } from "./middleware/schema-error"
 import { captureBrowserScreenshot, runBrowserAction, sessionPaths, type BrowserActionInput } from "@/tool/browser"
 import { collectResourceStatus } from "@/tool/resource-status"
+import { routineLogs, routinesAction, routinesStatus } from "@/tool/routines"
 
 export const context = Context.makeUnsafe<unknown>(new Map())
 
@@ -587,9 +588,11 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
             "artifact",
             "file_browser",
             "account_status",
+            "routines",
           ],
           openDesign: await openDesignStatus(),
           macView: await macViewStatus(),
+          routines: await routinesStatus(),
           resources: {
             route: "/experimental/resources/status",
             macHost: process.env.OPENCODE_MAC_RESOURCE_HOST || "alfonso-mac",
@@ -613,6 +616,21 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
         const target = url.searchParams.get("target")
         const safeTarget = target === "server" || target === "mac" || target === "all" ? target : "all"
         return HttpServerResponse.jsonUnsafe(await collectResourceStatus(safeTarget))
+      }),
+    )
+
+    yield* router.add("GET", "/experimental/routines/status", () =>
+      Effect.promise(async () => HttpServerResponse.jsonUnsafe(await routinesStatus())),
+    )
+
+    yield* router.add("GET", "/experimental/routines/jobs", () =>
+      Effect.promise(async () => HttpServerResponse.jsonUnsafe(await routinesAction({ action: "list" }))),
+    )
+
+    yield* router.add("GET", "/experimental/routines/jobs/:id/logs", (request) =>
+      Effect.promise(async () => {
+        const id = decodeParam(request.url, /^\/experimental\/routines\/jobs\/([^/]+)\/logs$/)
+        return HttpServerResponse.jsonUnsafe(await routineLogs(id))
       }),
     )
 

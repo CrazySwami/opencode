@@ -224,6 +224,7 @@ const classifyToolMention = (id: string): ToolPartSource => {
   if (normalized === "artifact" || normalized.startsWith("artifact_")) return "artifact"
   if (normalized === "file_browser" || normalized.startsWith("file_browser_")) return "file_browser"
   if (normalized === "account_status" || normalized.startsWith("account_")) return "account"
+  if (normalized === "routines" || normalized === "routine_status" || normalized.startsWith("routine_")) return "routines"
   if (normalized.startsWith("mcp") || normalized.includes("mcp") || !BUILT_IN_TOOL_IDS.has(normalized)) return "mcp"
   return "tool"
 }
@@ -717,10 +718,11 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
             if (item.source === "mac_view") return 4
             if (item.source === "resource") return 5
             if (item.source === "artifact") return 6
-            if (item.source === "file_browser") return 7
-            if (item.source === "account") return 8
-            if (item.source === "mcp") return 9
-            return 10
+              if (item.source === "file_browser") return 7
+              if (item.source === "account") return 8
+              if (item.source === "routines") return 9
+              if (item.source === "mcp") return 10
+              return 11
           }
           return rank(a) - rank(b) || a.name.localeCompare(b.name)
         })

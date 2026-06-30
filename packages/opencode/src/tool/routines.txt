@@ -1,0 +1,1 @@
+Inspect OpenCode routines and routine run logs. Use this when the user asks about scheduled work, cron-like jobs, recurring automations, routine status, notification outcomes, or routine logs. Mutating routine actions are intentionally blocked until the public OpenCode route is protected by the approved GitHub/Cloudflare Access boundary.

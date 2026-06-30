@@ -45,6 +45,7 @@ const PANEL_PREVIEW_TAB = "panel://preview"
 const PANEL_OPEN_DESIGN_TAB = "panel://open-design"
 const PANEL_MAC_VIEW_TAB = "panel://mac-view"
 const PANEL_ACCOUNTS_TAB = "panel://accounts"
+const PANEL_ROUTINES_TAB = "panel://routines"
 const PANEL_ENVIRONMENT_TAB = "panel://environment"
 const PANEL_RESOURCES_TAB = "panel://resources"
 const PANEL_ARTIFACTS_TAB = "panel://artifacts"
@@ -60,6 +61,7 @@ const PANEL_TABS = new Set([
   PANEL_OPEN_DESIGN_TAB,
   PANEL_MAC_VIEW_TAB,
   PANEL_ACCOUNTS_TAB,
+  PANEL_ROUTINES_TAB,
   PANEL_ENVIRONMENT_TAB,
   PANEL_RESOURCES_TAB,
   PANEL_ARTIFACTS_TAB,
@@ -125,6 +127,7 @@ function panelTabLabel(tab: string) {
   if (tab === PANEL_OPEN_DESIGN_TAB) return "Open Design"
   if (tab === PANEL_MAC_VIEW_TAB) return "Mac View"
   if (tab === PANEL_ACCOUNTS_TAB) return "Accounts"
+  if (tab === PANEL_ROUTINES_TAB) return "Routines"
   if (tab === PANEL_ENVIRONMENT_TAB) return "Environment"
   if (tab === PANEL_RESOURCES_TAB) return "Resources"
   if (tab === PANEL_ARTIFACTS_TAB) return "Artifacts"
@@ -144,6 +147,7 @@ function panelTabIcon(tab: string) {
   if (tab === PANEL_OPEN_DESIGN_TAB) return <span class="text-[10px] leading-none font-semibold tracking-[0]">OD</span>
   if (tab === PANEL_MAC_VIEW_TAB) return <Icon name="eye" size="small" />
   if (tab === PANEL_ACCOUNTS_TAB) return <Icon name="providers" size="small" />
+  if (tab === PANEL_ROUTINES_TAB) return <Icon name="checklist" size="small" />
   if (tab === PANEL_ENVIRONMENT_TAB) return <span class="text-[9px] leading-none font-semibold tracking-[0]">ENV</span>
   if (tab === PANEL_RESOURCES_TAB) return <span class="text-[9px] leading-none font-semibold tracking-[0]">CPU</span>
   if (tab === PANEL_ARTIFACTS_TAB) return <Icon name="photo" size="small" />
@@ -1413,6 +1417,152 @@ function AccountsTabContent() {
   )
 }
 
+function RoutinesTabContent() {
+  const jobs = createPolledJson<any>(() => "/experimental/routines/jobs", 10000)
+  const [selectedID, setSelectedID] = createSignal<string | undefined>()
+  const routines = () => jobs.data()?.routines ?? []
+  const selected = createMemo(() => routines().find((routine: any) => routine.id === selectedID()) ?? routines()[0])
+  const logs = createPolledJson<any>(
+    () => selected()?.id ? `/experimental/routines/jobs/${encodeURIComponent(selected().id)}/logs` : undefined,
+    10000,
+  )
+
+  createEffect(() => {
+    const first = routines()[0]?.id
+    if (!selectedID() && first) setSelectedID(first)
+  })
+
+  return (
+    <TabChrome
+      title="Routines"
+      iconTab={PANEL_ROUTINES_TAB}
+      onRefresh={() => {
+        void jobs.refresh()
+        void logs.refresh()
+      }}
+    >
+      <div class="flex min-h-0 flex-1 flex-col gap-3">
+        <Show when={jobs.error()}>
+          {(error) => (
+            <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">
+              {error()}
+            </div>
+          )}
+        </Show>
+
+        <div class="grid gap-3 xl:grid-cols-3">
+          <EnvironmentSummaryCard
+            label="Routines"
+            value={String(jobs.data()?.status?.counts?.total ?? routines().length ?? 0)}
+            detail="Configured recurring jobs"
+            tone="ready"
+          />
+          <EnvironmentSummaryCard
+            label="Enabled"
+            value={String(jobs.data()?.status?.counts?.enabled ?? 0)}
+            detail="Active schedules"
+            tone={(jobs.data()?.status?.counts?.enabled ?? 0) > 0 ? "ready" : "warn"}
+          />
+          <EnvironmentSummaryCard
+            label="Editing"
+            value={jobs.data()?.status?.mutationsEnabled ? "enabled" : "held"}
+            detail={jobs.data()?.status?.mutationsEnabled ? "Protected write route is enabled." : "Create, edit, run, and delete stay held until Cloudflare Access protects code.hustletogether.com."}
+            tone={jobs.data()?.status?.mutationsEnabled ? "ready" : "warn"}
+          />
+        </div>
+
+        <div class="grid min-h-0 flex-1 gap-3 xl:grid-cols-[minmax(220px,0.8fr)_minmax(0,1.2fr)]">
+          <div class="min-h-0 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger">
+            <For each={routines()}>
+              {(routine: any) => (
+                <button
+                  type="button"
+                  class="flex w-full flex-col gap-1 border-b border-border-weaker-base px-3 py-3 text-left last:border-b-0 hover:bg-surface-base-hover"
+                  classList={{ "bg-background-base": selected()?.id === routine.id }}
+                  onClick={() => setSelectedID(routine.id)}
+                >
+                  <div class="flex items-center justify-between gap-3">
+                    <span class="min-w-0 truncate text-13-regular text-text-strong">{routine.name}</span>
+                    <span class="shrink-0 rounded bg-background-base px-2 py-1 text-11-regular text-text-weak">
+                      {routine.enabled ? "enabled" : "off"}
+                    </span>
+                  </div>
+                  <div class="truncate text-12-regular text-text-weak">{routine.schedule ?? "No schedule"}</div>
+                </button>
+              )}
+            </For>
+            <Show when={routines().length === 0}>
+              <div class="p-4 text-13-regular text-text-weak">No routines configured yet.</div>
+            </Show>
+          </div>
+
+          <div class="min-h-0 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger p-3">
+            <Show
+              when={selected()}
+              fallback={<div class="text-13-regular text-text-weak">Select a routine to view details.</div>}
+            >
+              {(routine) => (
+                <div class="flex flex-col gap-3">
+                  <div class="flex items-start justify-between gap-3">
+                    <div class="min-w-0">
+                      <div class="truncate text-14-medium text-text-strong">{routine().name}</div>
+                      <div class="mt-1 text-12-regular text-text-weak">{routine().description ?? "No description"}</div>
+                    </div>
+                    <EnvironmentPill tone={routine().enabled ? "ready" : "warn"} label={routine().enabled ? "enabled" : "off"} />
+                  </div>
+
+                  <div class="grid gap-2 sm:grid-cols-2">
+                    <EnvironmentInfoRow label="Schedule" value={routine().schedule} />
+                    <EnvironmentInfoRow label="Last status" value={routine().lastStatus ?? "never"} />
+                    <EnvironmentInfoRow label="Last run" value={routine().lastRunAt} />
+                    <EnvironmentInfoRow label="Next run" value={routine().nextRunAt} />
+                    <EnvironmentInfoRow label="Notify" value={(routine().notify ?? []).join(", ") || "in-app"} />
+                    <EnvironmentInfoRow label="Tags" value={(routine().tags ?? []).join(", ") || "none"} />
+                  </div>
+
+                  <Show when={routine().command}>
+                    <div class="rounded bg-background-base p-2">
+                      <div class="mb-1 text-11-regular text-text-weak">Command</div>
+                      <code class="whitespace-pre-wrap break-words text-12-regular text-text-strong">{routine().command}</code>
+                    </div>
+                  </Show>
+
+                  <div class="rounded border border-border-weaker-base bg-background-base p-2 text-12-regular text-text-weak">
+                    Routine editing and manual run controls are intentionally held while `code.hustletogether.com` is public. Enable Cloudflare Access GitHub login first, then enable the server-side routines mutation flag.
+                  </div>
+
+                  <div>
+                    <div class="mb-2 text-13-medium text-text-strong">Logs</div>
+                    <div class="flex max-h-72 flex-col gap-1 overflow-auto rounded bg-background-base p-2">
+                      <For each={logs.data()?.logs ?? []}>
+                        {(log: any) => (
+                          <div class="grid gap-1 border-b border-border-weaker-base pb-2 last:border-b-0 text-12-regular">
+                            <div class="flex items-center justify-between gap-2">
+                              <span class="text-text-weak">{formatShortDate(log.time)}</span>
+                              <EnvironmentPill tone={log.level === "error" ? "blocked" : log.level === "warn" ? "warn" : "ready"} label={log.level} />
+                            </div>
+                            <div class="text-text-strong">{log.message}</div>
+                          </div>
+                        )}
+                      </For>
+                      <Show when={(logs.data()?.logs ?? []).length === 0}>
+                        <div class="text-12-regular text-text-weak">No logs for this routine yet.</div>
+                      </Show>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </Show>
+          </div>
+        </div>
+
+        <StatusRow label="Store" value={jobs.data()?.status?.jobsFile} />
+        <StatusRow label="Last checked" value={jobs.data()?.generatedAt} />
+      </div>
+    </TabChrome>
+  )
+}
+
 function EnvironmentTabContent() {
   const environment = createPolledJson<any>(() => "/experimental/workspace-suite/environments", 15000)
   const data = () => environment.data()
@@ -2657,6 +2807,7 @@ export function SessionSidePanel(props: {
                           <PanelMenuButton tab={PANEL_OPEN_DESIGN_TAB} onSelect={launchOpenDesign} />
                           <PanelMenuButton tab={PANEL_MAC_VIEW_TAB} onSelect={() => openPanelTab(PANEL_MAC_VIEW_TAB)} />
                           <PanelMenuButton tab={PANEL_ACCOUNTS_TAB} onSelect={() => openPanelTab(PANEL_ACCOUNTS_TAB)} />
+                          <PanelMenuButton tab={PANEL_ROUTINES_TAB} onSelect={() => openPanelTab(PANEL_ROUTINES_TAB)} />
                           <PanelMenuButton tab={PANEL_ENVIRONMENT_TAB} onSelect={() => openPanelTab(PANEL_ENVIRONMENT_TAB)} />
                           <PanelMenuButton tab={PANEL_RESOURCES_TAB} onSelect={() => openPanelTab(PANEL_RESOURCES_TAB)} />
                           <PanelMenuButton tab={PANEL_ARTIFACTS_TAB} onSelect={() => openPanelTab(PANEL_ARTIFACTS_TAB)} />
@@ -2733,6 +2884,12 @@ export function SessionSidePanel(props: {
                     <Tabs.Content value={PANEL_ACCOUNTS_TAB} class="flex flex-col h-full overflow-hidden contain-strict">
                       <Show when={activePanelTab() === PANEL_ACCOUNTS_TAB}>
                         <AccountsTabContent />
+                      </Show>
+                    </Tabs.Content>
+
+                    <Tabs.Content value={PANEL_ROUTINES_TAB} class="flex flex-col h-full overflow-hidden contain-strict">
+                      <Show when={activePanelTab() === PANEL_ROUTINES_TAB}>
+                        <RoutinesTabContent />
                       </Show>
                     </Tabs.Content>
 
