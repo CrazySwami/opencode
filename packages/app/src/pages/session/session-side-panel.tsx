@@ -1166,7 +1166,8 @@ function MacViewTabContent() {
   const [width, setWidth] = createSignal(1280)
   const [quality, setQuality] = createSignal(8)
   const [bitrate, setBitrate] = createSignal(6000)
-  const [transport, setTransport] = createSignal<"video" | "mjpeg">("video")
+  const [transport, setTransport] = createSignal<"webrtc" | "video" | "mjpeg">("video")
+  const [transportTouched, setTransportTouched] = createSignal(false)
   const streamReconnectMs = 30_000
 
   const reconnect = setInterval(() => setStreamKey(Date.now()), streamReconnectMs)
@@ -1193,20 +1194,23 @@ function MacViewTabContent() {
     setBitrate(next)
   })
   createEffect(() => {
+    if (transportTouched()) return
     const next = status.data()?.transport
-    if (next === "video" || next === "mjpeg") setTransport(next)
+    if (next === "webrtc" || next === "video" || next === "mjpeg") setTransport(next)
   })
 
   const transportURL = createMemo(() =>
-    transport() === "video"
-      ? `/experimental/mac-view/video?fps=${fps()}&width=${width()}&bitrate=${bitrate()}&t=${streamKey()}`
-      : `/experimental/mac-view/stream?fps=${fps()}&width=${width()}&quality=${quality()}&t=${streamKey()}`,
+    transport() === "webrtc"
+      ? `${status.data()?.webrtcURL ?? "/experimental/mac-view/webrtc/mac-view/"}?fps=${fps()}&width=${width()}&bitrate=${bitrate()}&t=${streamKey()}`
+      : transport() === "video"
+        ? `/experimental/mac-view/video?fps=${fps()}&width=${width()}&bitrate=${bitrate()}&t=${streamKey()}`
+        : `/experimental/mac-view/stream?fps=${fps()}&width=${width()}&quality=${quality()}&t=${streamKey()}`,
   )
   const nativeCaptureLabel = createMemo(() =>
     status.data()?.nativeCapture?.available ? "SCK ready" : "SCK unavailable",
   )
   const webRTCLabel = createMemo(() =>
-    status.data()?.webrtc?.status === "enabled" ? "WebRTC" : "WebRTC held",
+      status.data()?.webrtc?.status === "enabled" ? "WebRTC live" : status.data()?.webrtc?.status === "ready" ? "WebRTC ready" : "WebRTC held",
   )
 
   return (
@@ -1272,11 +1276,16 @@ function MacViewTabContent() {
             <select
               class="h-7 rounded-md border border-border-weaker-base bg-background-base px-2 text-11-regular text-text-strong"
               value={transport()}
-              onChange={(event) => { setTransport(event.currentTarget.value === "mjpeg" ? "mjpeg" : "video"); setStreamKey(Date.now()) }}
+              onChange={(event) => {
+                const next = event.currentTarget.value
+                setTransportTouched(true)
+                setTransport(next === "webrtc" ? "webrtc" : next === "mjpeg" ? "mjpeg" : "video")
+                setStreamKey(Date.now())
+              }}
               aria-label="Mac View transport"
             >
               <For each={status.data()?.transportOptions ?? ["video", "mjpeg"]}>
-                {(option: string) => <option value={option}>{option === "video" ? "Video" : "MJPEG"}</option>}
+                {(option: string) => <option value={option}>{option === "webrtc" ? "WebRTC" : option === "video" ? "Video" : "MJPEG"}</option>}
               </For>
             </select>
             <select
@@ -1304,26 +1313,41 @@ function MacViewTabContent() {
         }
       >
         <div class="min-h-0 flex-1 overflow-auto bg-background-base">
-          <Show
-            when={transport() === "video"}
-            fallback={
+          <Switch>
+            <Match when={transport() === "webrtc"}>
+              <iframe
+                src={transportURL()}
+                title="Mac View WebRTC"
+                class="block h-full min-h-[520px] w-full border-0 bg-black"
+                allow="autoplay; fullscreen; clipboard-read; clipboard-write"
+                onLoad={() => void status.refresh()}
+              />
+            </Match>
+            <Match when={transport() === "video"}>
+              <video
+                src={transportURL()}
+                autoplay
+                muted
+                playsinline
+                class="block h-auto w-full bg-black"
+                onError={() => {
+                  if (transport() !== "video") return
+                  setTransportTouched(true)
+                  setTransport("mjpeg")
+                  setStreamKey(Date.now())
+                  void status.refresh()
+                }}
+              />
+            </Match>
+            <Match when={transport() === "mjpeg"}>
               <img
                 src={transportURL()}
                 alt="Live Mac screen"
                 class="block h-auto w-full select-none"
                 onError={() => void status.refresh()}
               />
-            }
-          >
-            <video
-              src={transportURL()}
-              autoplay
-              muted
-              playsinline
-              class="block h-auto w-full bg-black"
-              onError={() => { setTransport("mjpeg"); setStreamKey(Date.now()); void status.refresh() }}
-            />
-          </Show>
+            </Match>
+          </Switch>
         </div>
       </Show>
     </TabChrome>

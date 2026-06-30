@@ -1,6 +1,6 @@
 import { Config as EffectConfig, Context, Effect, Layer, Stream } from "effect"
 import { HttpApiBuilder, OpenApi } from "effect/unstable/httpapi"
-import { HttpClient, HttpMiddleware, HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http"
+import { HttpClient, HttpMiddleware, HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import * as Socket from "effect/unstable/socket/Socket"
 import { execFile, spawn } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
@@ -654,6 +654,18 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
     yield* router.add("GET", "/experimental/mac-view/video", (request) =>
       Effect.promise(async () => macViewVideoResponse(request.url)),
     )
+
+    const macViewWebRTCHandler = (request: HttpServerRequest.HttpServerRequest) =>
+      Effect.gen(function* () {
+        const raw = request.method === "GET" || request.method === "HEAD" ? undefined : yield* Effect.orDie(request.text)
+        return yield* Effect.promise(async () => macViewWebRTCResponse(request.url, request.method, request.headers, raw))
+      })
+
+    yield* router.add("GET", "/experimental/mac-view/webrtc/*", macViewWebRTCHandler)
+    yield* router.add("POST", "/experimental/mac-view/webrtc/*", macViewWebRTCHandler)
+    yield* router.add("PATCH", "/experimental/mac-view/webrtc/*", macViewWebRTCHandler)
+    yield* router.add("DELETE", "/experimental/mac-view/webrtc/*", macViewWebRTCHandler)
+    yield* router.add("OPTIONS", "/experimental/mac-view/webrtc/*", macViewWebRTCHandler)
 
     yield* router.add("GET", "/experimental/browser/:sessionID/artifacts", (request) =>
       Effect.promise(async () => {
@@ -1944,6 +1956,44 @@ async function macViewSCKStatusResponse() {
   )
 }
 
+async function macViewWebRTCResponse(requestURL: string, method: string, headers: Record<string, string>, rawBody?: string) {
+  const feedURL = macViewFeedURL()
+  if (!feedURL) return HttpServerResponse.text("Mac View is not configured", { status: 404 })
+  const url = new URL(requestURL, "http://localhost")
+  const pathPart = url.pathname.replace(/^\/experimental\/mac-view\/webrtc\/?/, "")
+  const targetURL = `${feedURL}/webrtc/${pathPart}${url.search}`
+  const proxyHeaders: Record<string, string> = {}
+  for (const [key, value] of Object.entries(headers)) {
+    const lower = key.toLowerCase()
+    if (!value || ["host", "connection", "content-length"].includes(lower)) continue
+    proxyHeaders[key] = value
+  }
+  const response = await fetch(targetURL, {
+    method,
+    headers: proxyHeaders,
+    body: method === "GET" || method === "HEAD" ? undefined : rawBody,
+  }).catch(() => undefined)
+  if (!response) return HttpServerResponse.text("Mac View WebRTC proxy unavailable", { status: 502 })
+  const bytes = new Uint8Array(await response.arrayBuffer())
+  let output = HttpServerResponse.setHeader(
+    HttpServerResponse.uint8Array(bytes, {
+      status: response.status,
+      contentType: response.headers.get("content-type") ?? "application/octet-stream",
+    }),
+    "cache-control",
+    "no-store",
+  )
+  const location = response.headers.get("location")
+  if (location) {
+    output = HttpServerResponse.setHeader(
+      output,
+      "location",
+      location.replace(/^\/webrtc\//, "/experimental/mac-view/webrtc/"),
+    )
+  }
+  return output
+}
+
 
 async function macViewStatus() {
   const feedURL = macViewFeedURL()
@@ -1974,6 +2024,10 @@ async function macViewStatus() {
     health,
     snapshotURL: "/experimental/mac-view/snapshot",
     sckStatusURL: "/experimental/mac-view/sck/status",
+    webrtcURL: "/experimental/mac-view/webrtc/mac-view/",
+    webrtcStatusURL: "/experimental/mac-view/webrtc/status",
+    webrtcStartURL: "/experimental/mac-view/webrtc/start",
+    webrtcStopURL: "/experimental/mac-view/webrtc/stop",
     streamURL: "/experimental/mac-view/stream",
     videoURL: "/experimental/mac-view/video",
   }
