@@ -602,7 +602,7 @@ function readCodexMultiAuthLoginAttempt() {
     const raw = readFileSync(file, "utf8")
     const parsed = JSON.parse(raw)
     if (!parsed || typeof parsed !== "object") return null
-    return parsed
+    return sanitizeCodexMultiAuthLoginAttempt(parsed as Record<string, unknown>)
   } catch {
     return null
   }
@@ -611,12 +611,13 @@ function readCodexMultiAuthLoginAttempt() {
 function writeCodexMultiAuthLoginAttempt(value: Record<string, unknown>) {
   const file = codexMultiAuthLoginAttemptPath()
   try {
+    const sanitized = sanitizeCodexMultiAuthLoginAttempt(value)
     mkdirSync(path.dirname(file), { recursive: true })
     writeFileSync(
       file,
       JSON.stringify(
         {
-          ...value,
+          ...sanitized,
           updatedAt: new Date().toISOString(),
         },
         null,
@@ -624,6 +625,27 @@ function writeCodexMultiAuthLoginAttempt(value: Record<string, unknown>) {
       ),
     )
   } catch {}
+}
+
+function sanitizeCodexMultiAuthLoginAttempt(value: Record<string, unknown>) {
+  const sanitized: Record<string, unknown> = { ...value }
+  const output = typeof value.output === "string" ? value.output : undefined
+  const error = typeof value.error === "string" ? value.error : undefined
+  const parsed = parseCodexAuthStart(output)
+  delete sanitized.userCode
+  if (output !== undefined) sanitized.output = redactCodexAuthOutput(output)
+  if (error !== undefined) sanitized.error = redactCodexAuthOutput(error)
+  if (value.hasUserCode || parsed.code) sanitized.hasUserCode = true
+  return sanitized
+}
+
+function redactCodexAuthOutput(value: string | undefined) {
+  if (!value) return ""
+  return cleanStatusOutput(value)
+    .replace(/(Enter code:\s*)([A-Z0-9-]+)/gi, "$1[redacted-code]")
+    .replace(/(Enter this one-time code:\s*)([A-Z0-9-]+)/gi, "$1[redacted-code]")
+    .replace(/(user[_ -]?code[:\s]+)([A-Z0-9-]+)/gi, "$1[redacted-code]")
+    .replace(/\b[A-Z0-9]{4}-[A-Z0-9]{4,6}\b/g, "[redacted-code]")
 }
 
 async function codexMultiAuthStatus() {
@@ -758,6 +780,7 @@ async function codexMultiAuthLoginStart() {
       const cleaned = cleanStatusOutput(output)
       const parsed = parseCodexAuthStart(cleaned)
       if (parsed.url && parsed.code) {
+        const redacted = redactCodexAuthOutput(cleaned)
         writeCodexMultiAuthLoginAttempt({
           ok: null,
           configured: true,
@@ -769,7 +792,7 @@ async function codexMultiAuthLoginStart() {
           authorizationURL: parsed.url,
           hasUserCode: true,
           phase: "waiting_for_device_approval",
-          output: cleaned,
+          output: redacted,
           note: "Device-code login is waiting for browser approval. The one-time code was returned by the login-start response and is not persisted in status.",
         })
         finish({
@@ -783,13 +806,14 @@ async function codexMultiAuthLoginStart() {
           authorizationURL: parsed.url,
           userCode: parsed.code,
           phase: "waiting_for_device_approval",
-          output: cleaned,
+          output: redacted,
           note: "Open the link, paste the code, approve the Codex OAuth account, then refresh Accounts. Repeat once per Codex account.",
         })
       }
     }
     startupTimer = setTimeout(() => {
       const cleaned = cleanStatusOutput(output)
+      const redacted = redactCodexAuthOutput(cleaned)
       writeCodexMultiAuthLoginAttempt({
         ok: false,
         configured: true,
@@ -798,8 +822,8 @@ async function codexMultiAuthLoginStart() {
         command: script + " login-headless",
         terminalCommand: command,
         phase: "failed_before_device_code",
-        error: cleaned || "Timed out before the login command printed a device-code URL.",
-        output: cleaned,
+        error: redacted || "Timed out before the login command printed a device-code URL.",
+        output: redacted,
       })
       finish(
         {
@@ -810,7 +834,7 @@ async function codexMultiAuthLoginStart() {
           command: script + " login-headless",
           terminalCommand: command,
           phase: "failed_before_device_code",
-          error: cleaned || "Timed out before the login command printed a device-code URL.",
+          error: redacted || "Timed out before the login command printed a device-code URL.",
           note: "The plugin login command did not print a device-code URL. Check the command output below.",
         },
         true,
@@ -850,6 +874,7 @@ async function codexMultiAuthLoginStart() {
       if (hardStop) clearTimeout(hardStop)
       const cleaned = cleanStatusOutput(output)
       const parsed = parseCodexAuthStart(cleaned)
+      const redacted = redactCodexAuthOutput(cleaned)
       const phase =
         code === 0
           ? "account_written_or_already_authorized"
@@ -866,7 +891,7 @@ async function codexMultiAuthLoginStart() {
         authorizationURL: parsed.url,
         hasUserCode: !!parsed.code,
         phase,
-        output: cleaned,
+        output: redacted,
         error: code === 0 ? undefined : `Login command exited with ${signal ?? code}`,
         note:
           phase === "failed_after_device_code"
@@ -1653,6 +1678,12 @@ function liveBrowserNoVNCLiteResponse(requestURL: string) {
   const pathParam = params.get("path") || "websockify"
   const pathValue = pathParam.startsWith("/") ? pathParam.slice(1) : pathParam
   const websocketPath = `/experimental/browser/novnc/${pathValue}`
+  const qualityLevel = boundedInteger(params.get("quality") ?? process.env.OPENCODE_BROWSER_NOVNC_QUALITY, 4, 0, 9)
+  const compressionLevel = boundedInteger(params.get("compression") ?? process.env.OPENCODE_BROWSER_NOVNC_COMPRESSION, 0, 0, 9)
+  const scaleViewport = params.get("scaleViewport") !== "false"
+  const resizeSession = params.get("resizeSession") === "true"
+  const clipViewport = params.get("clipViewport") === "true"
+  const showDotCursor = params.get("showDotCursor") !== "false"
   const html = `<!doctype html>
 <html>
   <head>
@@ -1698,14 +1729,14 @@ function liveBrowserNoVNCLiteResponse(requestURL: string) {
       });
 
       rfb.viewOnly = false;
-      rfb.scaleViewport = true;
-      rfb.resizeSession = false;
+      rfb.scaleViewport = ${JSON.stringify(scaleViewport)};
+      rfb.resizeSession = ${JSON.stringify(resizeSession)};
       rfb.focusOnClick = true;
-      rfb.showDotCursor = true;
-      rfb.clipViewport = false;
+      rfb.showDotCursor = ${JSON.stringify(showDotCursor)};
+      rfb.clipViewport = ${JSON.stringify(clipViewport)};
       rfb.dragViewport = false;
-      rfb.qualityLevel = 7;
-      rfb.compressionLevel = 2;
+      rfb.qualityLevel = ${qualityLevel};
+      rfb.compressionLevel = ${compressionLevel};
 
       rfb.addEventListener("connect", () => {
         status.textContent = "interactive";
@@ -1732,6 +1763,12 @@ function liveBrowserNoVNCLiteResponse(requestURL: string) {
   )
 }
 
+function boundedInteger(value: string | null | undefined, fallback: number, min: number, max: number) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.min(max, Math.max(min, Math.round(parsed)))
+}
+
 async function liveBrowserNoVNCProxyResponse(target: URL) {
   const response = await fetch(target)
   const contentType = response.headers.get("content-type") ?? "application/octet-stream"
@@ -1751,6 +1788,20 @@ async function liveBrowserStatus(access?: Extract<LiveBrowserAccess, { ok: true 
     error: error instanceof Error ? error.message : String(error),
   }))
   const cdp = await currentLiveBrowserURL().catch(() => undefined)
+  const noVNCMode = process.env.OPENCODE_BROWSER_NOVNC_MODE || "fast"
+  const noVNCModes = {
+    fast: { qualityLevel: 4, compressionLevel: 0, scaleViewport: true, resizeSession: false },
+    balanced: { qualityLevel: 6, compressionLevel: 1, scaleViewport: true, resizeSession: false },
+    sharp: { qualityLevel: 8, compressionLevel: 2, scaleViewport: true, resizeSession: false },
+  } as const
+  const defaultNoVNC = noVNCModes[noVNCMode as keyof typeof noVNCModes] ?? noVNCModes.fast
+  const defaultNoVNCParams = new URLSearchParams({
+    path: "websockify",
+    quality: String(defaultNoVNC.qualityLevel),
+    compression: String(defaultNoVNC.compressionLevel),
+    scaleViewport: String(defaultNoVNC.scaleViewport),
+    resizeSession: String(defaultNoVNC.resizeSession),
+  })
   return {
     ok: browser.ok,
     mode: "ct100-cdp-chrome",
@@ -1765,7 +1816,12 @@ async function liveBrowserStatus(access?: Extract<LiveBrowserAccess, { ok: true 
     error: "error" in browser ? browser.error : undefined,
     screenshotURL: "/experimental/browser/live/snapshot",
     streamURL: "/experimental/browser/live/stream",
-    proxiedLiveURL: "/experimental/browser/novnc/opencode-lite.html?path=websockify",
+    proxiedLiveURL: `/experimental/browser/novnc/opencode-lite.html?${defaultNoVNCParams.toString()}`,
+    noVNC: {
+      viewer: "opencode-lite",
+      defaultMode: noVNCMode in noVNCModes ? noVNCMode : "fast",
+      modes: noVNCModes,
+    },
     actions: [
       "goto",
       "back",

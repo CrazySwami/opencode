@@ -382,6 +382,11 @@ type LiveBrowserStatus = {
   requiredAccessBoundary?: string
   streamURL?: string
   proxiedLiveURL?: string
+  noVNC?: {
+    viewer?: string
+    defaultMode?: string
+    modes?: Record<string, { qualityLevel?: number; compressionLevel?: number; scaleViewport?: boolean; resizeSession?: boolean }>
+  }
   profilePolicy?: {
     status?: string
     accessBoundaryReady?: boolean
@@ -419,6 +424,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
   const [browserError, setBrowserError] = createSignal<string | undefined>()
   const [previewReady, setPreviewReady] = createSignal(false)
   const [useNoVNC, setUseNoVNC] = createSignal(true)
+  const [vncPerformance, setVncPerformance] = createSignal<"fast" | "balanced" | "sharp">("fast")
   const [annotating, setAnnotating] = createSignal(false)
   const [drawing, setDrawing] = createSignal(false)
   const [lastArtifact, setLastArtifact] = createSignal<{ url: string; name: string } | undefined>()
@@ -430,6 +436,24 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
   const profilePolicy = createMemo(() => status().profilePolicy)
   const controlsDisabled = createMemo(() => browserBusy() || browserExposureBlocked())
   const streamSrc = createMemo(() => `${status().streamURL ?? "/experimental/browser/live/stream"}?t=${streamKey()}`)
+  const vncPreset = createMemo(() => {
+    const fallback = {
+      fast: { qualityLevel: 4, compressionLevel: 0, scaleViewport: true, resizeSession: false },
+      balanced: { qualityLevel: 6, compressionLevel: 1, scaleViewport: true, resizeSession: false },
+      sharp: { qualityLevel: 8, compressionLevel: 2, scaleViewport: true, resizeSession: false },
+    }[vncPerformance()]
+    return status().noVNC?.modes?.[vncPerformance()] ?? fallback
+  })
+  const applyVNCPerformanceParams = (value: string) => {
+    const parsed = new URL(value, window.location.href)
+    const preset = vncPreset()
+    parsed.searchParams.set("quality", String(preset.qualityLevel ?? 4))
+    parsed.searchParams.set("compression", String(preset.compressionLevel ?? 0))
+    parsed.searchParams.set("scaleViewport", String(preset.scaleViewport ?? true))
+    parsed.searchParams.set("resizeSession", String(preset.resizeSession ?? false))
+    parsed.searchParams.set("performance", vncPerformance())
+    return parsed.toString()
+  }
   const interactiveUrl = createMemo(() => {
     if (browserExposureBlocked()) return undefined
     if (!useNoVNC()) return undefined
@@ -447,6 +471,8 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
           host: live.hostname,
           port: live.port || (live.protocol === "https:" ? "443" : "80"),
           path: "websockify",
+          quality: String(vncPreset().qualityLevel ?? 4),
+          compression: String(vncPreset().compressionLevel ?? 0),
         })
         return `/experimental/browser/novnc/vnc.html?${params.toString()}`
       } catch {
@@ -459,7 +485,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
     try {
       const parsed = new URL(url, window.location.href)
       if (window.location.protocol === "https:" && parsed.protocol !== "https:") return undefined
-      return parsed.toString()
+      return applyVNCPerformanceParams(parsed.toString())
     } catch {
       return undefined
     }
@@ -819,6 +845,32 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
                   </button>
                 </Show>
                 <Show when={status().browserUse?.liveURL}>{(url) => <button class="rounded px-2 py-0.5 text-text-strong hover:bg-surface-raised-base-hover disabled:text-text-disabled" type="button" disabled={browserExposureBlocked()} onClick={() => window.open(url(), "_blank", "noopener,noreferrer")}>Open VNC viewer</button>}</Show>
+              </div>
+              <div class="flex flex-wrap items-center gap-2 text-12-regular text-text-weak">
+                <span class="text-text-strong">VNC performance</span>
+                <For each={[
+                  { id: "fast", label: "Fast" },
+                  { id: "balanced", label: "Balanced" },
+                  { id: "sharp", label: "Sharp" },
+                ] as const}>
+                  {(mode) => (
+                    <button
+                      class="rounded px-2 py-0.5 hover:bg-surface-raised-base-hover"
+                      classList={{
+                        "bg-surface-raised-base text-text-strong": vncPerformance() === mode.id,
+                        "text-text-weak": vncPerformance() !== mode.id,
+                      }}
+                      type="button"
+                      onClick={() => {
+                        setPreviewReady(false)
+                        setVncPerformance(mode.id)
+                      }}
+                    >
+                      {mode.label}
+                    </button>
+                  )}
+                </For>
+                <span class="ml-auto">{vncPreset().qualityLevel ?? 4}q / {vncPreset().compressionLevel ?? 0}c</span>
               </div>
               <div class="grid grid-cols-1 gap-2 text-12-regular text-text-weak md:grid-cols-3">
                 <StatusPill label="Profile" value={profilePolicy()?.persistentAuth?.status ?? "unknown"} active={!!profilePolicy()?.persistentAuth?.enabled} />
