@@ -1113,7 +1113,7 @@ function previewURLKind(value: string) {
   }
 }
 
-function PreviewTabContent(props: { sessionID: string }) {
+function PreviewTabContent(props: { sessionID?: string }) {
   const initial = readPreviewState().url ?? ""
   const [address, setAddress] = createSignal(initial)
   const [currentURL, setCurrentURL] = createSignal(initial)
@@ -1125,10 +1125,14 @@ function PreviewTabContent(props: { sessionID: string }) {
   let externalImageRef: HTMLImageElement | undefined
   const currentKind = createMemo(() => previewURLKind(currentURL()))
   const externalStreamURL = createMemo(() => `/experimental/browser/live/stream?t=${externalKey()}`)
-  const previewStateURL = createMemo(() => `/experimental/preview/${encodeURIComponent(props.sessionID)}/state`)
+  const previewStateURL = createMemo(() =>
+    props.sessionID ? `/experimental/preview/${encodeURIComponent(props.sessionID)}/state` : undefined,
+  )
 
   const syncPreviewState = async () => {
-    const response = await fetch(previewStateURL(), { cache: "no-store" }).catch(() => undefined)
+    const url = previewStateURL()
+    if (!url) return
+    const response = await fetch(url, { cache: "no-store" }).catch(() => undefined)
     if (!response?.ok) return
     const state = await response.json().catch(() => undefined)
     const stateURL = typeof state?.url === "string" ? state.url : ""
@@ -1142,7 +1146,9 @@ function PreviewTabContent(props: { sessionID: string }) {
   }
 
   const writePreviewServerState = async (url: string) => {
-    const response = await fetch(previewStateURL(), {
+    const stateURL = previewStateURL()
+    if (!stateURL) return
+    const response = await fetch(stateURL, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ url, action: "navigate", source: "client" }),
