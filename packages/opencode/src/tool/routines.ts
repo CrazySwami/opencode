@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 
 export const Parameters = Schema.Struct({
-  action: Schema.optional(Schema.Literals(["status", "list", "get", "logs", "create"])).annotate({
+  action: Schema.optional(Schema.Literals(["status", "list", "get", "logs", "create", "update", "delete", "enable", "disable", "run"])).annotate({
     description: "Routine action to run. Defaults to list.",
   }),
   id: Schema.optional(Schema.String).annotate({
@@ -23,10 +23,19 @@ export const Parameters = Schema.Struct({
   command: Schema.optional(Schema.String).annotate({
     description: "Command to review before enabling the routine.",
   }),
+  enabled: Schema.optional(Schema.Boolean).annotate({
+    description: "Enabled state for update. Created routines are always disabled drafts.",
+  }),
+  tags: Schema.optional(Schema.Array(Schema.String)).annotate({
+    description: "Optional routine tags for create/update.",
+  }),
+  notify: Schema.optional(Schema.Array(Schema.String)).annotate({
+    description: "Optional notification channels for create/update.",
+  }),
 })
 
 type Metadata = {
-  action: "status" | "list" | "get" | "logs" | "create"
+  action: "status" | "list" | "get" | "logs" | "create" | "update" | "delete" | "enable" | "disable" | "run"
   id?: string
 }
 
@@ -37,8 +46,8 @@ export type Routine = {
   schedule?: string
   command?: string
   enabled: boolean
-  tags?: string[]
-  notify?: string[]
+  tags?: readonly string[]
+  notify?: readonly string[]
   createdAt: string
   updatedAt: string
   lastRunAt?: string
@@ -70,6 +79,9 @@ export const RoutinesTool = Tool.define<typeof Parameters, Metadata, never>(
               description: params.description,
               schedule: params.schedule,
               command: params.command,
+              enabled: params.enabled,
+              tags: params.tags,
+              notify: params.notify,
             }),
           )
           return {
@@ -113,17 +125,25 @@ export async function routinesStatus() {
 }
 
 export async function routinesAction(input: {
-  action?: "status" | "list" | "get" | "logs" | "create"
+  action?: "status" | "list" | "get" | "logs" | "create" | "update" | "delete" | "enable" | "disable" | "run"
   id?: string
   name?: string
   description?: string
   schedule?: string
   command?: string
+  enabled?: boolean
+  tags?: readonly string[]
+  notify?: readonly string[]
 }) {
   const action = input.action ?? "list"
   if (action === "status") return routinesStatus()
   if (action === "logs") return routineLogs(input.id)
   if (action === "create") return createRoutineDraft(input)
+  if (action === "update") return updateRoutine(input.id, input)
+  if (action === "delete") return deleteRoutine(input.id)
+  if (action === "enable") return updateRoutine(input.id, { enabled: true })
+  if (action === "disable") return updateRoutine(input.id, { enabled: false })
+  if (action === "run") return runRoutine(input.id)
   if (action === "get") {
     const routine = readRoutines().find((item) => item.id === input.id)
     return { ok: !!routine, routine: routine ?? null }
@@ -141,6 +161,8 @@ export async function createRoutineDraft(input: {
   description?: string
   schedule?: string
   command?: string
+  tags?: readonly string[]
+  notify?: readonly string[]
 }) {
   if (!routinesMutationsEnabled()) {
     return {
@@ -166,8 +188,8 @@ export async function createRoutineDraft(input: {
     schedule: optionalText(input.schedule) || "manual",
     command: optionalText(input.command),
     enabled: false,
-    tags: ["draft"],
-    notify: ["in-app"],
+    tags: sanitizedList(input.tags, ["draft"]),
+    notify: sanitizedList(input.notify, ["in-app"]),
     createdAt: now,
     updatedAt: now,
     lastStatus: "never",
@@ -178,6 +200,96 @@ export async function createRoutineDraft(input: {
     generatedAt: now,
     routine,
     status: await routinesStatus(),
+  }
+}
+
+export async function updateRoutine(
+  id: string | undefined,
+  input: {
+    name?: string
+    description?: string
+    schedule?: string
+    command?: string
+    enabled?: boolean
+    tags?: readonly string[]
+    notify?: readonly string[]
+  },
+) {
+  if (!routinesMutationsEnabled()) {
+    return {
+      ok: false,
+      error: "Routine updates are not enabled.",
+      mutationPolicy: "disabled_draft_writes_disabled",
+    }
+  }
+  const safe = id ? safeID(id) : undefined
+  if (!safe) return { ok: false, error: "Routine id is required." }
+  const routines = readRoutines()
+  const index = routines.findIndex((routine) => routine.id === safe)
+  if (index < 0) return { ok: false, error: `Routine not found: ${safe}` }
+
+  const current = routines[index]!
+  const updated: Routine = {
+    ...current,
+    name: optionalText(input.name) ?? current.name,
+    description: input.description === undefined ? current.description : optionalText(input.description),
+    schedule: input.schedule === undefined ? current.schedule : optionalText(input.schedule) || "manual",
+    command: input.command === undefined ? current.command : optionalText(input.command),
+    enabled: typeof input.enabled === "boolean" ? input.enabled : current.enabled,
+    tags: input.tags === undefined ? cloneList(current.tags) : sanitizedList(input.tags, current.tags ?? []),
+    notify: input.notify === undefined ? cloneList(current.notify) : sanitizedList(input.notify, current.notify ?? []),
+    updatedAt: new Date().toISOString(),
+  }
+  routines[index] = updated
+  writeRoutines(routines)
+  return {
+    ok: true,
+    generatedAt: updated.updatedAt,
+    routine: updated,
+    status: await routinesStatus(),
+  }
+}
+
+export async function deleteRoutine(id: string | undefined) {
+  if (!routinesMutationsEnabled()) {
+    return {
+      ok: false,
+      error: "Routine deletes are not enabled.",
+      mutationPolicy: "disabled_draft_writes_disabled",
+    }
+  }
+  const safe = id ? safeID(id) : undefined
+  if (!safe) return { ok: false, error: "Routine id is required." }
+  const routines = readRoutines()
+  const next = routines.filter((routine) => routine.id !== safe)
+  if (next.length === routines.length) return { ok: false, error: `Routine not found: ${safe}` }
+  writeRoutines(next)
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    deletedID: safe,
+    status: await routinesStatus(),
+  }
+}
+
+export async function runRoutine(id: string | undefined) {
+  const safe = id ? safeID(id) : undefined
+  if (!safe) return { ok: false, error: "Routine id is required." }
+  const routine = readRoutines().find((item) => item.id === safe)
+  if (!routine) return { ok: false, error: `Routine not found: ${safe}` }
+  if (!routinesRunEnabled()) {
+    return {
+      ok: false,
+      routine,
+      error: "Routine manual runs are disabled. Set OPENCODE_ROUTINES_RUN_ENABLED=1 to allow routine command execution.",
+      mutationPolicy: "manual_runs_disabled",
+    }
+  }
+  return {
+    ok: false,
+    routine,
+    error: "Routine manual run execution is not implemented in this build.",
+    mutationPolicy: "manual_runs_unimplemented",
   }
 }
 
@@ -273,6 +385,18 @@ function safeID(value: string) {
 function optionalText(value?: string) {
   const trimmed = value?.trim()
   return trimmed ? trimmed : undefined
+}
+
+function sanitizedList(values: readonly string[] | undefined, fallback: readonly string[]) {
+  const next = (values ?? [])
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .slice(0, 12)
+  return next.length > 0 ? Array.from(new Set(next)) : [...fallback]
+}
+
+function cloneList(values: readonly string[] | undefined) {
+  return values === undefined ? undefined : [...values]
 }
 
 function uniqueRoutineID(name: string, routines: Routine[]) {

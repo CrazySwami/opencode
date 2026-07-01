@@ -32,8 +32,23 @@ export const AccountStatusTool = Tool.define<typeof Parameters, Metadata, never>
             browserHome: process.env.OPENCODE_BROWSER_HOME ?? null,
             macViewConfigured: !!process.env.OPENCODE_MAC_VIEW_URL,
             playwrightCLI: process.env.OPENCODE_PLAYWRIGHT_CLI ?? "npx -y @playwright/cli",
+            codexMultiAuth: {
+              providerID: "codex-multi-auth",
+              baseProviderID: "openai",
+              statusRoute: "/experimental/codex-multi-auth/status",
+              composerLane: true,
+              accountChip: true,
+              modelPickerProvider: true,
+              commands: ["login", "login-headless", "list", "status", "limits", "health", "run"],
+              authRoute: "/experimental/codex-multi-auth/login",
+              authFlow: "opencode auth login --provider openai --method \"Codex OAuth (Device Code)\"",
+              fallbackBehavior:
+                "When the isolated multi-auth plugin has zero accounts, Codex Multi-Auth model selections fall back to the normal OpenAI provider and the UI must say so. A normal OpenAI OAuth credential is not the same as a Codex multi-auth account.",
+              note: "The composer provider lane mirrors OpenAI models. Account rotation is only trustworthy after accountCount is greater than zero and backend send routing has been verified through the isolated multi-auth runner.",
+            },
             tools: [
               "browser",
+              "browser_use",
               "terminal",
               "open_design",
               "mac_view",

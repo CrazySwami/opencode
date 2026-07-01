@@ -1,0 +1,13 @@
+Operate the OpenCode Preview surface. Use Preview for local apps, hosted internal tools, OpenDesign, dashboard URLs, file routes, and project previews when the user wants a lightweight interactive app/viewer surface rather than the heavy Browser tab.
+
+Preview is LLM-operable. It can navigate, snapshot, inspect DOM/accessibility-style state, click selectors, fill fields, submit forms, scroll, capture screenshots, and attach the current preview to chat.
+
+Use Browser instead for public websites, login-heavy flows, DevTools-heavy work, or tasks that need the visible Chrome/Chromium session Alfonso is watching. Preview can render controlled/internal URLs and can use the session-scoped Playwright browser for actions.
+
+Typical flow:
+1. `preview navigate url=https://dashboard.hustletogether.com`
+2. `preview snapshot`
+3. `preview fill selector=... text=...`
+4. `preview click selector=...`
+5. `preview attach`
+

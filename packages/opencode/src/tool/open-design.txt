@@ -1,3 +1,9 @@
 Inspect or operate the configured Open Design daemon. Use this for Open Design project status, project file/artifact reads, search, and permission-gated daemon runs or file writes.
 
-The daemon URL and token come from server environment variables (`OD_DAEMON_URL` / `OD_API_TOKEN`, with OpenCode-prefixed fallbacks). Do not expose the token in responses. Read actions are safe for status and context. Mutating actions require OpenCode permission approval.
+Use `workspace_tabs state` first when the user is working in the Open Design tab or Design Mode; its `bridges.openDesign` object can contain the active Open Design `projectId`, `chatId`, focus state, active canvas tab, and file count. Then call this tool with that project/conversation.
+
+Read actions: `health`, `list-projects`, `get-project`, `list-files`, `get-file`, `search-files`, `list-conversations`, and `get-messages`.
+
+Mutating actions: `create-conversation`, `run-prompt`, `write-file`, `create-artifact`, and `delete-file`. These require OpenCode permission approval. `run-prompt` accepts `project`, `conversation`, and `message` so OpenCode Design Mode can send work into the active Open Design chat instead of scraping the iframe.
+
+The daemon URL and token come from server environment variables (`OD_DAEMON_URL` / `OD_API_TOKEN`, with OpenCode-prefixed fallbacks). Do not expose token values in responses.

@@ -21,7 +21,7 @@ export const Parameters = Schema.Struct({
     description: "Workspace tab operation to describe or request.",
   }),
   tab: Schema.optional(Schema.String).annotate({
-    description: "Tab id such as panel://browser, panel://routines, or panel://accounts. panel://preview is a compatibility alias for panel://browser.",
+    description: "Tab id such as panel://browser, panel://preview, panel://routines, or panel://accounts.",
   }),
   tabID: Schema.optional(Schema.String).annotate({
     description: "Alias for tab. Accepted by the HTTP API and tool for client payload compatibility.",
@@ -59,6 +59,7 @@ type WorkspaceTabsClientState = {
   mobile?: boolean
   desktop?: boolean
   selected?: Record<string, unknown>
+  bridges?: Record<string, unknown>
   visibleControls?: Record<string, unknown>
   errors?: unknown[]
   updatedAt?: string
@@ -86,6 +87,9 @@ type PendingWorkspaceTabAction = {
 let latestClientState: WorkspaceTabsClientState | undefined
 let lastAck: unknown
 const pendingActions: PendingWorkspaceTabAction[] = []
+
+const iosBridgeIngestURL = () =>
+  (process.env.OPENCODE_IOS_BRIDGE_INGEST_URL || process.env.OPENCODE_APPLE_BRIDGE_INGEST_URL || "").trim()
 
 export const WorkspaceTabsTool = Tool.define<typeof Parameters, Metadata, never>(
   "workspace_tabs",
@@ -222,7 +226,16 @@ export function updateWorkspaceTabsClientState(input: WorkspaceTabsClientState) 
     ...input,
     updatedAt: new Date().toISOString(),
   })
-  return { ok: true, clientState: latestClientState, pendingCount: pendingActions.length }
+  const clientState = latestClientState
+  publishWorkspaceTabEvent("workspace.tab.state", {
+    sessionID: clientState?.sessionID,
+    activeTab: clientState?.activeTab,
+    activePanelTab: clientState?.activePanelTab,
+    openedPanelTabs: clientState?.openedPanelTabs,
+    panelOpen: clientState?.panelOpen,
+    mobile: clientState?.mobile,
+  })
+  return { ok: true, clientState, pendingCount: pendingActions.length }
 }
 
 export function workspaceTabsPendingActions(sessionID?: string) {
@@ -244,6 +257,7 @@ export function ackWorkspaceTabsAction(input: { actionID?: string; ok?: boolean;
     action: action ?? null,
     acknowledgedAt: new Date().toISOString(),
   }
+  publishWorkspaceTabEvent("workspace.tab.action.acked", lastAck)
   return { ok: true, ack: lastAck, remaining: pendingActions.length }
 }
 
@@ -276,7 +290,24 @@ function queueWorkspaceTabClientAction(input: {
   }
   pendingActions.push(item)
   if (pendingActions.length > 50) pendingActions.splice(0, pendingActions.length - 50)
+  publishWorkspaceTabEvent("workspace.tab.action.queued", item)
   return item
+}
+
+function publishWorkspaceTabEvent(event: string, payload: unknown) {
+  const endpoint = iosBridgeIngestURL()
+  if (!endpoint) return
+  const body = {
+    source: "workspace_tabs",
+    event,
+    timestamp: new Date().toISOString(),
+    payload,
+  }
+  void fetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }).catch(() => undefined)
 }
 
 function canonicalWorkspaceTab(tab: string) {

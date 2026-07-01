@@ -418,7 +418,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
   const [browserBusy, setBrowserBusy] = createSignal(false)
   const [browserError, setBrowserError] = createSignal<string | undefined>()
   const [previewReady, setPreviewReady] = createSignal(false)
-  const [useNoVNC, setUseNoVNC] = createSignal(false)
+  const [useNoVNC, setUseNoVNC] = createSignal(true)
   const [annotating, setAnnotating] = createSignal(false)
   const [drawing, setDrawing] = createSignal(false)
   const [lastArtifact, setLastArtifact] = createSignal<{ url: string; name: string } | undefined>()
@@ -743,7 +743,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
             <IconButton icon="enter" variant="ghost" class="h-7 w-7 shrink-0" disabled={controlsDisabled()} onClick={submitBrowserUrl} aria-label="Open URL" />
           </form>
           <div class="hidden min-w-0 items-center gap-1 md:flex">
-            <span class="max-w-40 truncate px-1 text-11-regular text-text-weak">{browserExposureBlocked() ? "blocked" : browserBusy() ? "working" : useNoVNC() && interactiveUrl() && !annotating() ? "VNC fallback" : previewReady() ? "CDP live" : "connecting"}</span>
+            <span class="max-w-40 truncate px-1 text-11-regular text-text-weak">{browserExposureBlocked() ? "blocked" : browserBusy() ? "working" : useNoVNC() && interactiveUrl() && !annotating() ? "interactive VNC" : previewReady() ? "screenshot stream" : "connecting"}</span>
             <span
               class="h-2 w-2 shrink-0 rounded-full"
               classList={{
@@ -815,10 +815,10 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
                       setUseNoVNC(!useNoVNC())
                     }}
                   >
-                    {useNoVNC() ? "Use CDP live" : "Use VNC fallback"}
+                    {useNoVNC() ? "Use screenshot stream" : "Use interactive VNC"}
                   </button>
                 </Show>
-                <Show when={status().browserUse?.liveURL}>{(url) => <button class="rounded px-2 py-0.5 text-text-strong hover:bg-surface-raised-base-hover disabled:text-text-disabled" type="button" disabled={browserExposureBlocked()} onClick={() => window.open(url(), "_blank", "noopener,noreferrer")}>Open VNC fallback</button>}</Show>
+                <Show when={status().browserUse?.liveURL}>{(url) => <button class="rounded px-2 py-0.5 text-text-strong hover:bg-surface-raised-base-hover disabled:text-text-disabled" type="button" disabled={browserExposureBlocked()} onClick={() => window.open(url(), "_blank", "noopener,noreferrer")}>Open VNC viewer</button>}</Show>
               </div>
               <div class="grid grid-cols-1 gap-2 text-12-regular text-text-weak md:grid-cols-3">
                 <StatusPill label="Profile" value={profilePolicy()?.persistentAuth?.status ?? "unknown"} active={!!profilePolicy()?.persistentAuth?.enabled} />
@@ -1442,20 +1442,43 @@ function TabChrome(props: {
   )
 }
 
-function OpenDesignTabContent() {
+function OpenDesignTabContent(props: {
+  bridgeState?: () => any
+  onBridgeState?: (state: any) => void
+} = {}) {
   const status = createPolledJson<any>(() => "/experimental/open-design/status")
   const [frameKey, setFrameKey] = createSignal(Date.now())
+  const [localBridgeState, setLocalBridgeState] = createSignal<any>({ mode: "dashboard", active: false })
+  const bridgeState = createMemo(() => props.bridgeState?.() ?? localBridgeState())
   const launchUrl = createMemo(() =>
-    status.data()?.proxyReady
-      ? (status.data()?.proxyURL ?? "/experimental/open-design/proxy/")
-      : (status.data()?.publicURL ?? "https://design.hustletogether.com"),
+    status.data()?.publicURL ?? (status.data()?.proxyReady ? (status.data()?.proxyURL ?? "/experimental/open-design/proxy/") : "https://design.hustletogether.com"),
   )
-  const canEmbed = createMemo(() => !!status.data()?.proxyReady)
+  const frameUrl = createMemo(() => {
+    const base = launchUrl()
+    const url = new URL(base, window.location.origin)
+    url.searchParams.set("embed", "opencode")
+    url.searchParams.set("focus", "1")
+    url.searchParams.set("parentOrigin", window.location.origin)
+    url.searchParams.set("t", String(frameKey()))
+    return url.toString()
+  })
+  const canEmbed = createMemo(() => !!launchUrl())
   const stateLabel = createMemo(() => {
     if (status.error()) return "offline"
-    if (status.data()?.proxyReady) return "interactive"
-    if (status.data()?.health?.ok) return "held"
+    if (bridgeState()?.active) return "design mode"
+    if (bridgeState()?.mode === "dashboard") return "dashboard"
+    if (status.data()?.health?.ok) return "interactive"
     return "checking"
+  })
+  const bridgeSummary = createMemo(() => {
+    const state = bridgeState()
+    if (state?.active) {
+      const project = state.projectName || state.projectId || "OpenDesign project"
+      const chat = state.chatName || state.chatId
+      return chat ? `${project} / ${chat}` : project
+    }
+    if (state?.mode === "dashboard") return "Dashboard"
+    return "Waiting for bridge"
   })
 
   const openExternal = () => window.open(launchUrl(), "_blank", "noopener,noreferrer")
@@ -1463,6 +1486,22 @@ function OpenDesignTabContent() {
     status.refresh()
     setFrameKey(Date.now())
   }
+
+  createEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      const data = event.data
+      if (!data || typeof data !== "object" || data.type !== "opendesign:bridge-state") return
+      const next = {
+        ...(data.payload ?? {}),
+        origin: event.origin,
+        receivedAt: new Date().toISOString(),
+      }
+      setLocalBridgeState(next)
+      props.onBridgeState?.(next)
+    }
+    window.addEventListener("message", onMessage)
+    onCleanup(() => window.removeEventListener("message", onMessage))
+  })
 
   return (
     <TabChrome
@@ -1473,13 +1512,19 @@ function OpenDesignTabContent() {
         <div class="flex h-full min-w-0 items-center gap-1 rounded-md border border-border-weaker-base bg-background-base px-1.5">
           <PanelGlyph tab={PANEL_OPEN_DESIGN_TAB} />
           <div class="min-w-0 flex-1 truncate px-2 text-13-regular text-text-strong">{launchUrl()}</div>
+          <Show when={bridgeState()?.active}>
+            <span class="hidden shrink-0 rounded-full border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 text-11-medium text-blue-300 md:inline-flex">
+              Design Mode
+            </span>
+          </Show>
+          <span class="hidden max-w-56 shrink truncate px-1 text-11-regular text-text-weak lg:block">{bridgeSummary()}</span>
           <span class="hidden shrink-0 items-center gap-1 px-1 text-11-regular text-text-weak md:flex">
             <span
               class="h-2 w-2 rounded-full"
               classList={{
-                "bg-[#f97316]": stateLabel() === "interactive",
-                "bg-yellow-500": stateLabel() === "held",
-                "bg-text-disabled": stateLabel() !== "interactive" && stateLabel() !== "held",
+                "bg-blue-400": stateLabel() === "design mode",
+                "bg-[#f97316]": stateLabel() === "interactive" || stateLabel() === "dashboard",
+                "bg-text-disabled": stateLabel() !== "design mode" && stateLabel() !== "interactive" && stateLabel() !== "dashboard",
               }}
             />
             {stateLabel()}
@@ -1501,6 +1546,8 @@ function OpenDesignTabContent() {
               <StatusRow label="Proxy" value={status.data()?.proxyReady ? "enabled" : "disabled"} />
               <StatusRow label="Health" value={status.data()?.health?.ok ? "healthy" : "not ready"} />
               <StatusRow label="Projects" value={status.data()?.projects?.count} />
+              <StatusRow label="Bridge" value={stateLabel()} />
+              <StatusRow label="Active project/chat" value={bridgeSummary()} />
             </div>
           </details>
         </div>
@@ -1516,10 +1563,10 @@ function OpenDesignTabContent() {
             fallback={
               <div class="flex h-full min-h-[360px] items-center justify-center p-5 text-center">
                 <div class="max-w-md">
-                  <div class="mx-auto mb-3 flex h-9 w-9 items-center justify-center rounded-full bg-[#f97316]/15 text-11-medium text-[#f97316]">OD</div>
-                  <div class="text-14-medium text-text-strong">Open Design interactive view is held</div>
+                <div class="mx-auto mb-3 flex h-9 w-9 items-center justify-center rounded-full bg-[#f97316]/15 text-11-medium text-[#f97316]">OD</div>
+                  <div class="text-14-medium text-text-strong">Open Design is not available</div>
                   <div class="mt-2 text-13-regular text-text-weak">
-                    The daemon is reachable, but the same-origin Open Design proxy is disabled until Cloudflare Access and token routing are approved.
+                    The hosted Open Design route or daemon status did not return a usable URL.
                   </div>
                   <Show when={status.data()?.routeNote}>
                     {(note) => <div class="mt-3 text-12-regular text-text-weak">{note()}</div>}
@@ -1529,7 +1576,7 @@ function OpenDesignTabContent() {
             }
           >
             <iframe
-              src={`${launchUrl()}${launchUrl().includes("?") ? "&" : "?"}t=${frameKey()}`}
+              src={frameUrl()}
               title="Open Design"
               class="block size-full border-0 bg-white"
               allow="clipboard-read; clipboard-write"
@@ -1801,6 +1848,19 @@ function AccountsTabContent() {
   const workspace = createPolledJson<any>(() => "/__workspace-index", 15000)
   const [loginStarting, setLoginStarting] = createSignal(false)
   const [loginResult, setLoginResult] = createSignal<any>()
+  const codexAccounts = createMemo(() => status.data()?.codexAccounts)
+  const codexAccountCount = createMemo(() => {
+    const count = codexAccounts()?.accountCount
+    return typeof count === "number" ? count : 0
+  })
+  const codexStatusLabel = createMemo(() => {
+    const accounts = codexAccounts()
+    if (!accounts?.configured) return "not configured"
+    if (!accounts?.ok) return "status error"
+    if (codexAccountCount() > 0) return "ready"
+    return "needs account"
+  })
+  const codexStatusStrong = createMemo(() => !!codexAccounts()?.ok && codexAccountCount() > 0)
 
   const startCodexLogin = async () => {
     setLoginStarting(true)
@@ -1842,10 +1902,17 @@ function AccountsTabContent() {
               <div class="text-12-regular text-text-weak">Codex accounts</div>
               <div class="mt-0.5 text-11-regular text-text-weak">Authorize each Codex account into the isolated multi-auth profile.</div>
             </div>
-            <span class="rounded bg-background-base px-2 py-1 text-11-regular" classList={{ "text-text-strong": !!status.data()?.codexAccounts?.ok, "text-text-weak": !status.data()?.codexAccounts?.ok }}>
-              {status.data()?.codexAccounts?.ok ? "connected" : status.data()?.codexAccounts?.configured ? "needs setup" : "not configured"}
+            <span class="rounded bg-background-base px-2 py-1 text-11-regular" classList={{ "text-text-strong": codexStatusStrong(), "text-text-weak": !codexStatusStrong() }}>
+              {codexStatusLabel()}
             </span>
           </div>
+          <Show when={codexAccounts()?.warning}>
+            {(warning) => (
+              <div class="mb-3 rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-12-regular text-orange-100">
+                {warning()}
+              </div>
+            )}
+          </Show>
           <div class="mb-3 flex flex-wrap gap-2">
             <button
               type="button"
@@ -1879,6 +1946,13 @@ function AccountsTabContent() {
                 <div class="break-all rounded bg-background-stronger px-2 py-1.5 font-mono text-11-regular text-text-strong">
                   {result().terminalCommand ?? result().command ?? "Command not reported"}
                 </div>
+                <Show when={result().phase}>
+                  {(phase) => (
+                    <div class="mt-3 rounded bg-background-stronger px-2 py-1.5 text-11-regular text-text-weak">
+                      Auth state: <span class="text-text-strong">{phase()}</span>
+                    </div>
+                  )}
+                </Show>
                 <Show when={result().authorizationURL}>
                   {(url) => (
                     <div class="mt-3">
@@ -1921,6 +1995,11 @@ function AccountsTabContent() {
                   )}
                 </Show>
                 <div class="mt-3 text-12-regular text-text-weak">{result().note ?? "Run this once per Codex account."}</div>
+                <Show when={result().ok && result().phase === "waiting_for_device_approval"}>
+                  <div class="mt-2 text-12-regular text-text-weak">
+                    After the browser says the account is approved, press Refresh status. The count below should increase from {codexAccountCount()}.
+                  </div>
+                </Show>
                 <Show when={result().output ?? result().error}>
                   {(output) => <pre class="mt-3 max-h-52 overflow-auto whitespace-pre-wrap break-words rounded bg-background-stronger p-2 text-11-regular text-text-weak">{output()}</pre>}
                 </Show>
@@ -3157,10 +3236,6 @@ export function SessionSidePanel(props: {
     if (nextTab === PANEL_TERMINAL_TAB && view().terminal.opened()) view().terminal.close()
     tabs().open(nextTab)
     tabs().setActive(nextTab)
-    if (tab === PANEL_PREVIEW_TAB) {
-      const previewURL = readPreviewState().url
-      if (previewURL) setBrowserLaunch({ url: previewURL, nonce: Date.now() })
-    }
   }
 
   const changeActiveTab = (tab: string) => {
@@ -3178,10 +3253,13 @@ export function SessionSidePanel(props: {
   const closePanelTab = (tab: string) => {
     const nextTab = canonicalPanelTab(tab)
     tabs().close(nextTab)
-    if (nextTab === PANEL_BROWSER_TAB) tabs().close(PANEL_PREVIEW_TAB)
   }
 
   const [browserLaunch, setBrowserLaunch] = createSignal<BrowserLaunchRequest | undefined>()
+  const [openDesignBridgeState, setOpenDesignBridgeState] = createSignal<any>({
+    mode: "dashboard",
+    active: false,
+  })
   const [panelMenuOpen, setPanelMenuOpen] = createSignal(false)
   const [panelMenuPosition, setPanelMenuPosition] = createSignal({ left: 0, top: 0 })
 
@@ -3204,6 +3282,10 @@ export function SessionSidePanel(props: {
       fileBrowser: readFileBrowserState(),
       activeArtifact: activeArtifactTab(),
       activeFile: activeFileTab(),
+      openDesign: openDesignBridgeState(),
+    },
+    bridges: {
+      openDesign: openDesignBridgeState(),
     },
     visibleControls: {
       plusMenuOpen: panelMenuOpen(),
@@ -3225,6 +3307,30 @@ export function SessionSidePanel(props: {
     }
   }
 
+  createEffect(() => {
+    if (typeof window === "undefined") return
+    const state = openDesignBridgeState()
+    const target = window as Window & {
+      __opencodeOpenDesignBridgeState?: unknown
+    }
+    target.__opencodeOpenDesignBridgeState = state
+    window.dispatchEvent(new CustomEvent("opencode:open-design-bridge-state", { detail: state }))
+  })
+
+  createEffect(() => {
+    if (typeof window === "undefined") return
+    const state = openDesignBridgeState()
+    if (!state?.active) return
+    if (activePanelTab() === PANEL_OPEN_DESIGN_TAB) return
+    setOpenDesignBridgeState({
+      ...state,
+      active: false,
+      mode: "inactive",
+      reason: "open-design-panel-inactive",
+      updatedAt: new Date().toISOString(),
+    })
+  })
+
   let workspaceTabStateTimer: ReturnType<typeof setTimeout> | undefined
   createEffect(() => {
     JSON.stringify({
@@ -3234,6 +3340,7 @@ export function SessionSidePanel(props: {
       panelOpen: open(),
       mobile: mobile(),
       fileBrowser: readFileBrowserState(),
+      openDesignBridge: openDesignBridgeState(),
     })
     if (workspaceTabStateTimer) clearTimeout(workspaceTabStateTimer)
     workspaceTabStateTimer = setTimeout(() => void postWorkspaceTabClientState(), 250)
@@ -3299,16 +3406,6 @@ export function SessionSidePanel(props: {
 
   const workspaceActionPoller = setInterval(() => void pollWorkspaceTabActions(), 1000)
   onCleanup(() => clearInterval(workspaceActionPoller))
-
-
-  createEffect(() => {
-    if (activeTab() !== PANEL_PREVIEW_TAB) return
-    const previewURL = readPreviewState().url
-    tabs().open(PANEL_BROWSER_TAB)
-    tabs().setActive(PANEL_BROWSER_TAB)
-    tabs().close(PANEL_PREVIEW_TAB)
-    if (previewURL) setBrowserLaunch({ url: previewURL, nonce: Date.now() })
-  })
 
   const setPanelMenuAnchor = (element: HTMLElement) => {
     const rect = element.getBoundingClientRect()
@@ -3424,6 +3521,26 @@ export function SessionSidePanel(props: {
   })
 
   return (
+    <>
+    <Show when={openDesignBridgeState()?.active ? openDesignBridgeState() : undefined}>
+      {(bridge) => (
+        <Portal>
+          <div class="pointer-events-none fixed bottom-24 left-1/2 z-[900] max-w-[min(560px,calc(100vw-2rem))] -translate-x-1/2 rounded-full border border-blue-400/35 bg-blue-500/12 px-3 py-1.5 text-12-medium text-blue-200 shadow-[0_0_24px_rgba(59,130,246,0.22)] backdrop-blur">
+            <span class="text-blue-100">Design Mode</span>
+            <span class="mx-2 text-blue-300/70">/</span>
+            <span class="text-blue-200/90">{bridge().projectName ?? bridge().projectId ?? "OpenDesign"}</span>
+            <Show when={bridge().chatName ?? bridge().chatId}>
+              {(chat) => (
+                <>
+                  <span class="mx-2 text-blue-300/70">/</span>
+                  <span class="text-blue-200/75">{chat()}</span>
+                </>
+              )}
+            </Show>
+          </div>
+        </Portal>
+      )}
+    </Show>
     <Show when={(mobile() && !!params.id) || (isDesktop() && !(settings.general.newLayoutDesigns() && !params.id))}>
       <aside
         id="review-panel"
@@ -3626,7 +3743,7 @@ export function SessionSidePanel(props: {
                       class="flex flex-col h-full overflow-hidden contain-strict"
                     >
                       <Show when={activePanelTab() === PANEL_OPEN_DESIGN_TAB}>
-                        <OpenDesignTabContent />
+                        <OpenDesignTabContent bridgeState={openDesignBridgeState} onBridgeState={setOpenDesignBridgeState} />
                       </Show>
                     </Tabs.Content>
 
@@ -3800,5 +3917,6 @@ export function SessionSidePanel(props: {
         </Show>
       </aside>
     </Show>
+    </>
   )
 }

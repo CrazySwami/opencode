@@ -45,29 +45,27 @@ export const WORKSPACE_PANEL_TABS: WorkspacePanelDefinition[] = [
     icon: "window-cursor",
     route: "/experimental/browser/live/status",
     toolIDs: ["browser", "browser_use", "workspace_tabs", "file_browser", "artifact"],
-    mentionIDs: ["browser", "browser_use", "agent_chrome", "chrome", "preview", "project_preview", "viewer"],
-    aliases: ["panel://preview", "browser", "browser_use", "agent_chrome", "chrome", "preview", "project_preview", "viewer"],
+    mentionIDs: ["browser", "browser_use", "agent_chrome", "chrome"],
+    aliases: ["browser", "browser_use", "agent_chrome", "chrome"],
     actions: ["refresh", "open_external", "snapshot", "attach_to_chat", "tools", "settings"],
     safetyPolicy: "The Browser is interactive and tool-controlled. Extensions and password managers require separate explicit approval.",
     canSnapshot: true,
     canAttachToChat: true,
-    description: "Real Chrome/Chromium surface for public sites, local apps, Open Design, product previews, and model browser tools.",
+    description: "Real Chrome/Chromium surface for public sites, login-heavy tasks, DevTools-style inspection, Browser Use, and Playwright tooling.",
   },
   {
     id: "panel://preview",
-    label: "Browser",
+    label: "Preview",
     icon: "window-cursor",
-    hidden: true,
-    aliasFor: "panel://browser",
     route: "/experimental/browser/live/status",
-    toolIDs: ["browser", "browser_use", "workspace_tabs"],
-    mentionIDs: [],
+    toolIDs: ["preview", "workspace_tabs", "file_browser", "artifact", "open_design"],
+    mentionIDs: ["preview", "project_preview", "viewer"],
     aliases: ["preview", "project_preview", "viewer"],
     actions: ["refresh", "open_external", "snapshot", "attach_to_chat", "tools"],
-    safetyPolicy: "Compatibility alias. Opens the unified Browser tab.",
+    safetyPolicy: "Preview is for same-origin/local/internal routes and Chromium-rendered external fallback. Public login-heavy work should use Browser.",
     canSnapshot: true,
     canAttachToChat: true,
-    description: "Compatibility alias for older saved Preview tabs. New preview requests open the unified Browser.",
+    description: "Lightweight interactive project/app/file/OpenDesign preview with direct iframe mode for controlled URLs and Playwright-backed actions for LLM navigation.",
   },
   {
     id: "panel://terminal",
@@ -213,12 +211,13 @@ export function canonicalWorkspacePanelTab(tab: string) {
 
 export function workspacePanelTabForTool(id: string, source?: string) {
   const normalized = id.toLowerCase().replace(/-/g, "_")
-  if (normalized === "preview" || normalized === "project_preview" || normalized === "viewer") return "panel://browser"
+  if (normalized === "preview" || normalized === "project_preview" || normalized === "viewer") return "panel://preview"
   const byMention = WORKSPACE_PANEL_TABS.find((tab) => tab.mentionIDs.includes(normalized))
   if (byMention) return byMention.aliasFor ?? byMention.id
   const byTool = WORKSPACE_PANEL_TABS.find((tab) => tab.toolIDs.includes(normalized))
   if (byTool) return byTool.aliasFor ?? byTool.id
-  if (source === "browser" || source === "preview") return "panel://browser"
+  if (source === "browser") return "panel://browser"
+  if (source === "preview") return "panel://preview"
   if (source === "terminal") return "panel://terminal"
   if (source === "open_design") return "panel://open-design"
   if (source === "mac_view") return "panel://mac-view"

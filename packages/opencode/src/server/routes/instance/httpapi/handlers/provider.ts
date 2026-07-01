@@ -11,6 +11,43 @@ import { InstanceHttpApi } from "../api"
 import { ProviderAuthApiError } from "../groups/provider"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 
+
+const CODEX_MULTI_AUTH_PROVIDER_ID = "codex-multi-auth"
+const CODEX_MULTI_AUTH_BASE_PROVIDER_ID = "openai"
+
+function withCodexMultiAuthProvider<T extends Record<string, any>>(providers: T, connected: T) {
+  const base = providers[CODEX_MULTI_AUTH_BASE_PROVIDER_ID]
+  if (!base || !connected[CODEX_MULTI_AUTH_BASE_PROVIDER_ID]) return { providers, connected }
+
+  const models = Object.fromEntries(
+    Object.entries(base.models ?? {}).map(([id, model]) => [
+      id,
+      {
+        ...(model as Record<string, unknown>),
+        providerID: CODEX_MULTI_AUTH_PROVIDER_ID,
+      },
+    ]),
+  )
+  const codexProvider = {
+    ...base,
+    id: CODEX_MULTI_AUTH_PROVIDER_ID,
+    name: "Codex Multi-Auth",
+    source: "custom",
+    env: [],
+    options: {
+      ...(base.options ?? {}),
+      baseProviderID: CODEX_MULTI_AUTH_BASE_PROVIDER_ID,
+      experimental: true,
+    },
+    models,
+  }
+
+  return {
+    providers: { ...providers, [CODEX_MULTI_AUTH_PROVIDER_ID]: codexProvider },
+    connected: { ...connected, [CODEX_MULTI_AUTH_PROVIDER_ID]: codexProvider },
+  }
+}
+
 function mapProviderAuthError<A, R>(self: Effect.Effect<A, ProviderAuth.Error, R>) {
   return self.pipe(
     Effect.mapError((error) => {
@@ -47,14 +84,15 @@ export const providerHandlers = HttpApiBuilder.group(InstanceHttpApi, "provider"
         if ((enabled ? enabled.has(key) : true) && !disabled.has(key)) filtered[key] = value
       }
       const connected = yield* provider.list()
-      const providers = Object.assign(
+      const baseProviders = Object.assign(
         mapValues(filtered, (item) => Provider.fromModelsDevProvider(item)),
         connected,
       )
+      const providers = withCodexMultiAuthProvider(baseProviders, connected)
       return {
-        all: Object.values(providers).map(Provider.toPublicInfo),
-        default: Provider.defaultModelIDs(providers),
-        connected: Object.keys(connected),
+        all: Object.values(providers.providers).map(Provider.toPublicInfo),
+        default: Provider.defaultModelIDs(providers.providers),
+        connected: Object.keys(providers.connected),
       }
     })
 

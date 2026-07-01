@@ -19,6 +19,7 @@ import { buildRequestParts } from "./build-request-parts"
 import { setCursorPosition } from "./editor-dom"
 import { formatServerError } from "@/utils/server-errors"
 import { ScopedKey } from "@/utils/server-scope"
+import { CODEX_MULTI_AUTH_BASE_PROVIDER_ID, CODEX_MULTI_AUTH_PROVIDER_ID } from "@/hooks/provider-catalog"
 import { createPromptSubmissionState } from "./submission-state"
 
 type PendingPrompt = {
@@ -391,9 +392,13 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       return
     }
 
+    const providerID =
+      currentModel.provider.id === CODEX_MULTI_AUTH_PROVIDER_ID
+        ? CODEX_MULTI_AUTH_BASE_PROVIDER_ID
+        : currentModel.provider.id
     const model = {
       modelID: currentModel.id,
-      providerID: currentModel.provider.id,
+      providerID,
     }
     const agent = currentAgent.name
     const draft: FollowupDraft = {

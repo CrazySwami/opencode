@@ -591,26 +591,85 @@ function parseCodexUsageSummary(value: string | undefined) {
   return lines.slice(0, 3).join(" · ") || null
 }
 
+function codexMultiAuthLoginAttemptPath() {
+  const home = process.env.HOME || "/home/dev"
+  return path.join(home, ".local", "share", "opencode-codex-multi-auth", "login-status.json")
+}
+
+function readCodexMultiAuthLoginAttempt() {
+  const file = codexMultiAuthLoginAttemptPath()
+  try {
+    const raw = readFileSync(file, "utf8")
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== "object") return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function writeCodexMultiAuthLoginAttempt(value: Record<string, unknown>) {
+  const file = codexMultiAuthLoginAttemptPath()
+  try {
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(
+      file,
+      JSON.stringify(
+        {
+          ...value,
+          updatedAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      ),
+    )
+  } catch {}
+}
+
 async function codexMultiAuthStatus() {
   const status = await runCodexMultiAuthCommand("status")
+  const loginAttempt = readCodexMultiAuthLoginAttempt()
   const base = {
     commands: ["login", "login-headless", "list", "status", "limits", "health", "run"],
     loginRoute: "/experimental/codex-multi-auth/login",
+    authFlow: "opencode auth login --provider openai --method \"Codex OAuth (Device Code)\"",
+    loginAttempt,
   }
-  if (!status.configured || !status.ok) return { ...status, ...base }
-  const list = await runCodexMultiAuthCommand("list", 8000)
-  const limits = await runCodexMultiAuthCommand("limits", 10000)
-  const health = await runCodexMultiAuthCommand("health", 8000)
+  if (!status.configured || !status.ok)
+    return {
+      ...status,
+      ...base,
+      accountCount: 0,
+      accountsConfigured: false,
+      sendRouting: "unavailable",
+      warning: status.error ?? "Codex multi-auth status is unavailable.",
+    }
+  const [list, limits, health] = await Promise.all([
+    runCodexMultiAuthCommand("list", 4000),
+    runCodexMultiAuthCommand("limits", 2500),
+    runCodexMultiAuthCommand("health", 2500),
+  ])
   const accountCount = parseCodexAccountCount(status.output, list.output, limits.output, health.output)
+  const accountsConfigured = accountCount > 0
+  const loginAttemptPhase = typeof loginAttempt?.phase === "string" ? loginAttempt.phase : null
   return {
     ...status,
     ...base,
     providerID: "codex-multi-auth",
     baseProviderID: "openai",
     accountCount,
-    accountsConfigured: accountCount > 0,
+    accountsConfigured,
     activeAccount: null,
     rotationStrategy: "auto",
+    sendRouting: accountsConfigured ? "multi-auth-profile-pending-runner-verification" : "openai-fallback",
+    warning: accountsConfigured
+      ? "Codex multi-auth accounts are configured. Verify backend send routing before relying on account rotation."
+      : loginAttemptPhase === "account_written_or_already_authorized"
+        ? "The last Codex login process exited successfully, but no multi-auth account is visible yet. Refresh status once; if accountCount remains 0, rerun Authenticate Codex account."
+        : loginAttemptPhase === "failed_after_device_code"
+          ? "The last Codex login printed a device code but failed before writing an account. Start a fresh Authenticate Codex account flow."
+          : "No Codex multi-auth plugin accounts are configured yet. Normal OpenAI OAuth may exist, but Codex Multi-Auth model selections currently fall back to the normal OpenAI provider.",
+    statusPhase: accountsConfigured ? "account_written" : loginAttemptPhase ?? "needs_plugin_account",
     usageSummary: parseCodexUsageSummary(limits.output),
     listOutput: list.output ?? list.error,
     limitsOutput: limits.output ?? limits.error,
@@ -626,8 +685,9 @@ function parseCodexAuthStart(value: string | undefined) {
     null
   const code =
     text.match(/Enter code:\s*([A-Z0-9-]+)/i)?.[1] ??
+    text.match(/Enter this one-time code:\s*([A-Z0-9-]+)/i)?.[1] ??
     text.match(/user[_ -]?code[:\s]+([A-Z0-9-]+)/i)?.[1] ??
-    text.match(/\b([A-Z0-9]{4}-[A-Z0-9]{4})\b/)?.[1] ??
+    text.match(/\b([A-Z0-9]{4}-[A-Z0-9]{4,6})\b/)?.[1] ??
     null
   return { url, code }
 }
@@ -664,6 +724,17 @@ async function codexMultiAuthLoginStart() {
     const startedAt = new Date().toISOString()
     let startupTimer: ReturnType<typeof setTimeout> | undefined
     let hardStop: ReturnType<typeof setTimeout> | undefined
+    writeCodexMultiAuthLoginAttempt({
+      ok: null,
+      configured: true,
+      background: true,
+      pid: child.pid,
+      startedAt,
+      command: script + " login-headless",
+      terminalCommand: command,
+      phase: "started",
+      output: "",
+    })
     const killTree = () => {
       if (!child.pid) return
       try {
@@ -687,6 +758,20 @@ async function codexMultiAuthLoginStart() {
       const cleaned = cleanStatusOutput(output)
       const parsed = parseCodexAuthStart(cleaned)
       if (parsed.url && parsed.code) {
+        writeCodexMultiAuthLoginAttempt({
+          ok: null,
+          configured: true,
+          background: true,
+          pid: child.pid,
+          startedAt,
+          command: script + " login-headless",
+          terminalCommand: command,
+          authorizationURL: parsed.url,
+          hasUserCode: true,
+          phase: "waiting_for_device_approval",
+          output: cleaned,
+          note: "Device-code login is waiting for browser approval. The one-time code was returned by the login-start response and is not persisted in status.",
+        })
         finish({
           ok: true,
           configured: true,
@@ -697,13 +782,25 @@ async function codexMultiAuthLoginStart() {
           terminalCommand: command,
           authorizationURL: parsed.url,
           userCode: parsed.code,
+          phase: "waiting_for_device_approval",
           output: cleaned,
-          note: "Open the link, paste the code, approve the account, then refresh Accounts. Repeat once per Codex account.",
+          note: "Open the link, paste the code, approve the Codex OAuth account, then refresh Accounts. Repeat once per Codex account.",
         })
       }
     }
     startupTimer = setTimeout(() => {
       const cleaned = cleanStatusOutput(output)
+      writeCodexMultiAuthLoginAttempt({
+        ok: false,
+        configured: true,
+        background: false,
+        startedAt,
+        command: script + " login-headless",
+        terminalCommand: command,
+        phase: "failed_before_device_code",
+        error: cleaned || "Timed out before the login command printed a device-code URL.",
+        output: cleaned,
+      })
       finish(
         {
           ok: false,
@@ -712,8 +809,9 @@ async function codexMultiAuthLoginStart() {
           startedAt,
           command: script + " login-headless",
           terminalCommand: command,
+          phase: "failed_before_device_code",
           error: cleaned || "Timed out before the login command printed a device-code URL.",
-          note: "The login command did not print a device-code URL. Check the command output below.",
+          note: "The plugin login command did not print a device-code URL. Check the command output below.",
         },
         true,
       )
@@ -723,6 +821,16 @@ async function codexMultiAuthLoginStart() {
     child.stderr?.on("data", append)
     child.on("error", (error) => {
       if (hardStop) clearTimeout(hardStop)
+      writeCodexMultiAuthLoginAttempt({
+        ok: false,
+        configured: true,
+        background: false,
+        startedAt,
+        command: script + " login-headless",
+        terminalCommand: command,
+        phase: "failed_before_device_code",
+        error: error.message,
+      })
       finish(
         {
           ok: false,
@@ -731,33 +839,45 @@ async function codexMultiAuthLoginStart() {
           startedAt,
           command: script + " login-headless",
           terminalCommand: command,
+          phase: "failed_before_device_code",
           error: error.message,
-          note: "The login command failed before it could print a device-code URL.",
+          note: "The plugin login command failed before it could print a device-code URL.",
         },
         true,
       )
     })
     child.on("exit", (code, signal) => {
       if (hardStop) clearTimeout(hardStop)
-      if (settled) return
       const cleaned = cleanStatusOutput(output)
       const parsed = parseCodexAuthStart(cleaned)
-      finish({
-        ok: !!(code === 0 || parsed.url || parsed.code),
+      const phase =
+        code === 0
+          ? "account_written_or_already_authorized"
+          : parsed.url || parsed.code
+            ? "failed_after_device_code"
+            : "failed_before_device_code"
+      const body = {
+        ok: code === 0,
         configured: true,
         background: false,
         startedAt,
         command: script + " login-headless",
         terminalCommand: command,
         authorizationURL: parsed.url,
-        userCode: parsed.code,
+        hasUserCode: !!parsed.code,
+        phase,
         output: cleaned,
         error: code === 0 ? undefined : `Login command exited with ${signal ?? code}`,
         note:
-          parsed.url || parsed.code
-            ? "Open the link, paste the code, approve the account, then refresh Accounts. Repeat once per Codex account."
-            : "The login command exited before printing a device-code URL.",
-      })
+          phase === "failed_after_device_code"
+            ? "The device-code process failed after printing a code. Start a fresh Authenticate Codex account flow before approving another code."
+            : phase === "account_written_or_already_authorized"
+              ? "The Codex OAuth login process exited successfully. Refresh Accounts to verify accountCount."
+              : "The plugin login command exited before printing a device-code URL.",
+      }
+      writeCodexMultiAuthLoginAttempt(body)
+      if (settled) return
+      finish({ ...body, userCode: parsed.code })
     })
   })
 }
@@ -766,6 +886,7 @@ function cleanStatusOutput(value: string) {
   return value
     .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(/\x1B[@-_][0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
     .replace(/\r/g, "\n")
     .split("\n")
     .filter((line) => !line.startsWith("npm error config prefix cannot be changed"))
@@ -890,13 +1011,55 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
     yield* router.add("POST", "/experimental/routines/jobs", (request) =>
       Effect.gen(function* () {
         const raw = yield* Effect.orDie(request.text)
-        let body: { name?: string; description?: string; schedule?: string; command?: string }
+        let body: { name?: string; description?: string; schedule?: string; command?: string; tags?: string[]; notify?: string[] }
         try {
-          body = JSON.parse(raw || "{}") as { name?: string; description?: string; schedule?: string; command?: string }
+          body = JSON.parse(raw || "{}") as { name?: string; description?: string; schedule?: string; command?: string; tags?: string[]; notify?: string[] }
         } catch {
           return HttpServerResponse.text("Invalid JSON body", { status: 400 })
         }
         const result = yield* Effect.promise(() => createRoutineDraft(body))
+        const error = result.ok ? undefined : (result as { error?: string }).error
+        return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : error?.includes("not enabled") ? 403 : 400 })
+      }),
+    )
+
+    yield* router.add("PATCH", "/experimental/routines/jobs/:id", (request) =>
+      Effect.gen(function* () {
+        const id = decodeParam(request.url, /^\/experimental\/routines\/jobs\/([^/]+)$/)
+        const raw = yield* Effect.orDie(request.text)
+        type RoutineUpdateBody = {
+          name?: string
+          description?: string
+          schedule?: string
+          command?: string
+          enabled?: boolean
+          tags?: string[]
+          notify?: string[]
+        }
+        let body: RoutineUpdateBody
+        try {
+          body = JSON.parse(raw || "{}") as RoutineUpdateBody
+        } catch {
+          return HttpServerResponse.text("Invalid JSON body", { status: 400 })
+        }
+        const result = yield* Effect.promise(() => routinesAction({ action: "update", id, ...body }))
+        const error = result.ok ? undefined : (result as { error?: string }).error
+        return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : error?.includes("not enabled") ? 403 : 400 })
+      }),
+    )
+
+    yield* router.add("POST", "/experimental/routines/jobs/:id/run", (request) =>
+      Effect.promise(async () => {
+        const id = decodeParam(request.url, /^\/experimental\/routines\/jobs\/([^/]+)\/run$/)
+        const result = await routinesAction({ action: "run", id })
+        return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : 403 })
+      }),
+    )
+
+    yield* router.add("DELETE", "/experimental/routines/jobs/:id", (request) =>
+      Effect.promise(async () => {
+        const id = decodeParam(request.url, /^\/experimental\/routines\/jobs\/([^/]+)$/)
+        const result = await routinesAction({ action: "delete", id })
         const error = result.ok ? undefined : (result as { error?: string }).error
         return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : error?.includes("not enabled") ? 403 : 400 })
       }),
@@ -1149,7 +1312,11 @@ type LiveBrowserInput =
 
 const liveBrowserDisplay = () => process.env.OPENCODE_LIVE_BROWSER_DISPLAY || ":99"
 const liveBrowserStreamBoundary = "opencode-browser-frame"
-const liveBrowserStreamDelay = () => Math.max(250, Number(process.env.OPENCODE_LIVE_BROWSER_FRAME_MS || 500))
+const liveBrowserStreamDelay = () => {
+  const requested = Number(process.env.OPENCODE_LIVE_BROWSER_FRAME_MS || 100)
+  if (!Number.isFinite(requested)) return 100
+  return Math.max(50, requested)
+}
 const liveBrowserHome = () =>
   path.resolve(
     process.env.OPENCODE_LIVE_BROWSER_HOME ||
@@ -1508,7 +1675,11 @@ function liveBrowserNoVNCLiteResponse(requestURL: string) {
         font: 12px/1.4 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         padding: 5px 9px;
         pointer-events: none;
+        opacity: 0.82;
+        transition: opacity 160ms ease;
       }
+      #status[data-connected="true"] { opacity: 0; }
+      body:hover #status { opacity: 0.82; }
     </style>
   </head>
   <body>
@@ -1521,18 +1692,34 @@ function liveBrowserNoVNCLiteResponse(requestURL: string) {
       const target = document.getElementById("screen");
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const url = protocol + "//" + window.location.host + "${websocketPath}";
-      const rfb = new RFB(target, url, { shared: true });
+      const rfb = new RFB(target, url, {
+        shared: true,
+        repeaterID: "",
+      });
 
       rfb.viewOnly = false;
       rfb.scaleViewport = true;
       rfb.resizeSession = false;
       rfb.focusOnClick = true;
+      rfb.showDotCursor = true;
+      rfb.clipViewport = false;
+      rfb.dragViewport = false;
+      rfb.qualityLevel = 7;
+      rfb.compressionLevel = 2;
 
-      rfb.addEventListener("connect", () => { status.textContent = "interactive"; });
+      rfb.addEventListener("connect", () => {
+        status.textContent = "interactive";
+        status.dataset.connected = "true";
+        target.focus?.();
+      });
       rfb.addEventListener("disconnect", (event) => {
         status.textContent = event.detail?.clean ? "disconnected" : "connection lost";
+        status.dataset.connected = "false";
       });
-      rfb.addEventListener("credentialsrequired", () => { status.textContent = "credentials required"; });
+      rfb.addEventListener("credentialsrequired", () => {
+        status.textContent = "credentials required";
+        status.dataset.connected = "false";
+      });
 
       window.addEventListener("beforeunload", () => rfb.disconnect());
     </script>
@@ -1835,7 +2022,8 @@ async function highlightLiveBrowserSelector(selector: string) {
     };
   })()`
   const result = await cdpEvaluate(expression)
-  return { ok: true, selector, result }
+  const data = result && typeof result === "object" ? (result as Record<string, unknown>) : {}
+  return { ok: true, selector, ...data, result }
 }
 
 async function fillLiveBrowserSelector(selector: string, text: string) {
@@ -2348,8 +2536,8 @@ async function openDesignStatus() {
     publicURL,
     proxyURL: "/experimental/open-design/proxy/",
     proxyReady,
-    routeReady: false,
-    routeNote: "design.hustletogether.com is intentionally held at safe 404 until Cloudflare Access is approved.",
+    routeReady: true,
+    routeNote: "design.hustletogether.com routes to the Open Design daemon behind Cloudflare Access; the OpenCode tab uses the hosted route for the interactive app.",
     health,
     projects,
   }

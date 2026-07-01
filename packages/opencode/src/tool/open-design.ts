@@ -9,6 +9,9 @@ const actions = [
   "list-files",
   "get-file",
   "search-files",
+  "list-conversations",
+  "create-conversation",
+  "get-messages",
   "run-prompt",
   "write-file",
   "create-artifact",
@@ -20,9 +23,13 @@ export const Parameters = Schema.Struct({
   project: Schema.optional(Schema.String).annotate({
     description: "Open Design project id or name. Required for project-scoped actions.",
   }),
+  conversation: Schema.optional(Schema.String).annotate({
+    description: "Open Design conversation/chat id. Required for get-messages and optional for run-prompt.",
+  }),
   path: Schema.optional(Schema.String).annotate({ description: "Project-relative file path." }),
   query: Schema.optional(Schema.String).annotate({ description: "Search query for search-files." }),
   content: Schema.optional(Schema.String).annotate({ description: "File content for write/create actions." }),
+  title: Schema.optional(Schema.String).annotate({ description: "Conversation title for create-conversation." }),
   message: Schema.optional(Schema.String).annotate({ description: "Prompt message for run-prompt." }),
 })
 
@@ -30,6 +37,7 @@ type Metadata = {
   action: (typeof actions)[number]
   daemonURL: string
   project?: string
+  conversation?: string
   path?: string
   status?: number
 }
@@ -51,6 +59,7 @@ export const OpenDesignTool = Tool.define<typeof Parameters, Metadata, never>(
                 action: params.action,
                 project: params.project,
                 path: params.path,
+                conversation: params.conversation,
               },
             })
           }
@@ -64,6 +73,7 @@ export const OpenDesignTool = Tool.define<typeof Parameters, Metadata, never>(
               action: params.action,
               daemonURL: client.publicDaemonURL,
               project: params.project,
+              conversation: params.conversation,
               path: params.path,
               status: result.status,
             },
@@ -91,7 +101,7 @@ function openDesignClient() {
 }
 
 function isMutating(action: OpenDesignParams["action"]) {
-  return action === "run-prompt" || action === "write-file" || action === "create-artifact" || action === "delete-file"
+  return action === "create-conversation" || action === "run-prompt" || action === "write-file" || action === "create-artifact" || action === "delete-file"
 }
 
 async function executeOpenDesignAction(client: Client, params: OpenDesignParams) {
@@ -112,13 +122,26 @@ async function executeOpenDesignAction(client: Client, params: OpenDesignParams)
       )
     case "search-files":
       return searchFiles(client, required(params.project, "project"), required(params.query, "query"))
+    case "list-conversations":
+      return request(client, `/api/projects/${encodeURIComponent(required(params.project, "project"))}/conversations`)
+    case "create-conversation":
+      return request(client, `/api/projects/${encodeURIComponent(required(params.project, "project"))}/conversations`, {
+        method: "POST",
+        body: { title: params.title ?? "OpenCode Design Mode" },
+      })
+    case "get-messages":
+      return request(
+        client,
+        `/api/projects/${encodeURIComponent(required(params.project, "project"))}/conversations/${encodeURIComponent(required(params.conversation, "conversation"))}/messages`,
+      )
     case "run-prompt":
       return request(client, "/api/runs", {
         method: "POST",
-        body: {
+        body: compact({
           projectId: required(params.project, "project"),
+          conversationId: params.conversation,
           message: required(params.message, "message"),
-        },
+        }),
       })
     case "write-file":
     case "create-artifact":
@@ -197,4 +220,8 @@ function encodePath(value: string) {
 function required(value: string | undefined, name: string) {
   if (value) return value
   throw new Error(`open_design.${name} is required for this action`)
+}
+
+function compact(input: Record<string, unknown>) {
+  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined && value !== null && value !== ""))
 }

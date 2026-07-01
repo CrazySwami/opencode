@@ -46,6 +46,7 @@ import { ModelSelectorPopover } from "@/components/dialog-select-model"
 import { useCommand } from "@/context/command"
 import { Persist, persisted } from "@/utils/persist"
 import { usePermission } from "@/context/permission"
+import { CODEX_MULTI_AUTH_PROVIDER_ID } from "@/hooks/provider-catalog"
 import { useLanguage } from "@/context/language"
 import { usePlatform } from "@/context/platform"
 import { createSessionTabs } from "@/pages/session/helpers"
@@ -82,6 +83,28 @@ export type PromptInputHistory = {
 export type PromptInputSubmission = {
   abort: () => Promise<void> | void
   handleSubmit: (event: Event) => Promise<void> | void
+}
+
+type OpenDesignBridgePromptState = {
+  kind?: string
+  active?: boolean
+  projectId?: string
+  projectName?: string
+  chatId?: string
+  chatName?: string
+  focusMode?: boolean
+  activeCanvasTab?: string
+  fileCount?: number
+  updatedAt?: string
+}
+
+const OPEN_DESIGN_BRIDGE_EVENT = "opencode:open-design-bridge-state"
+
+function readOpenDesignBridgeState(): OpenDesignBridgePromptState | undefined {
+  if (typeof window === "undefined") return undefined
+  const state = (window as Window & { __opencodeOpenDesignBridgeState?: unknown }).__opencodeOpenDesignBridgeState
+  if (!state || typeof state !== "object") return undefined
+  return state as OpenDesignBridgePromptState
 }
 
 export type PromptInputControls = {
@@ -1578,8 +1601,51 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     (p) => p,
   )
 
+  const [openDesignBridgeState, setOpenDesignBridgeState] = createSignal<OpenDesignBridgePromptState | undefined>(
+    readOpenDesignBridgeState(),
+  )
+  if (typeof window !== "undefined") {
+    const syncOpenDesignBridgeState = (event: Event) => {
+      const detail = event instanceof CustomEvent ? event.detail : readOpenDesignBridgeState()
+      if (!detail || typeof detail !== "object") {
+        setOpenDesignBridgeState(undefined)
+        return
+      }
+      setOpenDesignBridgeState(detail as OpenDesignBridgePromptState)
+    }
+    window.addEventListener(OPEN_DESIGN_BRIDGE_EVENT, syncOpenDesignBridgeState)
+    onCleanup(() => window.removeEventListener(OPEN_DESIGN_BRIDGE_EVENT, syncOpenDesignBridgeState))
+  }
+
+  const designModeBridge = createMemo(() => {
+    const state = openDesignBridgeState()
+    if (!state?.active) return undefined
+    return state
+  })
+
+  const designModeTitle = createMemo(() => {
+    const state = designModeBridge()
+    if (!state) return undefined
+    return state.projectName ?? state.projectId ?? "OpenDesign"
+  })
+
+  const designModeSubtitle = createMemo(() => {
+    const state = designModeBridge()
+    if (!state) return undefined
+    return state.chatName ?? state.chatId ?? (state.focusMode ? "Focus Mode" : "Project workspace")
+  })
+
+  const openDesignPanel = () => {
+    props.controls.session.reviewPanel.open()
+    const result = props.controls.session.tabs.open("panel://open-design")
+    void Promise.resolve(result).finally(() => props.controls.session.tabs.setActive("panel://open-design"))
+    restoreFocus()
+  }
+
   const designPlaceholder = () => {
     if (store.mode === "shell") return placeholder()
+    const title = designModeTitle()
+    if (title) return `Design Mode: ${title}`
     return "Ask anything, / for commands, @ for context..."
   }
 
@@ -1600,6 +1666,14 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       })
     },
   }))
+  const codexMultiAuthActive = createMemo(
+    () => props.controls.model.selection.current()?.provider?.id === CODEX_MULTI_AUTH_PROVIDER_ID,
+  )
+  const openCodexAccountsPanel = () => {
+    const tab = "panel://accounts"
+    props.controls.session.tabs.open(tab)
+    props.controls.session.tabs.setActive(tab)
+  }
 
   const newSession = () => props.variant === "new-session"
   const showAgentControl = createMemo(() => props.controls.agents.visible && props.controls.agents.options.length > 0)
@@ -1640,6 +1714,8 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
               onSubmit={handleSubmit}
               classList={{
                 "group/prompt-input min-h-[96px] w-full rounded-xl bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]": true,
+                "ring-1 ring-blue-400/45 shadow-[0_0_0_1px_rgba(96,165,250,0.24),0_18px_48px_rgba(37,99,235,0.20)]":
+                  !!designModeBridge(),
                 "border-icon-info-active border-dashed": store.draggingType !== null,
                 [props.class ?? ""]: !!props.class,
               }}
@@ -1650,6 +1726,32 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                   store.draggingType === "@mention" ? "prompt.dropzone.file.label" : "prompt.dropzone.label",
                 )}
               />
+              <Show when={designModeBridge()}>
+                {(bridge) => (
+                  <button
+                    type="button"
+                    data-action="prompt-design-mode"
+                    class="mx-2 mt-2 flex max-w-[calc(100%-1rem)] items-center gap-2 rounded-lg border border-blue-400/25 bg-blue-500/10 px-2.5 py-1.5 text-left text-[12px] leading-4 text-blue-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] transition-colors hover:bg-blue-500/15"
+                    onClick={openDesignPanel}
+                    title="Open the active OpenDesign tab"
+                  >
+                    <span class="size-2 shrink-0 rounded-full bg-blue-400 shadow-[0_0_10px_rgba(96,165,250,0.8)]" />
+                    <span class="font-[520]">Design Mode</span>
+                    <span class="text-blue-300/70">/</span>
+                    <span class="min-w-0 truncate text-blue-100/90">
+                      {bridge().projectName ?? bridge().projectId ?? "OpenDesign"}
+                    </span>
+                    <Show when={bridge().chatName ?? bridge().chatId ?? (bridge().focusMode ? "Focus Mode" : undefined)}>
+                      {(chat) => (
+                        <>
+                          <span class="hidden text-blue-300/60 sm:inline">/</span>
+                          <span class="hidden min-w-0 truncate text-blue-200/75 sm:inline">{chat()}</span>
+                        </>
+                      )}
+                    </Show>
+                  </button>
+                )}
+              </Show>
               <PromptContextItems
                 items={contextItems()}
                 active={(item) => {
@@ -1750,6 +1852,13 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                   </Show>
                   {props.toolbar}
                   <ComposerModelControl state={modelControlState()} />
+                  <Show when={!providersLoading() && store.mode !== "shell"}>
+                    <CodexMultiAuthChip
+                      active={codexMultiAuthActive()}
+                      currentModelName={props.controls.model.selection.current()?.name ?? "model"}
+                      openAccounts={openCodexAccountsPanel}
+                    />
+                  </Show>
                   <Show when={!providersLoading() && store.mode !== "shell" && showVariantControl()}>
                     <div
                       data-component="prompt-variant-control"
@@ -2106,6 +2215,11 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                             </TooltipKeybind>
                           </Show>
                         </div>
+                        <CodexMultiAuthChip
+                          active={codexMultiAuthActive()}
+                          currentModelName={props.controls.model.selection.current()?.name ?? "model"}
+                          openAccounts={openCodexAccountsPanel}
+                        />
                         <Show when={showVariantControl()}>
                           <div
                             data-component="prompt-variant-control"
@@ -2200,6 +2314,107 @@ function ComposerAgentControl(props: { state: ComposerAgentControlState }) {
         />
       </TooltipV2>
     </div>
+  )
+}
+
+type CodexMultiAuthStatus = {
+  ok?: boolean
+  configured?: boolean
+  accountCount?: number
+  accountsConfigured?: boolean
+  activeAccount?: string | null
+  rotationStrategy?: string | null
+  sendRouting?: string | null
+  warning?: string | null
+  usageSummary?: string | null
+  output?: string
+  limitsOutput?: string
+  error?: string
+}
+
+function readAccountCount(status: CodexMultiAuthStatus | undefined) {
+  if (typeof status?.accountCount === "number") return status.accountCount
+  const text = [status?.output, status?.limitsOutput].filter(Boolean).join("\n")
+  const match = text.match(/Accounts:\s*(\d+)/i)
+  return match ? Number(match[1]) : 0
+}
+
+function readUsageSummary(status: CodexMultiAuthStatus | undefined) {
+  if (status?.usageSummary) return status.usageSummary
+  const limits = status?.limitsOutput ?? ""
+  const weekly = limits.match(/weekly[^\n]*/i)?.[0]
+  const remaining = limits.match(/remaining[^\n]*/i)?.[0]
+  if (weekly && remaining && weekly !== remaining) return `${weekly} · ${remaining}`
+  return weekly ?? remaining ?? undefined
+}
+
+function CodexMultiAuthChip(props: {
+  active: boolean
+  currentModelName: string
+  openAccounts: () => void | Promise<void>
+}) {
+  const [tick, setTick] = createSignal(0)
+  const [status, actions] = createResource(tick, async () => {
+    const response = await fetch("/experimental/codex-multi-auth/status", { cache: "no-store" })
+    if (!response.ok) throw new Error(`status ${response.status}`)
+    return (await response.json()) as CodexMultiAuthStatus
+  })
+
+  const timer = window.setInterval(() => setTick((value) => value + 1), 20_000)
+  onCleanup(() => window.clearInterval(timer))
+
+  const accountCount = createMemo(() => readAccountCount(status()))
+  const usage = createMemo(() => readUsageSummary(status()))
+  const label = createMemo(() => {
+    if (!status()?.configured) return "Codex setup"
+    if (props.active) return accountCount() > 0 ? "Codex auto" : "Codex fallback"
+    return accountCount() > 0 ? "Codex ready" : "Codex"
+  })
+  const detail = createMemo(() => {
+    if (status.loading) return "checking"
+    if (status.error || status()?.error) return "status error"
+    if (accountCount() === 1) return "1 account"
+    return `${accountCount()} accounts`
+  })
+  const tooltip = createMemo(() => {
+    const accountLine = accountCount() === 1 ? "1 account configured" : `${accountCount()} accounts configured`
+    const mode =
+      props.active && accountCount() === 0
+        ? `Active for ${props.currentModelName}, but using normal OpenAI fallback until accounts are configured`
+        : props.active
+          ? `Active for ${props.currentModelName}`
+          : "Select Codex Multi-Auth in the model picker to use this lane"
+    const usageLine = usage() ? `\n${usage()}` : ""
+    const strategy = status()?.rotationStrategy ? `\nStrategy: ${status()?.rotationStrategy}` : ""
+    const routing = status()?.sendRouting ? `\nRouting: ${status()?.sendRouting}` : ""
+    const warning = status()?.warning ? `\n${status()?.warning}` : ""
+    return `${mode}\n${accountLine}${usageLine}${strategy}${routing}${warning}\nClick to open the Codex accounts panel.`
+  })
+
+  return (
+    <TooltipV2 placement="top" gutter={4} value={tooltip()}>
+      <Button
+        type="button"
+        variant="ghost"
+        size="normal"
+        data-action="prompt-codex-account"
+        class="min-w-0 max-w-[190px] justify-start gap-1.5 rounded-md px-2 text-[12px] font-[440] leading-5 text-v2-text-text-faint"
+        classList={{
+          "text-v2-text-text-base bg-v2-surface-surface-highlight": props.active,
+          "opacity-70": !props.active && accountCount() === 0,
+        }}
+        onClick={() => {
+          void actions.refetch()
+          void props.openAccounts()
+        }}
+      >
+        <span class="flex size-4 shrink-0 items-center justify-center rounded bg-orange-500/20 text-[9px] font-semibold text-orange-300">
+          CA
+        </span>
+        <span class="truncate">{label()}</span>
+        <span class="truncate text-v2-text-text-muted">{detail()}</span>
+      </Button>
+    </TooltipV2>
   )
 }
 
