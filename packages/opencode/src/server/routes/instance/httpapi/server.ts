@@ -634,11 +634,38 @@ function sanitizeCodexMultiAuthLoginAttempt(value: Record<string, unknown>) {
   const output = typeof value.output === "string" ? value.output : undefined
   const error = typeof value.error === "string" ? value.error : undefined
   const parsed = parseCodexAuthStart(output)
-  delete sanitized.userCode
+  const phase = typeof value.phase === "string" ? value.phase : ""
+  const userCode = typeof value.userCode === "string" ? value.userCode.trim() : parsed.code
+  if (phase === "waiting_for_device_approval" && userCode) sanitized.userCode = userCode
+  else delete sanitized.userCode
   if (output !== undefined) sanitized.output = redactCodexAuthOutput(output)
   if (error !== undefined) sanitized.error = redactCodexAuthOutput(error)
   if (value.hasUserCode || parsed.code) sanitized.hasUserCode = true
   return sanitized
+}
+
+function processIsRunning(pid: unknown) {
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function normalizeCodexMultiAuthLoginAttempt(attempt: Record<string, unknown> | null) {
+  if (attempt?.phase !== "waiting_for_device_approval" || processIsRunning(attempt.pid)) return attempt
+  const next = sanitizeCodexMultiAuthLoginAttempt({
+    ...attempt,
+    ok: false,
+    background: false,
+    phase: "failed_after_device_code",
+    error: "Login process is no longer running before the Codex account was confirmed.",
+    note: "Start a fresh Authenticate Codex account flow and approve the newest code.",
+  })
+  writeCodexMultiAuthLoginAttempt(next)
+  return next
 }
 
 function redactCodexAuthOutput(value: string | undefined) {
@@ -652,7 +679,7 @@ function redactCodexAuthOutput(value: string | undefined) {
 
 async function codexMultiAuthStatus() {
   const status = await runCodexMultiAuthCommand("status")
-  const loginAttempt = readCodexMultiAuthLoginAttempt()
+  const loginAttempt = normalizeCodexMultiAuthLoginAttempt(readCodexMultiAuthLoginAttempt())
   const base = {
     commands: ["login", "login-headless", "list", "status", "limits", "health", "run"],
     loginRoute: "/experimental/codex-multi-auth/login",
@@ -719,6 +746,22 @@ function parseCodexAuthStart(value: string | undefined) {
 async function codexMultiAuthLoginStart() {
   const script = codexMultiAuthScript()
   const command = "cd /home/dev/repos/LLM-Experiments && node scripts/opencode-codex-multi-auth-profile.mjs login-headless"
+  const existing = normalizeCodexMultiAuthLoginAttempt(readCodexMultiAuthLoginAttempt())
+  if (
+    existing?.phase === "waiting_for_device_approval" &&
+    existing.authorizationURL &&
+    existing.userCode &&
+    processIsRunning(existing.pid)
+  ) {
+    return {
+      ...existing,
+      ok: true,
+      configured: true,
+      background: true,
+      reused: true,
+      note: "A Codex OAuth device-code login is already waiting for approval. Use this link/code, then refresh Accounts.",
+    }
+  }
   if (!existsSync(script)) {
     return {
       ok: false,
@@ -782,6 +825,7 @@ async function codexMultiAuthLoginStart() {
       const cleaned = cleanStatusOutput(output)
       const parsed = parseCodexAuthStart(cleaned)
       if (parsed.url && parsed.code) {
+        const userCodeExpiresAt = new Date(Date.now() + 15 * 60_000).toISOString()
         const redacted = redactCodexAuthOutput(cleaned)
         writeCodexMultiAuthLoginAttempt({
           ok: null,
@@ -792,10 +836,12 @@ async function codexMultiAuthLoginStart() {
           command: script + " login-headless",
           terminalCommand: command,
           authorizationURL: parsed.url,
+          userCode: parsed.code,
+          userCodeExpiresAt,
           hasUserCode: true,
           phase: "waiting_for_device_approval",
           output: redacted,
-          note: "Device-code login is waiting for browser approval. The one-time code was returned by the login-start response and is not persisted in status.",
+          note: "Device-code login is waiting for browser approval.",
         })
         finish({
           ok: true,
@@ -807,6 +853,7 @@ async function codexMultiAuthLoginStart() {
           terminalCommand: command,
           authorizationURL: parsed.url,
           userCode: parsed.code,
+          userCodeExpiresAt,
           phase: "waiting_for_device_approval",
           output: redacted,
           note: "Open the link, paste the code, approve the Codex OAuth account, then refresh Accounts. Repeat once per Codex account.",
@@ -841,8 +888,8 @@ async function codexMultiAuthLoginStart() {
         },
         true,
       )
-    }, 18_000)
-    hardStop = setTimeout(killTree, 10 * 60_000)
+    }, 75_000)
+    hardStop = setTimeout(killTree, 16 * 60_000)
     child.stdout?.on("data", append)
     child.stderr?.on("data", append)
     child.on("error", (error) => {
