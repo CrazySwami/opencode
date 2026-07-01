@@ -655,6 +655,23 @@ function processIsRunning(pid: unknown) {
 }
 
 function normalizeCodexMultiAuthLoginAttempt(attempt: Record<string, unknown> | null) {
+  if (
+    attempt &&
+    attempt.phase === "account_written_or_already_authorized" &&
+    parseCodexAuthFailure([attempt.output, attempt.error, attempt.authorizationURL].filter(Boolean).join("\n"))
+  ) {
+    const next = sanitizeCodexMultiAuthLoginAttempt({
+      ...attempt,
+      ok: false,
+      background: false,
+      authorizationURL: undefined,
+      phase: "failed_before_device_code",
+      error: parseCodexAuthFailure([attempt.output, attempt.error, attempt.authorizationURL].filter(Boolean).join("\n")),
+      note: "Start a fresh Authenticate Codex account flow after the rate limit or challenge clears.",
+    })
+    writeCodexMultiAuthLoginAttempt(next)
+    return next
+  }
   if (attempt?.phase !== "waiting_for_device_approval" || processIsRunning(attempt.pid)) return attempt
   const next = sanitizeCodexMultiAuthLoginAttempt({
     ...attempt,
@@ -730,10 +747,7 @@ async function codexMultiAuthStatus() {
 
 function parseCodexAuthStart(value: string | undefined) {
   const text = value ?? ""
-  const url =
-    text.match(/https:\/\/auth\.openai\.com\/codex\/device[^\s)]*/i)?.[0] ??
-    text.match(/https?:\/\/[^\s)]+/i)?.[0] ??
-    null
+  const url = text.match(/https:\/\/auth\.openai\.com\/codex\/device[^\s)]*/i)?.[0] ?? null
   const code =
     text.match(/Enter code:\s*([A-Z0-9-]+)/i)?.[1] ??
     text.match(/Enter this one-time code:\s*([A-Z0-9-]+)/i)?.[1] ??
@@ -741,6 +755,17 @@ function parseCodexAuthStart(value: string | undefined) {
     text.match(/\b([A-Z0-9]{4}-[A-Z0-9]{4,6})\b/)?.[1] ??
     null
   return { url, code }
+}
+
+function parseCodexAuthFailure(value: string | undefined) {
+  const text = value ?? ""
+  if (/Device code login could not be started/i.test(text)) return "Device-code login could not be started."
+  if (/\b429\b/.test(text)) return "OpenAI device-code login was rate limited or challenged."
+  if (/challenges\.cloudflare\.com/i.test(text) || /Just a moment/i.test(text)) {
+    return "OpenAI device-code login returned a Cloudflare challenge instead of a device code."
+  }
+  if (/failed to initiate device authorization/i.test(text)) return "Failed to initiate device authorization."
+  return null
 }
 
 async function codexMultiAuthLoginStart() {
@@ -923,9 +948,12 @@ async function codexMultiAuthLoginStart() {
       if (hardStop) clearTimeout(hardStop)
       const cleaned = cleanStatusOutput(output)
       const parsed = parseCodexAuthStart(cleaned)
+      const authFailure = parseCodexAuthFailure(cleaned)
       const redacted = redactCodexAuthOutput(cleaned)
       const phase =
-        code === 0
+        authFailure
+          ? "failed_before_device_code"
+          : code === 0
           ? "account_written_or_already_authorized"
           : parsed.url || parsed.code
             ? "failed_after_device_code"
@@ -941,7 +969,7 @@ async function codexMultiAuthLoginStart() {
         hasUserCode: !!parsed.code,
         phase,
         output: redacted,
-        error: code === 0 ? undefined : `Login command exited with ${signal ?? code}`,
+        error: authFailure ?? (code === 0 ? undefined : `Login command exited with ${signal ?? code}`),
         note:
           phase === "failed_after_device_code"
             ? "The device-code process failed after printing a code. Start a fresh Authenticate Codex account flow before approving another code."
