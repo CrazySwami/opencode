@@ -751,6 +751,13 @@ export default function Page() {
     return current instanceof HTMLElement ? current : undefined
   }
 
+  const blurActiveTextInput = () => {
+    const activeElement = deepActiveElement()
+    if (!activeElement) return
+    const editable = activeElement.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(activeElement.tagName)
+    if (editable) activeElement.blur()
+  }
+
   const handleKeyDown = (event: KeyboardEvent) => {
     const path = event.composedPath()
     const target = path.find((item): item is HTMLElement => item instanceof HTMLElement)
@@ -1742,6 +1749,18 @@ export default function Page() {
     )
   }
 
+  const switchMobileTab = (tab: "session" | "workspace") => {
+    blurActiveTextInput()
+    setStore("mobileTab", tab)
+  }
+
+  const handleMobileTabPointerDown = (tab: "session" | "workspace") => (event: PointerEvent) => {
+    blurActiveTextInput()
+    if (isDesktop() && event.pointerType !== "touch") return
+    event.preventDefault()
+    setStore("mobileTab", tab)
+  }
+
   const mobileTabs = (compact = false, bottom = false) => (
     <div
       class="grid grid-cols-2 overflow-hidden border-border-weaker-base bg-background-base"
@@ -1764,7 +1783,8 @@ export default function Page() {
           "py-2": compact,
           "border-r border-border-weaker-base": true,
         }}
-        onClick={() => setStore("mobileTab", "session")}
+        onPointerDown={handleMobileTabPointerDown("session")}
+        onClick={() => switchMobileTab("session")}
       >
         {language.t("session.tab.session")}
       </button>
@@ -1778,7 +1798,8 @@ export default function Page() {
           "text-text-weak hover:text-text-base": store.mobileTab !== "workspace",
           "py-2": compact,
         }}
-        onClick={() => setStore("mobileTab", "workspace")}
+        onPointerDown={handleMobileTabPointerDown("workspace")}
+        onClick={() => switchMobileTab("workspace")}
       >
         <div class="flex items-center justify-center gap-1.5">
           <span>Workspace</span>
