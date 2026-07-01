@@ -21,7 +21,11 @@ import { applyPath, backPath, forwardPath } from "./titlebar-history"
 import { TitlebarTabStrip } from "@/components/titlebar-tab-strip"
 import { makeEventListener } from "@solid-primitives/event-listener"
 import { createMediaQuery } from "@solid-primitives/media"
-import { readSessionTabsRemovedDetail, SESSION_TABS_REMOVED_EVENT } from "@/components/titlebar-session-events"
+import {
+  notifySessionTabSelected,
+  readSessionTabsRemovedDetail,
+  SESSION_TABS_REMOVED_EVENT,
+} from "@/components/titlebar-session-events"
 import { useGlobal } from "@/context/global"
 import { ServerConnection, useServer } from "@/context/server"
 import { tabKey, useTabs } from "@/context/tabs"
@@ -490,6 +494,9 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
                   forceTruncate={tabsAreOverflowing()}
                   onOverflowChange={setTabsAreOverflowing}
                   onNavigate={(tab, el) => {
+                    if (tab.type === "session") {
+                      notifySessionTabSelected({ server: tab.server, sessionID: tab.sessionId })
+                    }
                     tabs.select(tab)
                     el?.scrollIntoView({ behavior: "instant" })
                   }}

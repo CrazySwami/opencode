@@ -69,6 +69,10 @@ import { TerminalPanel } from "@/pages/session/terminal-panel"
 import { useComposerCommands } from "@/pages/session/use-composer-commands"
 import { useSessionCommands } from "@/pages/session/use-session-commands"
 import { useSessionHashScroll } from "@/pages/session/use-session-hash-scroll"
+import {
+  readSessionTabSelectedDetail,
+  SESSION_TAB_SELECTED_EVENT,
+} from "@/components/titlebar-session-events"
 import { Identifier } from "@/utils/id"
 import { diffs as list } from "@/utils/diffs"
 import { Persist, persisted } from "@/utils/persist"
@@ -657,6 +661,17 @@ export default function Page() {
       { defer: true },
     ),
   )
+
+  const stopSessionTabSelected = makeEventListener(window, SESSION_TAB_SELECTED_EVENT, (event) => {
+    const detail = readSessionTabSelectedDetail(event)
+    if (!detail) return
+    if (detail.sessionID !== params.id) return
+    const currentServer = requireServerKey(params.server)
+    if (detail.server !== currentServer) return
+    if (isDesktop()) return
+    setStore("mobileTab", "session")
+  })
+  onCleanup(stopSessionTabSelected)
 
   const stopVcs = sdk().event.listen((evt) => {
     if (evt.details.type !== "file.watcher.updated") return
