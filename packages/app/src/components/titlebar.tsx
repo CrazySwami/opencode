@@ -349,9 +349,28 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
               if (editable) activeElement.blur()
             }
 
+            let homePointerRouted = false
+            const routeHome = () => tabs.toggleHome({ home: layout.route().type === "home", current: currentTab() })
             const toggleHome = () => {
               blurActiveEditable()
-              tabs.toggleHome({ home: layout.route().type === "home", current: currentTab() })
+              routeHome()
+            }
+            const handleHomePointerDown = (event: PointerEvent) => {
+              blurActiveEditable()
+              if (!mobile() && event.pointerType !== "touch") return
+              homePointerRouted = true
+              event.preventDefault()
+              routeHome()
+              window.setTimeout(() => {
+                homePointerRouted = false
+              }, 500)
+            }
+            const handleHomeClick = () => {
+              if (homePointerRouted) {
+                homePointerRouted = false
+                return
+              }
+              toggleHome()
             }
 
             command.register("titlebar-home", () => [
@@ -457,8 +476,8 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
                     class="!w-9 shrink-0"
                     icon={<IconV2 name="grid-plus" />}
                     state={layout.route().type === "home" ? "pressed" : undefined}
-                    onPointerDown={blurActiveEditable}
-                    onClick={toggleHome}
+                    onPointerDown={handleHomePointerDown}
+                    onClick={handleHomeClick}
                     aria-label={language.t("home.title")}
                     aria-pressed={layout.route().type === "home"}
                   />
