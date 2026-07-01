@@ -424,6 +424,8 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
   const [browserError, setBrowserError] = createSignal<string | undefined>()
   const [previewReady, setPreviewReady] = createSignal(false)
   const [useNoVNC, setUseNoVNC] = createSignal(true)
+  const [vncConnected, setVncConnected] = createSignal(false)
+  const [vncFailed, setVncFailed] = createSignal(false)
   const [vncPerformance, setVncPerformance] = createSignal<"fast" | "balanced" | "sharp">("fast")
   const [annotating, setAnnotating] = createSignal(false)
   const [drawing, setDrawing] = createSignal(false)
@@ -461,35 +463,63 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
     const proxiedURL = status().proxiedLiveURL
     const liveURL = status().browserUse?.liveURL
 
-    if (window.location.protocol === "http:" && liveURL) {
-      try {
-        const live = new URL(liveURL, window.location.href)
-        const params = new URLSearchParams({
-          autoconnect: "true",
-          resize: "scale",
-          reconnect: "true",
-          host: live.hostname,
-          port: live.port || (live.protocol === "https:" ? "443" : "80"),
-          path: "websockify",
-          quality: String(vncPreset().qualityLevel ?? 4),
-          compression: String(vncPreset().compressionLevel ?? 0),
-        })
-        return `/experimental/browser/novnc/vnc.html?${params.toString()}`
-      } catch {
-        // Fall through to the proxied URL.
-      }
-    }
-
     const url = proxiedURL || liveURL
     if (!url) return undefined
     try {
       const parsed = new URL(url, window.location.href)
       if (window.location.protocol === "https:" && parsed.protocol !== "https:") return undefined
+      parsed.searchParams.set("frame", String(streamKey()))
       return applyVNCPerformanceParams(parsed.toString())
     } catch {
       return undefined
     }
   })
+
+  createEffect(() => {
+    const url = interactiveUrl()
+    setVncConnected(false)
+    setVncFailed(false)
+    if (!url || annotating()) return
+
+    const timeout = window.setTimeout(() => {
+      if (vncConnected()) return
+      setVncFailed(true)
+      setUseNoVNC(false)
+      setPreviewReady(false)
+      setBrowserError("Interactive VNC did not connect; showing screenshot stream fallback.")
+    }, 8000)
+
+    onCleanup(() => window.clearTimeout(timeout))
+  })
+
+  createEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return
+      const data = event.data
+      if (!data || typeof data !== "object") return
+      if (data.type !== "opencode-browser-vnc") return
+
+      if (data.state === "connected") {
+        setVncConnected(true)
+        setVncFailed(false)
+        setPreviewReady(true)
+        setBrowserError(undefined)
+        return
+      }
+
+      setVncConnected(false)
+      if (data.state === "disconnected" || data.state === "credentialsrequired" || data.state === "error") {
+        setVncFailed(true)
+        setUseNoVNC(false)
+        setPreviewReady(false)
+        setBrowserError("Interactive VNC disconnected; showing screenshot stream fallback.")
+      }
+    }
+
+    window.addEventListener("message", onMessage)
+    onCleanup(() => window.removeEventListener("message", onMessage))
+  })
+
   const displayUrl = createMemo(() => status().currentURL || browserUrl() || "about:blank")
 
   const refreshStatus = async () => {
@@ -769,7 +799,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
             <IconButton icon="enter" variant="ghost" class="h-7 w-7 shrink-0" disabled={controlsDisabled()} onClick={submitBrowserUrl} aria-label="Open URL" />
           </form>
           <div class="hidden min-w-0 items-center gap-1 md:flex">
-            <span class="max-w-40 truncate px-1 text-11-regular text-text-weak">{browserExposureBlocked() ? "blocked" : browserBusy() ? "working" : useNoVNC() && interactiveUrl() && !annotating() ? "interactive VNC" : previewReady() ? "screenshot stream" : "connecting"}</span>
+            <span class="max-w-40 truncate px-1 text-11-regular text-text-weak">{browserExposureBlocked() ? "blocked" : browserBusy() ? "working" : useNoVNC() && vncConnected() && !annotating() ? "interactive VNC" : vncFailed() ? "stream fallback" : previewReady() ? "screenshot stream" : "connecting"}</span>
             <span
               class="h-2 w-2 shrink-0 rounded-full"
               classList={{
@@ -838,6 +868,9 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
                     disabled={browserExposureBlocked()}
                     onClick={() => {
                       setPreviewReady(false)
+                      setVncConnected(false)
+                      setVncFailed(false)
+                      setBrowserError(undefined)
                       setUseNoVNC(!useNoVNC())
                     }}
                   >
@@ -863,6 +896,10 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
                       type="button"
                       onClick={() => {
                         setPreviewReady(false)
+                        setVncConnected(false)
+                        setVncFailed(false)
+                        setBrowserError(undefined)
+                        setUseNoVNC(true)
                         setVncPerformance(mode.id)
                       }}
                     >
@@ -937,7 +974,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
             </div>
           </Show>
           <Show
-            when={!annotating() ? interactiveUrl() : undefined}
+            when={!annotating() && useNoVNC() && !vncFailed() ? interactiveUrl() : undefined}
             fallback={
               <div class="size-full overflow-auto">
                 <img
@@ -961,7 +998,9 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
                 title="Interactive Chromium browser"
                 class="block size-full border-0 bg-white"
                 allow="clipboard-read; clipboard-write"
-                onLoad={() => setPreviewReady(true)}
+                onLoad={() => {
+                  setPreviewReady(false)
+                }}
               />
             )}
           </Show>

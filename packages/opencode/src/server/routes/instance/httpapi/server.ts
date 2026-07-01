@@ -1831,18 +1831,26 @@ function liveBrowserNoVNCLiteResponse(requestURL: string) {
       rfb.qualityLevel = ${qualityLevel};
       rfb.compressionLevel = ${compressionLevel};
 
+      const publish = (state, detail = {}) => {
+        window.parent?.postMessage({ type: "opencode-browser-vnc", state, detail }, window.location.origin);
+      };
+
       rfb.addEventListener("connect", () => {
         status.textContent = "interactive";
         status.dataset.connected = "true";
+        publish("connected");
         target.focus?.();
       });
       rfb.addEventListener("disconnect", (event) => {
+        const state = event.detail?.clean ? "disconnected" : "error";
         status.textContent = event.detail?.clean ? "disconnected" : "connection lost";
         status.dataset.connected = "false";
+        publish(state, event.detail ?? {});
       });
       rfb.addEventListener("credentialsrequired", () => {
         status.textContent = "credentials required";
         status.dataset.connected = "false";
+        publish("credentialsrequired");
       });
 
       window.addEventListener("beforeunload", () => rfb.disconnect());
