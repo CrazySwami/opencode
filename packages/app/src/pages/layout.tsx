@@ -58,6 +58,7 @@ import { HelpButton } from "@/components/help-button"
 import { Titlebar, type TitlebarUpdate } from "@/components/titlebar"
 import { useDirectoryPicker } from "@/components/directory-picker"
 import { ServerConnection, useServer } from "@/context/server"
+import { useTabs } from "@/context/tabs"
 import { useLanguage, type Locale } from "@/context/language"
 import { pathKey } from "@/utils/path-key"
 import {
@@ -122,6 +123,7 @@ export default function LegacyLayout(props: ParentProps) {
   const command = useCommand()
   const theme = useTheme()
   const language = useLanguage()
+  const tabs = useTabs()
   createEffect(() => setV2Toast(false))
   const initialDirectory = decode64(params.dir)
   const route = createMemo(() => {
@@ -324,6 +326,20 @@ export default function LegacyLayout(props: ParentProps) {
 
   const navigateWithSidebarReset = (href: string) => {
     clearSidebarHoverState()
+    navigate(href)
+    layout.mobileSidebar.hide()
+  }
+
+  const openNewSessionDraft = (directory: string, prompt?: string) => {
+    clearSidebarHoverState()
+    if (settings.general.newLayoutDesigns() && tabs.ready()) {
+      tabs.newDraft({ server: server.key, directory }, prompt ?? "")
+      layout.mobileSidebar.hide()
+      return
+    }
+
+    const slug = base64Encode(directory)
+    const href = prompt ? `/${slug}/session?prompt=${encodeURIComponent(prompt)}` : `/${slug}/session`
     navigate(href)
     layout.mobileSidebar.hide()
   }
@@ -889,7 +905,7 @@ export default function LegacyLayout(props: ParentProps) {
       if (nextSession) {
         navigate(`/${params.dir}/session/${nextSession.id}`)
       } else {
-        navigate(`/${params.dir}/session`)
+        openNewSessionDraft(session.directory)
       }
     }
   }
@@ -1254,7 +1270,7 @@ export default function LegacyLayout(props: ParentProps) {
       return
     }
 
-    navigateWithSidebarReset(`/${base64Encode(root)}/session`)
+    openNewSessionDraft(root)
   }
 
   function navigateToSession(session: Session | undefined) {
@@ -1276,14 +1292,13 @@ export default function LegacyLayout(props: ParentProps) {
 
     for (const link of collectNewSessionDeepLinks(urls)) {
       void openProject(link.directory, false)
-      const slug = base64Encode(link.directory)
       if (link.prompt) {
+        const slug = base64Encode(link.directory)
         setSessionHandoff(SessionStateKey.from(server.scope(), SessionRouteKey.fromLegacy(slug)), {
           prompt: link.prompt,
         })
       }
-      const href = link.prompt ? `/${slug}/session?prompt=${encodeURIComponent(link.prompt)}` : `/${slug}/session`
-      navigateWithSidebarReset(href)
+      openNewSessionDraft(link.directory, link.prompt)
     }
   }
 
@@ -1393,7 +1408,7 @@ export default function LegacyLayout(props: ParentProps) {
     const deletedKey = pathKey(directory)
     const shouldLeave = leaveDeletedWorkspace || (!!params.dir && currentKey === deletedKey)
     if (!leaveDeletedWorkspace && shouldLeave) {
-      navigateWithSidebarReset(`/${base64Encode(root)}/session`)
+      openNewSessionDraft(root)
     }
 
     setBusy(directory, true)
@@ -1441,7 +1456,7 @@ export default function LegacyLayout(props: ParentProps) {
     const valid = dirs.some((item) => pathKey(item) === nextKey)
 
     if (params.dir && projectRoot(nextCurrent) === root && !valid) {
-      navigateWithSidebarReset(`/${base64Encode(root)}/session`)
+      openNewSessionDraft(root)
     }
   }
 
@@ -1513,9 +1528,7 @@ export default function LegacyLayout(props: ParentProps) {
         {
           label: language.t("command.session.new"),
           onClick: () => {
-            const href = `/${base64Encode(directory)}/session`
-            navigate(href)
-            layout.mobileSidebar.hide()
+            openNewSessionDraft(directory)
           },
         },
         {
@@ -1549,7 +1562,7 @@ export default function LegacyLayout(props: ParentProps) {
     const handleDelete = () => {
       const leaveDeletedWorkspace = !!params.dir && pathKey(currentDir()) === pathKey(props.directory)
       if (leaveDeletedWorkspace) {
-        navigateWithSidebarReset(`/${base64Encode(props.root)}/session`)
+        openNewSessionDraft(props.root)
       }
       dialog.close()
       void deleteWorkspace(props.root, props.directory, leaveDeletedWorkspace)
@@ -1868,7 +1881,7 @@ export default function LegacyLayout(props: ParentProps) {
     })
 
     serverSync().child(created.directory)
-    navigateWithSidebarReset(`/${base64Encode(created.directory)}/session`)
+    openNewSessionDraft(created.directory)
   }
 
   const workspaceSidebarCtx: WorkspaceSidebarContext = {
@@ -2120,7 +2133,7 @@ export default function LegacyLayout(props: ParentProps) {
                           onClick={() => {
                             const dir = worktree()
                             if (!dir) return
-                            navigateWithSidebarReset(`/${base64Encode(dir)}/session`)
+                            openNewSessionDraft(dir)
                           }}
                         >
                           <IconV2 name="edit" size="small" />

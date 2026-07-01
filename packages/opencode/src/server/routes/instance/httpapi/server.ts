@@ -550,6 +550,20 @@ type CodexMultiAuthCommandResult = {
   error?: string
 }
 
+type CodexMultiAuthStatusResult = Record<string, unknown>
+
+let codexMultiAuthStatusInFlight: Promise<CodexMultiAuthStatusResult> | null = null
+let codexMultiAuthStatusCache:
+  | {
+      expiresAt: number
+      value: CodexMultiAuthStatusResult
+    }
+  | null = null
+
+function clearCodexMultiAuthStatusCache() {
+  codexMultiAuthStatusCache = null
+}
+
 async function runCodexMultiAuthCommand(command: string, timeout = 8000): Promise<CodexMultiAuthCommandResult> {
   const script = codexMultiAuthScript()
   if (!existsSync(script))
@@ -636,6 +650,7 @@ function sanitizeCodexMultiAuthLoginAttempt(value: Record<string, unknown>) {
   const parsed = parseCodexAuthStart(output)
   const phase = typeof value.phase === "string" ? value.phase : ""
   const userCode = typeof value.userCode === "string" ? value.userCode.trim() : parsed.code
+  if (!sanitized.authMode && parsed.mode) sanitized.authMode = parsed.mode
   if (phase === "waiting_for_device_approval" && userCode) sanitized.userCode = userCode
   else delete sanitized.userCode
   if (output !== undefined) sanitized.output = redactCodexAuthOutput(output)
@@ -672,14 +687,16 @@ function normalizeCodexMultiAuthLoginAttempt(attempt: Record<string, unknown> | 
     writeCodexMultiAuthLoginAttempt(next)
     return next
   }
-  if (attempt?.phase !== "waiting_for_device_approval" || processIsRunning(attempt.pid)) return attempt
+  const waiting =
+    attempt?.phase === "waiting_for_device_approval" || attempt?.phase === "waiting_for_browser_approval"
+  if (!waiting || processIsRunning(attempt.pid)) return attempt
   const next = sanitizeCodexMultiAuthLoginAttempt({
     ...attempt,
     ok: false,
     background: false,
     phase: "failed_after_device_code",
     error: "Login process is no longer running before the Codex account was confirmed.",
-    note: "Start a fresh Authenticate Codex account flow and approve the newest code.",
+    note: "Start a fresh Authenticate Codex account flow and approve the newest auth URL.",
   })
   writeCodexMultiAuthLoginAttempt(next)
   return next
@@ -694,13 +711,13 @@ function redactCodexAuthOutput(value: string | undefined) {
     .replace(/\b[A-Z0-9]{4}-[A-Z0-9]{4,6}\b/g, "[redacted-code]")
 }
 
-async function codexMultiAuthStatus() {
+async function buildCodexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> {
   const status = await runCodexMultiAuthCommand("status")
   const loginAttempt = normalizeCodexMultiAuthLoginAttempt(readCodexMultiAuthLoginAttempt())
   const base = {
     commands: ["login", "login-headless", "list", "status", "limits", "health", "run"],
     loginRoute: "/experimental/codex-multi-auth/login",
-    authFlow: "opencode auth login --provider openai --method \"Codex OAuth (Device Code)\"",
+    authFlow: "opencode-multi-auth add <alias>",
     loginAttempt,
   }
   if (!status.configured || !status.ok)
@@ -712,14 +729,28 @@ async function codexMultiAuthStatus() {
       sendRouting: "unavailable",
       warning: status.error ?? "Codex multi-auth status is unavailable.",
     }
-  const [list, limits, health] = await Promise.all([
-    runCodexMultiAuthCommand("list", 4000),
-    runCodexMultiAuthCommand("limits", 2500),
-    runCodexMultiAuthCommand("health", 2500),
-  ])
+  const statusAccountCount = parseCodexAccountCount(status.output)
+  const detailResults: CodexMultiAuthCommandResult[] =
+    statusAccountCount > 0
+      ? await Promise.all([
+          runCodexMultiAuthCommand("list", 4000),
+          runCodexMultiAuthCommand("limits", 2500),
+          runCodexMultiAuthCommand("health", 2500),
+        ])
+      : [
+          { ok: true, configured: true, output: status.output },
+          { ok: true, configured: true, output: "" },
+          { ok: true, configured: true, output: "" },
+        ]
+  const [list, limits, health] = detailResults
   const accountCount = parseCodexAccountCount(status.output, list.output, limits.output, health.output)
   const accountsConfigured = accountCount > 0
   const loginAttemptPhase = typeof loginAttempt?.phase === "string" ? loginAttempt.phase : null
+  const loginAuthMode = typeof loginAttempt?.authMode === "string" ? loginAttempt.authMode : null
+  const failedAuthStartWarning =
+    loginAuthMode === "browser-callback"
+      ? "The last Codex login printed an OAuth callback URL but timed out before the localhost callback returned to CT100. Start a fresh Authenticate Codex account flow and open the new link in the server Agent Browser."
+      : "The last Codex login printed a device code but failed before writing an account. Start a fresh Authenticate Codex account flow."
   return {
     ...status,
     ...base,
@@ -735,7 +766,7 @@ async function codexMultiAuthStatus() {
       : loginAttemptPhase === "account_written_or_already_authorized"
         ? "The last Codex login process exited successfully, but no multi-auth account is visible yet. Refresh status once; if accountCount remains 0, rerun Authenticate Codex account."
         : loginAttemptPhase === "failed_after_device_code"
-          ? "The last Codex login printed a device code but failed before writing an account. Start a fresh Authenticate Codex account flow."
+          ? failedAuthStartWarning
           : "No Codex multi-auth plugin accounts are configured yet. Normal OpenAI OAuth may exist, but Codex Multi-Auth model selections currently fall back to the normal OpenAI provider.",
     statusPhase: accountsConfigured ? "account_written" : loginAttemptPhase ?? "needs_plugin_account",
     usageSummary: parseCodexUsageSummary(limits.output),
@@ -745,16 +776,72 @@ async function codexMultiAuthStatus() {
   }
 }
 
+async function codexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> {
+  const now = Date.now()
+  if (codexMultiAuthStatusCache && codexMultiAuthStatusCache.expiresAt > now) {
+    return {
+      ...codexMultiAuthStatusCache.value,
+      cache: {
+        hit: true,
+        expiresInMs: codexMultiAuthStatusCache.expiresAt - now,
+      },
+    }
+  }
+  if (codexMultiAuthStatusInFlight) return codexMultiAuthStatusInFlight
+  codexMultiAuthStatusInFlight = buildCodexMultiAuthStatus()
+    .then((value) => {
+      codexMultiAuthStatusCache = {
+        value,
+        expiresAt: Date.now() + 15_000,
+      }
+      return value
+    })
+    .finally(() => {
+      codexMultiAuthStatusInFlight = null
+    })
+  return codexMultiAuthStatusInFlight
+}
+
+async function statusWithTimeout<T>(label: string, timeoutMs: number, fallback: T, fn: () => Promise<T>) {
+  let timedOut = false
+  try {
+    const result = await Promise.race([
+      fn(),
+      delay(timeoutMs).then(() => {
+        timedOut = true
+        return fallback
+      }),
+    ])
+    if (timedOut && result && typeof result === "object") {
+      return {
+        ...(result as Record<string, unknown>),
+        ok: false,
+        timedOut: true,
+        error: `${label} timed out after ${timeoutMs}ms`,
+      } as T
+    }
+    return result
+  } catch (error) {
+    return {
+      ...(fallback as Record<string, unknown>),
+      ok: false,
+      error: errorMessage(error),
+    } as T
+  }
+}
+
 function parseCodexAuthStart(value: string | undefined) {
   const text = value ?? ""
-  const url = text.match(/https:\/\/auth\.openai\.com\/codex\/device[^\s)]*/i)?.[0] ?? null
+  const deviceURL = text.match(/https:\/\/auth\.openai\.com\/codex\/device[^\s)]*/i)?.[0] ?? null
+  const browserCallbackURL = text.match(/https:\/\/auth\.openai\.com\/oauth\/authorize[^\s)]*/i)?.[0] ?? null
+  const url = deviceURL ?? browserCallbackURL ?? null
   const code =
     text.match(/Enter code:\s*([A-Z0-9-]+)/i)?.[1] ??
     text.match(/Enter this one-time code:\s*([A-Z0-9-]+)/i)?.[1] ??
     text.match(/user[_ -]?code[:\s]+([A-Z0-9-]+)/i)?.[1] ??
     text.match(/\b([A-Z0-9]{4}-[A-Z0-9]{4,6})\b/)?.[1] ??
     null
-  return { url, code }
+  return { url, code, mode: browserCallbackURL ? "browser-callback" : deviceURL ? "device-code" : null }
 }
 
 function parseCodexAuthFailure(value: string | undefined) {
@@ -769,13 +856,15 @@ function parseCodexAuthFailure(value: string | undefined) {
 }
 
 async function codexMultiAuthLoginStart() {
+  clearCodexMultiAuthStatusCache()
   const script = codexMultiAuthScript()
   const command = "cd /home/dev/repos/LLM-Experiments && node scripts/opencode-codex-multi-auth-profile.mjs login-headless"
   const existing = normalizeCodexMultiAuthLoginAttempt(readCodexMultiAuthLoginAttempt())
+  const existingWaiting =
+    existing?.phase === "waiting_for_device_approval" || existing?.phase === "waiting_for_browser_approval"
   if (
-    existing?.phase === "waiting_for_device_approval" &&
+    existingWaiting &&
     existing.authorizationURL &&
-    existing.userCode &&
     processIsRunning(existing.pid)
   ) {
     return {
@@ -784,7 +873,7 @@ async function codexMultiAuthLoginStart() {
       configured: true,
       background: true,
       reused: true,
-      note: "A Codex OAuth device-code login is already waiting for approval. Use this link/code, then refresh Accounts.",
+      note: "A Codex OAuth login is already waiting for approval. Open this URL in the server Agent Browser, then refresh Accounts.",
     }
   }
   if (!existsSync(script)) {
@@ -847,11 +936,12 @@ async function codexMultiAuthLoginStart() {
     const append = (chunk: Buffer) => {
       output += chunk.toString()
       if (output.length > 16_000) output = output.slice(-16_000)
-      const cleaned = cleanStatusOutput(output)
-      const parsed = parseCodexAuthStart(cleaned)
-      if (parsed.url && parsed.code) {
+      const parsed = parseCodexAuthStart(output)
+      if (parsed.url && (parsed.code || parsed.mode === "browser-callback")) {
+        const cleaned = cleanStatusOutput(output)
         const userCodeExpiresAt = new Date(Date.now() + 15 * 60_000).toISOString()
         const redacted = redactCodexAuthOutput(cleaned)
+        const phase = parsed.code ? "waiting_for_device_approval" : "waiting_for_browser_approval"
         writeCodexMultiAuthLoginAttempt({
           ok: null,
           configured: true,
@@ -863,11 +953,14 @@ async function codexMultiAuthLoginStart() {
           authorizationURL: parsed.url,
           userCode: parsed.code,
           userCodeExpiresAt,
-          hasUserCode: true,
-          phase: "waiting_for_device_approval",
+          hasUserCode: !!parsed.code,
+          phase,
           output: redacted,
-          note: "Device-code login is waiting for browser approval.",
+          note: parsed.code
+            ? "Device-code login is waiting for browser approval."
+            : "Browser-callback login is waiting for approval. Open this URL in the server Agent Browser so localhost callback returns to CT100.",
         })
+        clearCodexMultiAuthStatusCache()
         finish({
           ok: true,
           configured: true,
@@ -879,9 +972,12 @@ async function codexMultiAuthLoginStart() {
           authorizationURL: parsed.url,
           userCode: parsed.code,
           userCodeExpiresAt,
-          phase: "waiting_for_device_approval",
+          hasUserCode: !!parsed.code,
+          phase,
           output: redacted,
-          note: "Open the link, paste the code, approve the Codex OAuth account, then refresh Accounts. Repeat once per Codex account.",
+          note: parsed.code
+            ? "Open the link, paste the code, approve the Codex OAuth account, then refresh Accounts. Repeat once per Codex account."
+            : "Open the link in the server Agent Browser, approve the Codex OAuth account, then refresh Accounts. Repeat once per Codex account.",
         })
       }
     }
@@ -899,6 +995,7 @@ async function codexMultiAuthLoginStart() {
         error: redacted || "Timed out before the login command printed a device-code URL.",
         output: redacted,
       })
+      clearCodexMultiAuthStatusCache()
       finish(
         {
           ok: false,
@@ -929,6 +1026,7 @@ async function codexMultiAuthLoginStart() {
         phase: "failed_before_device_code",
         error: error.message,
       })
+      clearCodexMultiAuthStatusCache()
       finish(
         {
           ok: false,
@@ -946,8 +1044,8 @@ async function codexMultiAuthLoginStart() {
     })
     child.on("exit", (code, signal) => {
       if (hardStop) clearTimeout(hardStop)
+      const parsed = parseCodexAuthStart(output)
       const cleaned = cleanStatusOutput(output)
-      const parsed = parseCodexAuthStart(cleaned)
       const authFailure = parseCodexAuthFailure(cleaned)
       const redacted = redactCodexAuthOutput(cleaned)
       const phase =
@@ -966,18 +1064,20 @@ async function codexMultiAuthLoginStart() {
         command: script + " login-headless",
         terminalCommand: command,
         authorizationURL: parsed.url,
+        authMode: parsed.mode,
         hasUserCode: !!parsed.code,
         phase,
         output: redacted,
         error: authFailure ?? (code === 0 ? undefined : `Login command exited with ${signal ?? code}`),
         note:
           phase === "failed_after_device_code"
-            ? "The device-code process failed after printing a code. Start a fresh Authenticate Codex account flow before approving another code."
+            ? "The OAuth process failed after printing an approval URL. Start a fresh Authenticate Codex account flow before approving another URL."
             : phase === "account_written_or_already_authorized"
               ? "The Codex OAuth login process exited successfully. Refresh Accounts to verify accountCount."
-              : "The plugin login command exited before printing a device-code URL.",
+              : "The plugin login command exited before printing an approval URL.",
       }
       writeCodexMultiAuthLoginAttempt(body)
+      clearCodexMultiAuthStatusCache()
       if (settled) return
       finish({ ...body, userCode: parsed.code })
     })
@@ -1092,10 +1192,32 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
     )
 
     yield* router.add("GET", "/experimental/workspace-suite/status", () =>
-      Effect.gen(function* () {
-        const workspaceIndex = yield* buildWorkspaceIndex(projects, sessions)
-        return yield* Effect.promise(async () =>
-          HttpServerResponse.jsonUnsafe({
+      Effect.promise(async () =>
+        {
+          const [openDesign, macView, routines, codexAccounts] = await Promise.all([
+            statusWithTimeout<any>(
+              "Open Design status",
+              1000,
+              { configured: false, proxyReady: true, proxyURL: "/experimental/open-design/proxy/", publicURL: "https://design.hustletogether.com" },
+              openDesignStatus,
+            ),
+            statusWithTimeout<any>("Mac View status", 1500, { configured: false, mode: "read-only" }, macViewStatus),
+            statusWithTimeout<any>("Routines status", 1000, { ok: false, routines: [] }, routinesStatus),
+            statusWithTimeout<any>(
+              "Codex multi-auth status",
+              600,
+              {
+                ok: false,
+                configured: true,
+                accountCount: 0,
+                accountsConfigured: false,
+                sendRouting: "openai-fallback",
+                warning: "Codex multi-auth summary is deferred. Open the Codex tab for direct status.",
+              },
+              codexMultiAuthStatus,
+            ),
+          ])
+          return HttpServerResponse.jsonUnsafe({
           ok: true,
           generatedAt: new Date().toISOString(),
           hostname: process.env.OPENCODE_HOSTNAME ?? null,
@@ -1113,20 +1235,23 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
             "workspace_tabs",
           ],
           workspaceTabs: workspaceTabsStatus(),
-          openDesign: await openDesignStatus(),
-          macView: await macViewStatus(),
-          routines: await routinesStatus(),
+          openDesign,
+          macView,
+          routines,
           resources: {
             route: "/experimental/resources/status",
             macHost: process.env.OPENCODE_MAC_RESOURCE_HOST || "alfonso-mac",
           },
-          codexAccounts: await codexMultiAuthStatus(),
+          codexAccounts,
           artifactRootConfigured: !!process.env.OPENCODE_BROWSER_HOME,
           agentChrome: liveBrowserGateStatus(),
-          workspaceIndex,
-        }),
-        )
-      }),
+          workspaceIndex: {
+            route: "/__workspace-index",
+            note: "Project and session details are fetched separately so the main workspace status route cannot block initial rendering.",
+          },
+        })
+        },
+      ),
     )
 
     yield* router.add("GET", "/experimental/workspace-suite/environments", () =>
@@ -1261,9 +1386,23 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
       }),
     )
 
-    yield* router.add("GET", "/experimental/open-design/proxy/*", (request) =>
-      Effect.promise(async () => openDesignProxyResponse(request.url)),
-    )
+    const openDesignProxyHandler = (request: HttpServerRequest.HttpServerRequest) =>
+      Effect.gen(function* () {
+        const raw = request.method === "GET" || request.method === "HEAD" ? undefined : yield* Effect.orDie(request.text)
+        return yield* Effect.promise(async () =>
+          openDesignProxyResponse(request.url, request.method, request.headers, raw),
+        )
+      })
+
+    yield* router.add("GET", "/experimental/open-design/proxy/*", openDesignProxyHandler)
+    yield* router.add("POST", "/experimental/open-design/proxy/*", openDesignProxyHandler)
+    yield* router.add("PUT", "/experimental/open-design/proxy/*", openDesignProxyHandler)
+    yield* router.add("PATCH", "/experimental/open-design/proxy/*", openDesignProxyHandler)
+    yield* router.add("DELETE", "/experimental/open-design/proxy/*", openDesignProxyHandler)
+    yield* router.add("OPTIONS", "/experimental/open-design/proxy/*", openDesignProxyHandler)
+
+    yield* router.add("GET", "/_next/*", openDesignProxyHandler)
+    yield* router.add("GET", "/app-icon.png", openDesignProxyHandler)
 
     yield* router.add("GET", "/experimental/mac-view/status", () =>
       Effect.promise(async () => HttpServerResponse.jsonUnsafe(await macViewStatus())),
@@ -1521,6 +1660,15 @@ const liveBrowserDebugPort = () => Number(process.env.OPENCODE_LIVE_BROWSER_DEBU
 const liveBrowserNoVNCURL = () => (process.env.OPENCODE_LIVE_BROWSER_NOVNC_URL || "http://127.0.0.1:6080").replace(/\/+$/, "")
 const liveBrowserExposureEnabled = () => process.env.OPENCODE_LIVE_BROWSER_EXPOSE !== "0"
 const liveBrowserStrictAccessRequired = () => process.env.OPENCODE_LIVE_BROWSER_REQUIRE_ACCESS === "1"
+const liveBrowserViewport = () => {
+  const raw = process.env.OPENCODE_LIVE_BROWSER_VIEWPORT || "1920x1400"
+  const match = raw.match(/^(\d{3,5})x(\d{3,5})$/i)
+  if (!match) return { width: 1920, height: 1400 }
+  return {
+    width: Math.min(7680, Math.max(640, Number(match[1]))),
+    height: Math.min(4320, Math.max(480, Number(match[2]))),
+  }
+}
 
 type LiveBrowserAccess =
   | {
@@ -1851,6 +1999,7 @@ function liveBrowserNoVNCLiteResponse(requestURL: string) {
   const scaleViewport = params.get("scaleViewport") !== "false"
   const resizeSession = params.get("resizeSession") === "true"
   const clipViewport = params.get("clipViewport") === "true"
+  const dragViewport = params.get("dragViewport") === "true"
   const showDotCursor = params.get("showDotCursor") !== "false"
   const html = `<!doctype html>
 <html>
@@ -1862,7 +2011,9 @@ function liveBrowserNoVNCLiteResponse(requestURL: string) {
       :root { color-scheme: dark light; background: #050505; }
       html, body, #screen { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #050505; }
       #screen { display: flex; align-items: stretch; justify-content: stretch; }
-      #screen canvas { width: 100% !important; height: 100% !important; object-fit: contain; background: #fff; }
+      #screen canvas { background: #fff; }
+      body[data-scale="true"] #screen canvas { width: 100% !important; height: 100% !important; object-fit: contain; }
+      body[data-scale="false"] #screen { align-items: flex-start; justify-content: flex-start; overflow: hidden; }
       #status {
         position: fixed;
         left: 12px;
@@ -1881,7 +2032,7 @@ function liveBrowserNoVNCLiteResponse(requestURL: string) {
       body:hover #status { opacity: 0.82; }
     </style>
   </head>
-  <body>
+  <body data-scale="${scaleViewport ? "true" : "false"}">
     <div id="screen"></div>
     <div id="status">connecting</div>
     <script type="module">
@@ -1902,7 +2053,7 @@ function liveBrowserNoVNCLiteResponse(requestURL: string) {
       rfb.focusOnClick = true;
       rfb.showDotCursor = ${JSON.stringify(showDotCursor)};
       rfb.clipViewport = ${JSON.stringify(clipViewport)};
-      rfb.dragViewport = false;
+      rfb.dragViewport = ${JSON.stringify(dragViewport)};
       rfb.qualityLevel = ${qualityLevel};
       rfb.compressionLevel = ${compressionLevel};
 
@@ -1969,6 +2120,7 @@ async function liveBrowserStatus(access?: Extract<LiveBrowserAccess, { ok: true 
     fast: { qualityLevel: 4, compressionLevel: 0, scaleViewport: true, resizeSession: false },
     balanced: { qualityLevel: 6, compressionLevel: 1, scaleViewport: true, resizeSession: false },
     sharp: { qualityLevel: 8, compressionLevel: 2, scaleViewport: true, resizeSession: false },
+    mobile: { qualityLevel: 4, compressionLevel: 0, scaleViewport: false, resizeSession: false, clipViewport: true, dragViewport: true },
   } as const
   const defaultNoVNC = noVNCModes[noVNCMode as keyof typeof noVNCModes] ?? noVNCModes.fast
   const defaultNoVNCParams = new URLSearchParams({
@@ -1977,6 +2129,8 @@ async function liveBrowserStatus(access?: Extract<LiveBrowserAccess, { ok: true 
     compression: String(defaultNoVNC.compressionLevel),
     scaleViewport: String(defaultNoVNC.scaleViewport),
     resizeSession: String(defaultNoVNC.resizeSession),
+    clipViewport: String("clipViewport" in defaultNoVNC ? defaultNoVNC.clipViewport : false),
+    dragViewport: String("dragViewport" in defaultNoVNC ? defaultNoVNC.dragViewport : false),
   })
   return {
     ok: browser.ok,
@@ -1984,6 +2138,7 @@ async function liveBrowserStatus(access?: Extract<LiveBrowserAccess, { ok: true 
     primaryTransport: "cdp",
     fallbackTransport: "vnc",
     display: liveBrowserDisplay(),
+    viewport: liveBrowserViewport(),
     profile: liveBrowserProfile(),
     profilePolicy: liveBrowserProfilePolicy(),
     debugPort: liveBrowserDebugPort(),
@@ -2040,9 +2195,13 @@ async function ensureLiveBrowser(): Promise<{ ok: true; pid?: number } | { ok: f
     .split(/\s+/)
     .map((value) => Number(value))
     .find((value) => Number.isFinite(value) && value > 0)
-  if (pid) return { ok: true, pid }
+  if (pid) {
+    await fitLiveBrowserWindow().catch(() => undefined)
+    return { ok: true, pid }
+  }
 
   const chrome = process.env.OPENCODE_LIVE_BROWSER_BIN || "google-chrome"
+  const viewport = liveBrowserViewport()
   const child = spawn(
     chrome,
     [
@@ -2054,7 +2213,7 @@ async function ensureLiveBrowser(): Promise<{ ok: true; pid?: number } | { ok: f
       `--user-data-dir=${liveBrowserProfile()}`,
       "--remote-debugging-address=127.0.0.1",
       `--remote-debugging-port=${liveBrowserDebugPort()}`,
-      "--window-size=1440,1000",
+      `--window-size=${viewport.width},${viewport.height}`,
       "--start-maximized",
       "about:blank",
     ],
@@ -2069,6 +2228,7 @@ async function ensureLiveBrowser(): Promise<{ ok: true; pid?: number } | { ok: f
   )
   child.unref()
   await delay(1200)
+  await fitLiveBrowserWindow().catch(() => undefined)
   return { ok: true, pid: child.pid }
 }
 
@@ -2446,6 +2606,22 @@ async function raiseLiveBrowserWindow() {
   await delay(150)
 }
 
+async function fitLiveBrowserWindow() {
+  const windows = await visibleChromeWindows()
+  const match = windows
+    .filter((window) => (window.width ?? 0) >= 200 && (window.height ?? 0) >= 200)
+    .sort((a, b) => (b.width ?? 0) * (b.height ?? 0) - (a.width ?? 0) * (a.height ?? 0))[0]
+  if (!match) return
+
+  const viewport = liveBrowserViewport()
+  await execText("xdotool", ["windowmove", match.id, "0", "0"], liveBrowserDisplay()).catch(() => undefined)
+  await execText(
+    "xdotool",
+    ["windowsize", match.id, String(viewport.width), String(viewport.height)],
+    liveBrowserDisplay(),
+  ).catch(() => undefined)
+}
+
 async function visibleChromeWindows() {
   const raw = await execText("xdotool", ["search", "--onlyvisible", "--class", "chrome"], liveBrowserDisplay()).catch(
     () => "",
@@ -2455,10 +2631,18 @@ async function visibleChromeWindows() {
     .map((value) => value.trim())
     .filter(Boolean)
 
-  const windows: Array<{ id: string; title: string }> = []
+  const windows: Array<{ id: string; title: string; width?: number; height?: number }> = []
   for (const id of ids) {
     const title = await execText("xdotool", ["getwindowname", id], liveBrowserDisplay()).catch(() => "")
-    windows.push({ id, title: title.trim() })
+    const info = await execText("xwininfo", ["-id", id], liveBrowserDisplay()).catch(() => "")
+    const width = Number(info.match(/Width:\s+(\d+)/)?.[1])
+    const height = Number(info.match(/Height:\s+(\d+)/)?.[1])
+    windows.push({
+      id,
+      title: title.trim(),
+      width: Number.isFinite(width) ? width : undefined,
+      height: Number.isFinite(height) ? height : undefined,
+    })
   }
   return windows
 }
@@ -2827,27 +3011,110 @@ function openDesignConfig() {
     daemonURL,
     publicURL,
     token,
-    proxyReady: process.env.OPENCODE_OPEN_DESIGN_PROXY === "1",
+    proxyReady: process.env.OPENCODE_OPEN_DESIGN_PROXY !== "0",
   }
 }
 
-async function openDesignProxyResponse(rawURL: string) {
+async function openDesignProxyResponse(
+  rawURL: string,
+  method = "GET",
+  requestHeaders: Record<string, string | undefined> = {},
+  rawBody?: string,
+) {
   const { daemonURL, token, proxyReady } = openDesignConfig()
   if (!proxyReady) return HttpServerResponse.text("Open Design proxy is disabled", { status: 404 })
 
   const url = new URL(rawURL, "http://localhost")
-  const pathPart = url.pathname.replace(/^\/experimental\/open-design\/proxy\/?/, "")
+  const pathPart = url.pathname.startsWith("/experimental/open-design/proxy/")
+    ? url.pathname.replace(/^\/experimental\/open-design\/proxy\/?/, "")
+    : url.pathname.replace(/^\/+/, "")
   const targetURL = `${daemonURL}/${pathPart}${url.search}`
-  const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {}
+  const headers: Record<string, string> = {
+    accept: requestHeaders.accept || "*/*",
+    "x-opencode-open-design-proxy": "1",
+  }
+  const contentType = requestHeaders["content-type"]
+  if (contentType) headers["content-type"] = contentType
+  if (token) headers.authorization = `Bearer ${token}`
 
-  const response = await fetch(targetURL, { headers }).catch(() => undefined)
+  const response = await fetch(targetURL, {
+    method,
+    headers,
+    body: method === "GET" || method === "HEAD" ? undefined : rawBody,
+    redirect: "manual",
+  }).catch(() => undefined)
   if (!response) return HttpServerResponse.text("Open Design daemon unavailable", { status: 502 })
+  const responseContentType = response.headers.get("content-type") ?? "text/html"
+  const openDesignCSP = [
+    "default-src 'self' data: blob:",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: https://static.cloudflareinsights.com",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "img-src 'self' data: blob: https:",
+    "font-src 'self' data: https://fonts.gstatic.com",
+    "connect-src * data: blob:",
+    "frame-src 'self' https: http:",
+    "worker-src 'self' blob:",
+    "media-src 'self' data: blob: https: http:",
+  ].join("; ")
+
+  const rewriteOpenDesignURL = (value: string) => {
+    if (value.startsWith(daemonURL)) {
+      const next = new URL(value)
+      return `/experimental/open-design/proxy${next.pathname}${next.search}${next.hash}`
+    }
+    if (value.startsWith("/")) return `/experimental/open-design/proxy${value}`
+    return value
+  }
+
+  const withProxyHeaders = (result: any) => {
+    let next = HttpServerResponse.setHeader(
+      HttpServerResponse.setHeader(result, "content-security-policy", openDesignCSP),
+      "cache-control",
+      "private, no-store",
+    )
+    const location = response.headers.get("location")
+    if (location) next = HttpServerResponse.setHeader(next, "location", rewriteOpenDesignURL(location))
+    return next
+  }
+
+  const rewriteOpenDesignText = (input: string) =>
+    input
+      .replaceAll('src="/_next/', 'src="/experimental/open-design/proxy/_next/')
+      .replaceAll('href="/_next/', 'href="/experimental/open-design/proxy/_next/')
+      .replaceAll('href="/app-icon.png"', 'href="/experimental/open-design/proxy/app-icon.png"')
+      .replaceAll('"/_next/', '"/experimental/open-design/proxy/_next/')
+      .replaceAll("'/_next/", "'/experimental/open-design/proxy/_next/")
+      .replaceAll("`/_next/", "`/experimental/open-design/proxy/_next/")
+      .replaceAll('\\"/_next/', '\\"/experimental/open-design/proxy/_next/')
+      .replaceAll("\\'/_next/", "\\'/experimental/open-design/proxy/_next/")
+      .replaceAll('"/api/', '"/experimental/open-design/proxy/api/')
+      .replaceAll("'/api/", "'/experimental/open-design/proxy/api/")
+      .replaceAll("`/api/", "`/experimental/open-design/proxy/api/")
+      .replaceAll('\\"/api/', '\\"/experimental/open-design/proxy/api/')
+      .replaceAll("\\'/api/", "\\'/experimental/open-design/proxy/api/")
+      .replaceAll("url(/_next/", "url(/experimental/open-design/proxy/_next/")
+
+  if (responseContentType.includes("text/html")) {
+    const html = await response.text()
+    return withProxyHeaders(HttpServerResponse.text(rewriteOpenDesignText(html), { status: response.status, contentType: responseContentType }))
+  }
+
+  if (responseContentType.includes("text/css")) {
+    const css = await response.text()
+    return withProxyHeaders(HttpServerResponse.text(rewriteOpenDesignText(css), { status: response.status, contentType: responseContentType }))
+  }
+
+  if (
+    responseContentType.includes("javascript") ||
+    responseContentType.includes("application/json") ||
+    responseContentType.includes("text/plain")
+  ) {
+    const body = await response.text()
+    return withProxyHeaders(HttpServerResponse.text(rewriteOpenDesignText(body), { status: response.status, contentType: responseContentType }))
+  }
+
   const bytes = new Uint8Array(await response.arrayBuffer())
-  return HttpServerResponse.setHeader(
-    HttpServerResponse.uint8Array(bytes, { contentType: response.headers.get("content-type") ?? "text/html" }),
-    "cache-control",
-    "private, no-store",
-  )
+  return withProxyHeaders(HttpServerResponse.uint8Array(bytes, { status: response.status, contentType: responseContentType }))
 }
 
 function macViewFeedURL() {

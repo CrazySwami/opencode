@@ -13,7 +13,11 @@ import { useLanguage } from "@/context/language"
 import { getAvatarColors, type LocalProject, useLayout } from "@/context/layout"
 import { useNotification } from "@/context/notification"
 import { usePermission } from "@/context/permission"
+import { useServer } from "@/context/server"
+import { useSettings } from "@/context/settings"
+import { useTabs } from "@/context/tabs"
 import { messageAgentColor } from "@/utils/agent"
+import { decode64 } from "@/utils/base64"
 import { sessionTitle } from "@/utils/session-title"
 import { sessionPermissionRequest } from "../session/composer/session-request-tree"
 import { childSessionOnPath, getProjectAvatarSource, hasProjectPermissions } from "./helpers"
@@ -288,17 +292,27 @@ export const NewSessionItem = (props: {
 }): JSX.Element => {
   const layout = useLayout()
   const language = useLanguage()
+  const server = useServer()
+  const settings = useSettings()
+  const tabs = useTabs()
   const label = language.t("command.session.new")
   const tooltip = () => props.mobile || !props.sidebarExpanded()
+  const openDraft = (event: MouseEvent) => {
+    if (layout.sidebar.opened()) return
+    props.clearHoverProjectSoon()
+    if (!settings.general.newLayoutDesigns()) return
+    const directory = decode64(props.slug)
+    if (!directory || !tabs.ready()) return
+    event.preventDefault()
+    event.stopPropagation()
+    tabs.newDraft({ server: server.key, directory }, "")
+  }
   const item = (
     <A
       href={`/${props.slug}/session`}
       end
       class={`flex items-center gap-2 min-w-0 w-full text-left focus:outline-none ${props.dense ? "py-0.5" : "py-1"}`}
-      onClick={() => {
-        if (layout.sidebar.opened()) return
-        props.clearHoverProjectSoon()
-      }}
+      onClick={openDraft}
     >
       <div class="shrink-0 size-6 flex items-center justify-center">
         <IconV2 name="edit" size="small" class="text-icon-weak" />

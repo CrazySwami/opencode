@@ -151,6 +151,9 @@ function PanelTab(props: { tab: string; onClose: (tab: string) => void; onActiva
   return (
     <Tabs.Trigger
       value={props.tab}
+      data-panel-tab-id={props.tab}
+      class="shrink-0"
+      classes={{ button: "max-w-44 max-sm:w-9 max-sm:px-0 max-sm:justify-center" }}
       closeButton={
         <TooltipKeybind
           title={language.t("common.closeTab")}
@@ -175,9 +178,9 @@ function PanelTab(props: { tab: string; onClose: (tab: string) => void; onActiva
       onClick={() => props.onActivate(props.tab)}
       onMiddleClick={() => props.onClose(props.tab)}
     >
-      <div class="flex items-center gap-2">
+      <div class="flex min-w-0 items-center gap-2">
         <PanelGlyph tab={props.tab} />
-        <span>{panelTabLabel(props.tab)}</span>
+        <span class="truncate max-sm:sr-only">{panelTabLabel(props.tab)}</span>
       </div>
     </Tabs.Trigger>
   )
@@ -187,8 +190,13 @@ function PanelMenuButton(props: { tab: string; onSelect: () => void }) {
   return (
     <button
       type="button"
+      data-panel-menu-item-id={props.tab}
       class="flex h-8 w-full items-center gap-2 rounded-md px-3 text-left text-13-regular text-text-base hover:bg-surface-base-hover"
-      onClick={props.onSelect}
+      onClick={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        props.onSelect()
+      }}
     >
       <PanelGlyph tab={props.tab} />
       <span>{panelTabLabel(props.tab)}</span>
@@ -377,6 +385,10 @@ type LiveBrowserStatus = {
   title?: string
   mode?: string
   display?: string
+  viewport?: {
+    width?: number
+    height?: number
+  }
   error?: string
   exposureBlocked?: boolean
   requiredAccessBoundary?: string
@@ -385,7 +397,18 @@ type LiveBrowserStatus = {
   noVNC?: {
     viewer?: string
     defaultMode?: string
-    modes?: Record<string, { qualityLevel?: number; compressionLevel?: number; scaleViewport?: boolean; resizeSession?: boolean }>
+    modes?: Record<
+      string,
+      {
+        qualityLevel?: number
+        compressionLevel?: number
+        scaleViewport?: boolean
+        resizeSession?: boolean
+        clipViewport?: boolean
+        dragViewport?: boolean
+        showDotCursor?: boolean
+      }
+    >
   }
   profilePolicy?: {
     status?: string
@@ -413,7 +436,17 @@ type LiveBrowserStatus = {
   }
 }
 
+function liveBrowserViewportFromStatus(status?: Pick<LiveBrowserStatus, "viewport">) {
+  const width = Number(status?.viewport?.width)
+  const height = Number(status?.viewport?.height)
+  return {
+    width: Number.isFinite(width) && width > 0 ? width : 1920,
+    height: Number.isFinite(height) && height > 0 ? height : 1400,
+  }
+}
+
 function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRequest }) {
+  const narrowBrowser = createMediaQuery("(max-width: 767px)")
   const [streamKey, setStreamKey] = createSignal(Date.now())
   const [status, setStatus] = createSignal<LiveBrowserStatus>({})
   const [browserUrl, setBrowserUrl] = createSignal("")
@@ -426,7 +459,9 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
   const [useNoVNC, setUseNoVNC] = createSignal(true)
   const [vncConnected, setVncConnected] = createSignal(false)
   const [vncFailed, setVncFailed] = createSignal(false)
-  const [vncPerformance, setVncPerformance] = createSignal<"fast" | "balanced" | "sharp">("fast")
+  const [vncPerformance, setVncPerformance] = createSignal<"fast" | "balanced" | "sharp" | "mobile">(
+    narrowBrowser() ? "mobile" : "fast",
+  )
   const [annotating, setAnnotating] = createSignal(false)
   const [drawing, setDrawing] = createSignal(false)
   const [lastArtifact, setLastArtifact] = createSignal<{ url: string; name: string } | undefined>()
@@ -437,12 +472,14 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
   const browserExposureBlocked = createMemo(() => !!status().exposureBlocked)
   const profilePolicy = createMemo(() => status().profilePolicy)
   const controlsDisabled = createMemo(() => browserBusy() || browserExposureBlocked())
+  const liveViewport = createMemo(() => liveBrowserViewportFromStatus(status()))
   const streamSrc = createMemo(() => `${status().streamURL ?? "/experimental/browser/live/stream"}?t=${streamKey()}`)
   const vncPreset = createMemo(() => {
     const fallback = {
       fast: { qualityLevel: 4, compressionLevel: 0, scaleViewport: true, resizeSession: false },
       balanced: { qualityLevel: 6, compressionLevel: 1, scaleViewport: true, resizeSession: false },
       sharp: { qualityLevel: 8, compressionLevel: 2, scaleViewport: true, resizeSession: false },
+      mobile: { qualityLevel: 4, compressionLevel: 0, scaleViewport: false, resizeSession: false, clipViewport: true, dragViewport: true },
     }[vncPerformance()]
     return status().noVNC?.modes?.[vncPerformance()] ?? fallback
   })
@@ -453,6 +490,9 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
     parsed.searchParams.set("compression", String(preset.compressionLevel ?? 0))
     parsed.searchParams.set("scaleViewport", String(preset.scaleViewport ?? true))
     parsed.searchParams.set("resizeSession", String(preset.resizeSession ?? false))
+    parsed.searchParams.set("clipViewport", String(preset.clipViewport ?? false))
+    parsed.searchParams.set("dragViewport", String(preset.dragViewport ?? false))
+    parsed.searchParams.set("showDotCursor", String(("showDotCursor" in preset ? preset.showDotCursor : undefined) ?? true))
     parsed.searchParams.set("performance", vncPerformance())
     return parsed.toString()
   }
@@ -593,8 +633,11 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
     const image = imageRef
     if (!image) return
     const rect = image.getBoundingClientRect()
-    const x = Math.round(((event.clientX - rect.left) / rect.width) * 1440)
-    const y = Math.round(((event.clientY - rect.top) / rect.height) * 1000)
+    const viewport = liveViewport()
+    const width = image.naturalWidth || viewport.width
+    const height = image.naturalHeight || viewport.height
+    const x = Math.round(((event.clientX - rect.left) / rect.width) * width)
+    const y = Math.round(((event.clientY - rect.top) / rect.height) * height)
     return { x, y }
   }
 
@@ -758,6 +801,10 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
   })
 
   createEffect(() => {
+    if (narrowBrowser() && vncPerformance() === "fast") setVncPerformance("mobile")
+  })
+
+  createEffect(() => {
     if (!annotating()) return
     resizeCanvas()
     const onResize = () => resizeCanvas()
@@ -885,6 +932,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
                   { id: "fast", label: "Fast" },
                   { id: "balanced", label: "Balanced" },
                   { id: "sharp", label: "Sharp" },
+                  { id: "mobile", label: "Mobile" },
                 ] as const}>
                   {(mode) => (
                     <button
@@ -1072,6 +1120,7 @@ function PreviewTabContent() {
   const [externalMode, setExternalMode] = createSignal<"idle" | "loading" | "ready" | "failed">("idle")
   const [externalError, setExternalError] = createSignal<string | undefined>()
   const [externalKey, setExternalKey] = createSignal(Date.now())
+  const [externalViewport, setExternalViewport] = createSignal({ width: 1920, height: 1400 })
   let externalImageRef: HTMLImageElement | undefined
   const currentKind = createMemo(() => previewURLKind(currentURL()))
   const externalStreamURL = createMemo(() => `/experimental/browser/live/stream?t=${externalKey()}`)
@@ -1087,13 +1136,23 @@ function PreviewTabContent() {
     setExternalKey(Date.now())
   }
 
+  const refreshExternalViewport = async () => {
+    const response = await fetch("/experimental/browser/live/status", { cache: "no-store" }).catch(() => undefined)
+    if (!response?.ok) return
+    const body = await response.json().catch(() => undefined)
+    setExternalViewport(liveBrowserViewportFromStatus(body))
+  }
+
   const externalPointForEvent = (event: MouseEvent) => {
     const image = externalImageRef
     if (!image) return
     const rect = image.getBoundingClientRect()
+    const viewport = externalViewport()
+    const width = image.naturalWidth || viewport.width
+    const height = image.naturalHeight || viewport.height
     return {
-      x: Math.round(((event.clientX - rect.left) / rect.width) * 1440),
-      y: Math.round(((event.clientY - rect.top) / rect.height) * 1000),
+      x: Math.round(((event.clientX - rect.left) / rect.width) * width),
+      y: Math.round(((event.clientY - rect.top) / rect.height) * height),
     }
   }
 
@@ -1144,6 +1203,7 @@ function PreviewTabContent() {
     }
     setExternalMode("loading")
     setExternalError(undefined)
+    void refreshExternalViewport()
     runExternalInput({ action: "goto", url })
       .then(() => {
         setExternalMode("ready")
@@ -1273,20 +1333,28 @@ function PreviewTabContent() {
   )
 }
 
-function createPolledJson<T>(url: () => string | undefined, intervalMs = 10000) {
+function createPolledJson<T>(url: () => string | undefined, intervalMs = 10000, timeoutMs = 8000) {
   const [data, setData] = createSignal<T | undefined>()
   const [error, setError] = createSignal<string | undefined>()
+  const [pending, setPending] = createSignal(false)
   const refresh = async () => {
     const current = url()
     if (!current) return
+    if (pending()) return
+    setPending(true)
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs)
     try {
-      const response = await fetch(current, { cache: "no-store" })
+      const response = await fetch(current, { cache: "no-store", signal: controller.signal })
       const body = await response.json()
       if (!response.ok) throw new Error(JSON.stringify(body))
       setData(() => body as T)
       setError(undefined)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(err instanceof DOMException && err.name === "AbortError" ? `Timed out loading ${current}` : err instanceof Error ? err.message : String(err))
+    } finally {
+      window.clearTimeout(timer)
+      setPending(false)
     }
   }
   createEffect(() => {
@@ -1295,7 +1363,7 @@ function createPolledJson<T>(url: () => string | undefined, intervalMs = 10000) 
     const timer = window.setInterval(() => void refresh(), intervalMs)
     onCleanup(() => window.clearInterval(timer))
   })
-  return { data, error, refresh }
+  return { data, error, pending, refresh }
 }
 
 function StatusRow(props: { label: string; value?: string | number | boolean | null }) {
@@ -1456,6 +1524,35 @@ function TabChrome(props: {
               <MenuV2.Item onSelect={() => setToolsOpen(true)}>Show tab tools</MenuV2.Item>
               <MenuV2.Item onSelect={() => void copyTabState()}>Copy tab JSON</MenuV2.Item>
             </MenuV2.Group>
+            <MenuV2.Separator />
+            <MenuV2.Group>
+              <MenuV2.GroupLabel>Open Workspace Tab</MenuV2.GroupLabel>
+              <For each={WORKSPACE_PANEL_TABS.filter((item) => !item.hidden)}>
+                {(item) => (
+                  <MenuV2.Item
+                    data-panel-menu-item-id={`topbar:${item.id}`}
+                    onSelect={() => {
+                      window.dispatchEvent(
+                        new CustomEvent("opencode:workspace-tab-action", {
+                          detail: {
+                            type: "workspace_tab",
+                            action: "open",
+                            tab: item.id,
+                            source: "panel-topbar",
+                            actionID: `topbar-${Date.now()}`,
+                          },
+                        }),
+                      )
+                    }}
+                  >
+                    <span class="flex min-w-0 items-center gap-2">
+                      <PanelGlyph tab={item.id} />
+                      <span class="truncate">{item.label}</span>
+                    </span>
+                  </MenuV2.Item>
+                )}
+              </For>
+            </MenuV2.Group>
           </MenuButton>
           <MenuButton label="View">
             <MenuV2.Group>
@@ -1542,8 +1639,11 @@ function OpenDesignTabContent(props: {
   const [localBridgeState, setLocalBridgeState] = createSignal<any>({ mode: "dashboard", active: false })
   const bridgeState = createMemo(() => props.bridgeState?.() ?? localBridgeState())
   const launchUrl = createMemo(() =>
-    status.data()?.publicURL ?? (status.data()?.proxyReady ? (status.data()?.proxyURL ?? "/experimental/open-design/proxy/") : "https://design.hustletogether.com"),
+    status.data()?.proxyReady === false
+      ? (status.data()?.publicURL ?? "https://design.hustletogether.com")
+      : (status.data()?.proxyURL ?? "/experimental/open-design/proxy/"),
   )
+  const externalUrl = createMemo(() => status.data()?.publicURL ?? "https://design.hustletogether.com")
   const frameUrl = createMemo(() => {
     const base = launchUrl()
     const url = new URL(base, window.location.origin)
@@ -1572,7 +1672,7 @@ function OpenDesignTabContent(props: {
     return "Waiting for bridge"
   })
 
-  const openExternal = () => window.open(launchUrl(), "_blank", "noopener,noreferrer")
+  const openExternal = () => window.open(externalUrl(), "_blank", "noopener,noreferrer")
   const refresh = () => {
     status.refresh()
     setFrameKey(Date.now())
@@ -1674,21 +1774,6 @@ function OpenDesignTabContent(props: {
             />
           </Show>
         </div>
-        <Show when={(status.data()?.projects?.projects ?? []).length > 0}>
-          <div class="absolute bottom-3 right-3 max-h-60 w-80 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger p-3 shadow-lg">
-          <div class="text-12-regular text-text-weak mb-2">Projects</div>
-          <div class="flex flex-col gap-2">
-            <For each={status.data()?.projects?.projects ?? []}>
-              {(project: any) => (
-                <div class="flex items-center justify-between gap-3 text-13-regular">
-                  <span class="text-text-strong truncate">{project.name}</span>
-                  <span class="text-text-weak shrink-0">{project.status ?? "ready"}</span>
-                </div>
-              )}
-            </For>
-          </div>
-          </div>
-        </Show>
       </div>
     </TabChrome>
   )
@@ -1935,11 +2020,13 @@ function MacViewTabContent() {
 }
 
 function AccountsTabContent() {
-  const status = createPolledJson<any>(() => "/experimental/workspace-suite/status")
-  const workspace = createPolledJson<any>(() => "/__workspace-index", 15000)
+  const status = createPolledJson<any>(() => "/experimental/workspace-suite/status", 30000, 5000)
+  const codexStatus = createPolledJson<any>(() => "/experimental/codex-multi-auth/status", 8000, 8000)
+  const workspace = createPolledJson<any>(() => "/__workspace-index", 15000, 6000)
   const [loginStarting, setLoginStarting] = createSignal(false)
   const [loginResult, setLoginResult] = createSignal<any>()
-  const codexAccounts = createMemo(() => status.data()?.codexAccounts)
+  const codexAccounts = createMemo(() => codexStatus.data() ?? status.data()?.codexAccounts)
+  const authPanel = createMemo(() => loginResult() ?? codexAccounts()?.loginAttempt)
   const codexAccountCount = createMemo(() => {
     const count = codexAccounts()?.accountCount
     return typeof count === "number" ? count : 0
@@ -1949,6 +2036,8 @@ function AccountsTabContent() {
     if (!accounts?.configured) return "not configured"
     if (!accounts?.ok) return "status error"
     if (codexAccountCount() > 0) return "ready"
+    if (accounts.statusPhase === "account_written_or_already_authorized") return "verify account"
+    if (accounts.statusPhase === "failed_before_device_code" || accounts.statusPhase === "failed_after_device_code") return "auth failed"
     return "needs account"
   })
   const codexStatusStrong = createMemo(() => !!codexAccounts()?.ok && codexAccountCount() > 0)
@@ -1959,11 +2048,42 @@ function AccountsTabContent() {
       const response = await fetch("/experimental/codex-multi-auth/login", { method: "POST" })
       const body = await response.json()
       setLoginResult(body)
-      void status.refresh()
+      void codexStatus.refresh()
     } catch (error) {
       setLoginResult({ ok: false, error: error instanceof Error ? error.message : String(error) })
     } finally {
       setLoginStarting(false)
+    }
+  }
+
+  const openCodexAuthInAgentBrowser = async (url: string) => {
+    setLoginResult((current: any) => ({ ...(current ?? {}), browserOpenPending: true, browserOpenError: undefined }))
+    try {
+      const response = await fetch("/experimental/browser/live/input", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "goto", url }),
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok || body?.ok === false) throw new Error(body?.error ?? "Could not open auth link in Agent Browser")
+      window.dispatchEvent(
+        new CustomEvent("opencode:workspace-tab-action", {
+          detail: {
+            type: "workspace_tab",
+            action: "open",
+            tab: PANEL_BROWSER_TAB,
+            source: "codex-accounts-auth",
+            actionID: `codex-auth-browser-${Date.now()}`,
+          },
+        }),
+      )
+      setLoginResult((current: any) => ({ ...(current ?? {}), browserOpenPending: false, browserOpenedAt: new Date().toISOString() }))
+    } catch (error) {
+      setLoginResult((current: any) => ({
+        ...(current ?? {}),
+        browserOpenPending: false,
+        browserOpenError: error instanceof Error ? error.message : String(error),
+      }))
     }
   }
 
@@ -1978,6 +2098,7 @@ function AccountsTabContent() {
       iconTab={PANEL_ACCOUNTS_TAB}
       onRefresh={() => {
         void status.refresh()
+        void codexStatus.refresh()
         void workspace.refresh()
       }}
     >
@@ -2016,12 +2137,22 @@ function AccountsTabContent() {
             <button
               type="button"
               class="rounded-md border border-border-weaker-base bg-background-base px-3 py-1.5 text-12-regular text-text-strong hover:bg-surface-raised-base-hover"
-              onClick={() => void status.refresh()}
+              onClick={() => {
+                void codexStatus.refresh()
+                void status.refresh()
+              }}
             >
               Refresh status
             </button>
           </div>
-          <Show when={loginResult()}>
+          <Show when={codexStatus.error()}>
+            {(error) => (
+              <div class="mb-3 rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-12-regular text-orange-100">
+                Codex status refresh failed: {error()}
+              </div>
+            )}
+          </Show>
+          <Show when={authPanel()}>
             {(result) => (
               <div class="mb-3 rounded-md border border-border-weaker-base bg-background-base p-3 text-12-regular">
                 <div class="mb-2 flex items-center justify-between gap-2">
@@ -2044,7 +2175,7 @@ function AccountsTabContent() {
                     </div>
                   )}
                 </Show>
-                <Show when={result().authorizationURL}>
+                <Show when={result().authorizationURL ?? result().authURL}>
                   {(url) => (
                     <div class="mt-3">
                       <div class="mb-1 text-11-medium text-text-weak">Auth link</div>
@@ -2064,9 +2195,25 @@ function AccountsTabContent() {
                         >
                           Copy link
                         </button>
+                        <button
+                          type="button"
+                          class="rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60"
+                          disabled={!!result().browserOpenPending}
+                          onClick={() => void openCodexAuthInAgentBrowser(url())}
+                        >
+                          {result().browserOpenPending ? "Opening..." : "Open in Agent Browser"}
+                        </button>
                       </div>
                     </div>
                   )}
+                </Show>
+                <Show when={result().browserOpenedAt}>
+                  <div class="mt-2 rounded bg-background-stronger px-2 py-1.5 text-11-regular text-text-weak">
+                    Opened in the server Agent Browser. Complete the approval there, then press Refresh status.
+                  </div>
+                </Show>
+                <Show when={result().browserOpenError}>
+                  {(error) => <div class="mt-2 rounded border border-orange-500/20 bg-orange-500/10 px-2 py-1.5 text-11-regular text-orange-100">{error()}</div>}
                 </Show>
                 <Show when={result().userCode}>
                   {(code) => (
@@ -2091,6 +2238,12 @@ function AccountsTabContent() {
                     After the browser says the account is approved, press Refresh status. The count below should increase from {codexAccountCount()}.
                   </div>
                 </Show>
+                <Show when={result().ok && result().phase === "waiting_for_browser_approval"}>
+                  <div class="mt-2 text-12-regular text-text-weak">
+                    Open this link in the server Agent Browser, not your Mac browser, so the localhost callback returns to CT100. After approval,
+                    press Refresh status.
+                  </div>
+                </Show>
                 <Show when={result().output ?? result().error}>
                   {(output) => <pre class="mt-3 max-h-52 overflow-auto whitespace-pre-wrap break-words rounded bg-background-stronger p-2 text-11-regular text-text-weak">{output()}</pre>}
                 </Show>
@@ -2098,7 +2251,7 @@ function AccountsTabContent() {
             )}
           </Show>
           <div class="whitespace-pre-wrap break-words text-12-regular text-text-weak">
-            {status.data()?.codexAccounts?.output ?? status.data()?.codexAccounts?.error ?? "No Codex account status reported yet."}
+            {codexAccounts()?.output ?? codexAccounts()?.error ?? codexAccounts()?.warning ?? "No Codex account status reported yet."}
           </div>
         </div>
         <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
@@ -3352,6 +3505,7 @@ export function SessionSidePanel(props: {
     active: false,
   })
   const [panelMenuOpen, setPanelMenuOpen] = createSignal(false)
+  const [panelMenuAnchorElement, setPanelMenuAnchorElement] = createSignal<HTMLElement | undefined>()
   const [panelMenuPosition, setPanelMenuPosition] = createSignal({ left: 0, top: 0 })
 
   const collectWorkspaceTabClientState = () => ({
@@ -3498,20 +3652,28 @@ export function SessionSidePanel(props: {
   const workspaceActionPoller = setInterval(() => void pollWorkspaceTabActions(), 1000)
   onCleanup(() => clearInterval(workspaceActionPoller))
 
-  const setPanelMenuAnchor = (element: HTMLElement) => {
+  const updatePanelMenuPosition = (element = panelMenuAnchorElement()) => {
+    if (!element) return
     const rect = element.getBoundingClientRect()
     const menuWidth = 192
     const edgePadding = 8
     setPanelMenuPosition({
       left: Math.max(edgePadding, Math.min(rect.left, window.innerWidth - menuWidth - edgePadding)),
-      top: rect.bottom + 4,
+      top: Math.max(edgePadding, Math.min(rect.bottom + 4, window.innerHeight - edgePadding)),
     })
+  }
+
+  const setPanelMenuAnchor = (element: HTMLElement) => {
+    setPanelMenuAnchorElement(element)
+    updatePanelMenuPosition(element)
   }
 
   createEffect(() => {
     if (!panelMenuOpen()) return
 
+    const frame = requestAnimationFrame(() => updatePanelMenuPosition())
     const closeMenu = () => setPanelMenuOpen(false)
+    const updatePosition = () => updatePanelMenuPosition()
     const closeOnPointerDown = (event: PointerEvent) => {
       const target = event.target instanceof Element ? event.target : undefined
       if (target?.closest("[data-panel-menu-root], [data-panel-menu-trigger]")) return
@@ -3523,12 +3685,15 @@ export function SessionSidePanel(props: {
 
     document.addEventListener("pointerdown", closeOnPointerDown, true)
     document.addEventListener("keydown", closeOnEscape)
-    window.addEventListener("resize", closeMenu)
+    window.addEventListener("resize", updatePosition)
+    window.addEventListener("scroll", updatePosition, true)
 
     onCleanup(() => {
+      cancelAnimationFrame(frame)
       document.removeEventListener("pointerdown", closeOnPointerDown, true)
       document.removeEventListener("keydown", closeOnEscape)
-      window.removeEventListener("resize", closeMenu)
+      window.removeEventListener("resize", updatePosition)
+      window.removeEventListener("scroll", updatePosition, true)
     })
   })
 
@@ -3729,22 +3894,23 @@ export function SessionSidePanel(props: {
                             {(tab) => <SortableTab tab={tab} onTabClose={tabs().close} />}
                           </For>
                         </SortableProvider>
-                        <div data-panel-menu-trigger class="bg-background-stronger h-full shrink-0 sticky right-0 z-50 flex items-center justify-center pr-3 relative">
-                          <IconButton
-                            icon="plus-small"
-                            variant="ghost"
-                            iconSize="large"
-                            class="!rounded-md"
-                            aria-label="Add tab"
-                            aria-expanded={panelMenuOpen()}
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              if (!panelMenuOpen()) setPanelMenuAnchor(event.currentTarget)
-                              setPanelMenuOpen((open) => !open)
-                            }}
-                          />
-                        </div>
                       </Tabs.List>
+                      <div data-panel-menu-trigger data-action="workspace-add-tab" class="bg-background-stronger h-full shrink-0 z-50 flex items-center justify-center border-l border-border-weaker-base px-2 max-sm:w-14 max-sm:px-0 relative">
+                        <IconButton
+                          icon="plus-small"
+                          variant="ghost"
+                          iconSize="large"
+                          class="!rounded-md max-sm:size-10"
+                          aria-label="Add workspace tab"
+                          title="Add workspace tab"
+                          aria-expanded={panelMenuOpen()}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            if (!panelMenuOpen()) setPanelMenuAnchor(event.currentTarget)
+                            setPanelMenuOpen((open) => !open)
+                          }}
+                        />
+                      </div>
                     </div>
 
                     <Show when={panelMenuOpen()}>
@@ -3817,13 +3983,13 @@ export function SessionSidePanel(props: {
                       </Show>
                     </Tabs.Content>
 
-                    <Tabs.Content value={PANEL_BROWSER_TAB} class="flex flex-col h-full overflow-hidden contain-strict">
+                    <Tabs.Content value={PANEL_BROWSER_TAB} class="flex flex-col h-full overflow-hidden contain-layout">
                       <Show when={activePanelTab() === PANEL_BROWSER_TAB}>
                         <BrowserTabContent sessionID={params.id} launch={browserLaunch()} />
                       </Show>
                     </Tabs.Content>
 
-                    <Tabs.Content value={PANEL_PREVIEW_TAB} class="flex flex-col h-full overflow-hidden contain-strict">
+                    <Tabs.Content value={PANEL_PREVIEW_TAB} class="flex flex-col h-full overflow-hidden contain-layout">
                       <Show when={activePanelTab() === PANEL_PREVIEW_TAB}>
                         <PreviewTabContent />
                       </Show>
@@ -3831,14 +3997,14 @@ export function SessionSidePanel(props: {
 
                     <Tabs.Content
                       value={PANEL_OPEN_DESIGN_TAB}
-                      class="flex flex-col h-full overflow-hidden contain-strict"
+                      class="flex flex-col h-full overflow-hidden contain-layout"
                     >
                       <Show when={activePanelTab() === PANEL_OPEN_DESIGN_TAB}>
                         <OpenDesignTabContent bridgeState={openDesignBridgeState} onBridgeState={setOpenDesignBridgeState} />
                       </Show>
                     </Tabs.Content>
 
-                    <Tabs.Content value={PANEL_MAC_VIEW_TAB} class="flex flex-col h-full overflow-hidden contain-strict">
+                    <Tabs.Content value={PANEL_MAC_VIEW_TAB} class="flex flex-col h-full overflow-hidden contain-layout">
                       <Show when={activePanelTab() === PANEL_MAC_VIEW_TAB}>
                         <MacViewTabContent />
                       </Show>
@@ -3868,7 +4034,7 @@ export function SessionSidePanel(props: {
                       </Show>
                     </Tabs.Content>
 
-                    <Tabs.Content value={PANEL_ARTIFACTS_TAB} class="flex flex-col h-full overflow-hidden contain-strict">
+                    <Tabs.Content value={PANEL_ARTIFACTS_TAB} class="flex flex-col h-full overflow-hidden contain-layout">
                       <Show when={activePanelTab() === PANEL_ARTIFACTS_TAB}>
                         <ArtifactsTabContent sessionID={params.id} />
                       </Show>
@@ -3885,7 +4051,7 @@ export function SessionSidePanel(props: {
 
                     <Show when={activeArtifactTab()} keyed>
                       {(tab) => (
-                        <Tabs.Content value={tab} class="flex flex-col h-full overflow-hidden contain-strict">
+                        <Tabs.Content value={tab} class="flex flex-col h-full overflow-hidden contain-layout">
                           <ArtifactViewerTabContent tab={tab} />
                         </Tabs.Content>
                       )}

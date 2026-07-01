@@ -1,5 +1,6 @@
 import { useFilteredList } from "@opencode-ai/ui/hooks"
 import { useSpring } from "@opencode-ai/ui/motion-spring"
+import { Popover as KobaltePopover } from "@kobalte/core/popover"
 import {
   createEffect,
   on,
@@ -2325,6 +2326,8 @@ type CodexMultiAuthStatus = {
   activeAccount?: string | null
   rotationStrategy?: string | null
   sendRouting?: string | null
+  statusPhase?: string | null
+  loginAttempt?: string | null
   warning?: string | null
   usageSummary?: string | null
   output?: string
@@ -2353,6 +2356,7 @@ function CodexMultiAuthChip(props: {
   currentModelName: string
   openAccounts: () => void | Promise<void>
 }) {
+  const [popoverOpen, setPopoverOpen] = createSignal(false)
   const [tick, setTick] = createSignal(0)
   const [status, actions] = createResource(tick, async () => {
     const response = await fetch("/experimental/codex-multi-auth/status", { cache: "no-store" })
@@ -2392,20 +2396,27 @@ function CodexMultiAuthChip(props: {
   })
 
   return (
-    <TooltipV2 placement="top" gutter={4} value={tooltip()}>
-      <Button
+    <KobaltePopover
+      open={popoverOpen()}
+      onOpenChange={(open) => {
+        setPopoverOpen(open)
+        if (open) void actions.refetch()
+      }}
+      modal={false}
+      placement="top-start"
+      gutter={6}
+    >
+      <KobaltePopover.Trigger
+        as={Button}
         type="button"
         variant="ghost"
         size="normal"
         data-action="prompt-codex-account"
+        title={tooltip()}
         class="min-w-0 max-w-[190px] justify-start gap-1.5 rounded-md px-2 text-[12px] font-[440] leading-5 text-v2-text-text-faint"
         classList={{
           "text-v2-text-text-base bg-v2-surface-surface-highlight": props.active,
           "opacity-70": !props.active && accountCount() === 0,
-        }}
-        onClick={() => {
-          void actions.refetch()
-          void props.openAccounts()
         }}
       >
         <span class="flex size-4 shrink-0 items-center justify-center rounded bg-orange-500/20 text-[9px] font-semibold text-orange-300">
@@ -2413,8 +2424,80 @@ function CodexMultiAuthChip(props: {
         </span>
         <span class="truncate">{label()}</span>
         <span class="truncate text-v2-text-text-muted">{detail()}</span>
-      </Button>
-    </TooltipV2>
+      </KobaltePopover.Trigger>
+      <KobaltePopover.Portal>
+        <KobaltePopover.Content class="z-50 w-[320px] rounded-lg border border-border-base bg-surface-raised-stronger-non-alpha p-3 text-[12px] leading-5 text-v2-text-text-base shadow-[var(--v2-elevation-floating)] outline-none">
+          <KobaltePopover.Title class="mb-2 flex items-center gap-2 text-[13px] font-[560]">
+            <span class="flex size-5 items-center justify-center rounded bg-orange-500/20 text-[10px] font-semibold text-orange-300">
+              CA
+            </span>
+            Codex Multi-Auth
+          </KobaltePopover.Title>
+          <div class="space-y-2 text-v2-text-text-muted">
+            <div class="flex items-center justify-between gap-3">
+              <span>Accounts</span>
+              <span class="text-v2-text-text-base">{accountCount()}</span>
+            </div>
+            <div class="flex items-center justify-between gap-3">
+              <span>Routing</span>
+              <span class="max-w-[190px] truncate text-v2-text-text-base">{status()?.sendRouting ?? "unknown"}</span>
+            </div>
+            <div class="flex items-center justify-between gap-3">
+              <span>Status</span>
+              <span class="max-w-[190px] truncate text-v2-text-text-base">
+                {status.loading ? "checking" : (status()?.statusPhase ?? status()?.loginAttempt ?? "ready")}
+              </span>
+            </div>
+            <Show when={usage()}>
+              {(line) => (
+                <div class="rounded-md border border-border-weaker-base bg-background-stronger px-2 py-1 text-v2-text-text-base">
+                  {line()}
+                </div>
+              )}
+            </Show>
+            <Show when={props.active && accountCount() === 0}>
+              <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-2 py-1 text-orange-200">
+                This lane is selected, but sends fall back to normal OpenAI until a Codex account is added.
+              </div>
+            </Show>
+            <Show when={status()?.warning}>
+              {(warning) => (
+                <div class="rounded-md border border-border-weaker-base bg-background-stronger px-2 py-1 text-v2-text-text-muted">
+                  {warning()}
+                </div>
+              )}
+            </Show>
+          </div>
+          <div class="mt-3 flex items-center justify-end gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="normal"
+              class="h-7 px-2 text-[12px]"
+              onClick={(event: MouseEvent) => {
+                event.stopPropagation()
+                void actions.refetch()
+              }}
+            >
+              Refresh
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              size="normal"
+              class="h-7 px-2 text-[12px]"
+              onClick={(event: MouseEvent) => {
+                event.stopPropagation()
+                setPopoverOpen(false)
+                void props.openAccounts()
+              }}
+            >
+              Open Accounts
+            </Button>
+          </div>
+        </KobaltePopover.Content>
+      </KobaltePopover.Portal>
+    </KobaltePopover>
   )
 }
 
