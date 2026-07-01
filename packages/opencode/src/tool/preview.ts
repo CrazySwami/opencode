@@ -2,6 +2,7 @@ import { Effect, Schema } from "effect"
 import * as Tool from "./tool"
 import DESCRIPTION from "./preview.txt"
 import { captureBrowserScreenshot, runBrowserAction, type BrowserActionInput } from "./browser"
+import { publishAppleBridgeEvent } from "./ios-bridge-events"
 import { existsSync, readFileSync } from "node:fs"
 
 const actions = [
@@ -88,6 +89,14 @@ export const PreviewTool = Tool.define<typeof Parameters, Metadata, never>(
                     },
                   ]
                 : undefined
+            publishAppleBridgeEvent("preview", "preview.snapshot.ready", {
+              ok: true,
+              action: params.action,
+              previewSessionID: ctx.sessionID,
+              browserSessionID: shot.browserSessionID,
+              screenshotURL: shot.screenshotURL,
+              hasAttachment: !!attachments?.length,
+            })
             return {
               title: `preview ${params.action}`,
               output: JSON.stringify(
@@ -117,6 +126,17 @@ export const PreviewTool = Tool.define<typeof Parameters, Metadata, never>(
 
           const input = previewToBrowserAction(params)
           const result = yield* Effect.promise(() => runBrowserAction(ctx.sessionID, input, ctx.abort))
+          publishAppleBridgeEvent("preview", "preview.action.completed", {
+            ok: true,
+            action: params.action,
+            previewSessionID: ctx.sessionID,
+            browserSessionID: result.browserSessionID,
+            mappedBrowserAction: input.action,
+            url: params.action === "navigate" ? params.url : undefined,
+            selector: params.selector,
+            hasText: typeof params.text === "string" && params.text.length > 0,
+            artifactURL: result.artifactURL,
+          })
           return {
             title: `preview ${params.action}`,
             output: JSON.stringify(

@@ -121,6 +121,7 @@ import { schemaErrorLayer } from "./middleware/schema-error"
 import { captureBrowserScreenshot, runBrowserAction, sessionPaths, type BrowserActionInput } from "@/tool/browser"
 import { collectResourceStatus } from "@/tool/resource-status"
 import { createRoutineDraft, routineLogs, routinesAction, routinesStatus } from "@/tool/routines"
+import { publishAppleBridgeEvent } from "@/tool/ios-bridge-events"
 import { ackWorkspaceTabsAction, updateWorkspaceTabsClientState, workspaceTabsAction, workspaceTabsPendingActions, workspaceTabsStatus } from "@/tool/workspace-tabs"
 
 export const context = Context.makeUnsafe<unknown>(new Map())
@@ -354,6 +355,7 @@ const browserPreviewRoute = HttpRouter.use((router) =>
             Effect.succeed({ ok: false, error: error instanceof Error ? error.message : String(error) }),
           ),
         )
+        publishAppleBridgeEvent("browser", "browser.live.input", summarizeLiveBrowserEvent(body, result))
         return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : 500 })
       }),
     )
@@ -926,6 +928,77 @@ function cleanStatusOutput(value: string) {
     .slice(0, 2000)
 }
 
+function summarizeCodexAuthEvent(result: any) {
+  return {
+    ok: result?.ok === true,
+    configured: result?.configured === true,
+    background: result?.background === true,
+    phase: typeof result?.phase === "string" ? result.phase : null,
+    startedAt: typeof result?.startedAt === "string" ? result.startedAt : null,
+    authorizationURL: typeof result?.authorizationURL === "string" ? result.authorizationURL : null,
+    hasUserCode: Boolean(result?.userCode || result?.hasUserCode),
+    error: typeof result?.error === "string" ? redactCodexAuthOutput(result.error) : null,
+    note: typeof result?.note === "string" ? result.note : null,
+  }
+}
+
+function summarizeRoutineEvent(action: string, result: any, id?: string | null) {
+  const routine = result?.routine ?? result?.job ?? result?.created ?? result?.updated ?? null
+  return {
+    action,
+    ok: result?.ok === true,
+    id: id ?? routine?.id ?? result?.id ?? null,
+    name: typeof routine?.name === "string" ? routine.name : null,
+    enabled: typeof routine?.enabled === "boolean" ? routine.enabled : null,
+    lastStatus: typeof routine?.lastStatus === "string" ? routine.lastStatus : null,
+    nextRunAt: typeof routine?.nextRunAt === "string" ? routine.nextRunAt : null,
+    error: typeof result?.error === "string" ? result.error.slice(0, 500) : null,
+    totals: {
+      total: result?.status?.counts?.total ?? result?.status?.summary?.total ?? null,
+      enabled: result?.status?.counts?.enabled ?? result?.status?.summary?.enabled ?? null,
+      disabled: result?.status?.counts?.disabled ?? result?.status?.summary?.disabled ?? null,
+    },
+  }
+}
+
+function summarizeLiveBrowserEvent(input: LiveBrowserInput, result: any) {
+  return {
+    action: input.action,
+    ok: result?.ok !== false,
+    currentURL: typeof result?.currentURL === "string" ? result.currentURL : typeof result?.url === "string" ? result.url : null,
+    title: typeof result?.title === "string" ? result.title : null,
+    selector: "selector" in input && typeof input.selector === "string" ? input.selector : null,
+    hasText: "text" in input && typeof input.text === "string" && input.text.length > 0,
+    point:
+      "x" in input || "y" in input
+        ? {
+            x: typeof input.x === "number" ? input.x : null,
+            y: typeof input.y === "number" ? input.y : null,
+          }
+        : null,
+    error: typeof result?.error === "string" ? result.error.slice(0, 500) : null,
+  }
+}
+
+function summarizeOpenDesignStatusEvent(result: any) {
+  return {
+    configured: result?.configured === true,
+    publicURL: typeof result?.publicURL === "string" ? result.publicURL : null,
+    proxyReady: result?.proxyReady === true,
+    routeReady: result?.routeReady === true,
+    health: {
+      ok: result?.health?.ok === true,
+      status: typeof result?.health?.status === "number" ? result.health.status : null,
+      error: typeof result?.health?.error === "string" ? result.health.error.slice(0, 500) : null,
+    },
+    projects: {
+      ok: result?.projects?.ok === true,
+      status: typeof result?.projects?.status === "number" ? result.projects.status : null,
+      count: typeof result?.projects?.count === "number" ? result.projects.count : null,
+    },
+  }
+}
+
 const workspaceSuiteRoute = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const projects = yield* Project.Service
@@ -936,7 +1009,11 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
     )
 
     yield* router.add("POST", "/experimental/codex-multi-auth/login", () =>
-      Effect.promise(async () => HttpServerResponse.jsonUnsafe(await codexMultiAuthLoginStart())),
+      Effect.promise(async () => {
+        const result = await codexMultiAuthLoginStart()
+        publishAppleBridgeEvent("codex_auth", "codex.auth.login.started", summarizeCodexAuthEvent(result))
+        return HttpServerResponse.jsonUnsafe(result)
+      }),
     )
 
     yield* router.add("GET", "/experimental/workspace-suite/status", () =>
@@ -1043,6 +1120,7 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
           return HttpServerResponse.text("Invalid JSON body", { status: 400 })
         }
         const result = yield* Effect.promise(() => createRoutineDraft(body))
+        publishAppleBridgeEvent("routines", "routine.created", summarizeRoutineEvent("create", result))
         const error = result.ok ? undefined : (result as { error?: string }).error
         return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : error?.includes("not enabled") ? 403 : 400 })
       }),
@@ -1068,6 +1146,7 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
           return HttpServerResponse.text("Invalid JSON body", { status: 400 })
         }
         const result = yield* Effect.promise(() => routinesAction({ action: "update", id, ...body }))
+        publishAppleBridgeEvent("routines", "routine.updated", summarizeRoutineEvent("update", result, id))
         const error = result.ok ? undefined : (result as { error?: string }).error
         return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : error?.includes("not enabled") ? 403 : 400 })
       }),
@@ -1077,6 +1156,7 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
       Effect.promise(async () => {
         const id = decodeParam(request.url, /^\/experimental\/routines\/jobs\/([^/]+)\/run$/)
         const result = await routinesAction({ action: "run", id })
+        publishAppleBridgeEvent("routines", "routine.run_requested", summarizeRoutineEvent("run", result, id))
         return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : 403 })
       }),
     )
@@ -1085,6 +1165,7 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
       Effect.promise(async () => {
         const id = decodeParam(request.url, /^\/experimental\/routines\/jobs\/([^/]+)$/)
         const result = await routinesAction({ action: "delete", id })
+        publishAppleBridgeEvent("routines", "routine.deleted", summarizeRoutineEvent("delete", result, id))
         const error = result.ok ? undefined : (result as { error?: string }).error
         return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : error?.includes("not enabled") ? 403 : 400 })
       }),
@@ -1098,7 +1179,11 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
     )
 
     yield* router.add("GET", "/experimental/open-design/status", () =>
-      Effect.promise(async () => HttpServerResponse.jsonUnsafe(await openDesignStatus())),
+      Effect.promise(async () => {
+        const result = await openDesignStatus()
+        publishAppleBridgeEvent("open_design", "open_design.status.checked", summarizeOpenDesignStatusEvent(result))
+        return HttpServerResponse.jsonUnsafe(result)
+      }),
     )
 
     yield* router.add("GET", "/experimental/open-design/proxy/*", (request) =>
@@ -1122,14 +1207,21 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
         } catch {
           return HttpServerResponse.text("Invalid JSON body", { status: 400 })
         }
-        return yield* Effect.promise(async () =>
-          HttpServerResponse.jsonUnsafe({
+        return yield* Effect.promise(async () => {
+          const settings = writeMacViewSettings(body)
+          const result = {
             ok: true,
-            settings: writeMacViewSettings(body),
+            settings,
             restartRequired: body.transport === "webrtc" || body.bitrate !== undefined || body.width !== undefined || body.fps !== undefined,
             note: "Settings are persisted for the OpenCode Mac View tab. The WebRTC publisher reads these values on the next stream restart; the UI reconnects immediately.",
-          }),
-        )
+          }
+          publishAppleBridgeEvent("mac_view", "mac_view.settings.updated", {
+            ok: true,
+            settings,
+            restartRequired: result.restartRequired,
+          })
+          return HttpServerResponse.jsonUnsafe(result)
+        })
       }),
     )
 

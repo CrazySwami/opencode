@@ -5,6 +5,7 @@ import {
   type WorkspacePanelActionID,
   type WorkspacePanelTabID,
 } from "@opencode-ai/core/workspace-tabs/capabilities"
+import { publishAppleBridgeEvent } from "./ios-bridge-events"
 import * as Tool from "./tool"
 import DESCRIPTION from "./workspace-tabs.txt"
 
@@ -87,9 +88,6 @@ type PendingWorkspaceTabAction = {
 let latestClientState: WorkspaceTabsClientState | undefined
 let lastAck: unknown
 const pendingActions: PendingWorkspaceTabAction[] = []
-
-const iosBridgeIngestURL = () =>
-  (process.env.OPENCODE_IOS_BRIDGE_INGEST_URL || process.env.OPENCODE_APPLE_BRIDGE_INGEST_URL || "").trim()
 
 export const WorkspaceTabsTool = Tool.define<typeof Parameters, Metadata, never>(
   "workspace_tabs",
@@ -295,19 +293,7 @@ function queueWorkspaceTabClientAction(input: {
 }
 
 function publishWorkspaceTabEvent(event: string, payload: unknown) {
-  const endpoint = iosBridgeIngestURL()
-  if (!endpoint) return
-  const body = {
-    source: "workspace_tabs",
-    event,
-    timestamp: new Date().toISOString(),
-    payload,
-  }
-  void fetch(endpoint, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  }).catch(() => undefined)
+  publishAppleBridgeEvent("workspace_tabs", event, payload)
 }
 
 function canonicalWorkspaceTab(tab: string) {
