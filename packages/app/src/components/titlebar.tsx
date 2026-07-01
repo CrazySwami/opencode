@@ -341,7 +341,18 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
 
               tabs.newDraft({ server: fallback.server, directory: fallback.project.worktree }, "")
             }
-            const toggleHome = () => tabs.toggleHome({ home: layout.route().type === "home", current: currentTab() })
+            const blurActiveEditable = () => {
+              const activeElement = document.activeElement
+              if (!(activeElement instanceof HTMLElement)) return
+              const editable =
+                activeElement.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(activeElement.tagName)
+              if (editable) activeElement.blur()
+            }
+
+            const toggleHome = () => {
+              blurActiveEditable()
+              tabs.toggleHome({ home: layout.route().type === "home", current: currentTab() })
+            }
 
             command.register("titlebar-home", () => [
               {
@@ -446,6 +457,7 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
                     class="!w-9 shrink-0"
                     icon={<IconV2 name="grid-plus" />}
                     state={layout.route().type === "home" ? "pressed" : undefined}
+                    onPointerDown={blurActiveEditable}
                     onClick={toggleHome}
                     aria-label={language.t("home.title")}
                     aria-pressed={layout.route().type === "home"}

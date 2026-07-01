@@ -1414,10 +1414,11 @@ function fileKind(contentType: string) {
 type LiveBrowserInput =
   | { action: "status" }
   | { action: "goto"; url?: string }
+  | { action: "open"; url?: string }
   | { action: "back" }
   | { action: "forward" }
   | { action: "reload" }
-  | { action: "click"; x?: number; y?: number }
+  | { action: "click"; x?: number; y?: number; selector?: string }
   | { action: "fill"; selector?: string; text?: string }
   | { action: "type"; text?: string }
   | { action: "key"; key?: string }
@@ -1915,6 +1916,7 @@ async function liveBrowserStatus(access?: Extract<LiveBrowserAccess, { ok: true 
       modes: noVNCModes,
     },
     actions: [
+      "open",
       "goto",
       "back",
       "forward",
@@ -1992,7 +1994,8 @@ async function runLiveBrowserInput(input: LiveBrowserInput) {
   switch (input.action) {
     case "status":
       return await liveBrowserStatus()
-    case "goto": {
+    case "goto":
+    case "open": {
       const url = normalizeBrowserURL(input.url)
       if (!url) return { ok: false, error: "Missing URL" }
       await cdpCommand("Page.navigate", { url })
@@ -2012,11 +2015,13 @@ async function runLiveBrowserInput(input: LiveBrowserInput) {
       await delay(600)
       return { ok: true }
     case "click": {
+      if (input.selector?.trim()) return await clickLiveBrowserSelector(input.selector.trim())
+      if (!Number.isFinite(input.x) || !Number.isFinite(input.y)) {
+        return { ok: false, error: "Missing coordinates or selector" }
+      }
       const x = Math.max(0, Math.round(input.x ?? 0))
       const y = Math.max(0, Math.round(input.y ?? 0))
-      await cdpCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none" })
-      await cdpCommand("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 })
-      await cdpCommand("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 })
+      await dispatchLiveBrowserClick(x, y)
       return { ok: true, x, y }
     }
     case "fill": {
@@ -2056,6 +2061,8 @@ async function runLiveBrowserInput(input: LiveBrowserInput) {
       if (!input.selector?.trim()) return { ok: false, error: "Missing selector" }
       return await highlightLiveBrowserSelector(input.selector.trim())
     }
+    default:
+      return { ok: false, error: `Unknown action: ${String((input as { action?: unknown }).action ?? "")}` }
   }
 }
 
@@ -2172,6 +2179,36 @@ async function highlightLiveBrowserSelector(selector: string) {
   const result = await cdpEvaluate(expression)
   const data = result && typeof result === "object" ? (result as Record<string, unknown>) : {}
   return { ok: true, selector, ...data, result }
+}
+
+async function dispatchLiveBrowserClick(x: number, y: number) {
+  await cdpCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none" })
+  await cdpCommand("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 })
+  await cdpCommand("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 })
+}
+
+async function clickLiveBrowserSelector(selector: string) {
+  await ensureLiveBrowser()
+  const expression = `(() => {
+    const el = document.querySelector(${JSON.stringify(selector)});
+    if (!el) return { found: false };
+    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    const rect = el.getBoundingClientRect();
+    return {
+      found: true,
+      tag: el.tagName,
+      text: (el.innerText || el.getAttribute('aria-label') || el.getAttribute('alt') || '').slice(0, 240),
+      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+    };
+  })()`
+  const result = await cdpEvaluate(expression)
+  const data = result && typeof result === "object" ? (result as Record<string, unknown>) : {}
+  const rect = data.rect && typeof data.rect === "object" ? (data.rect as Record<string, unknown>) : undefined
+  if (data.found !== true || !rect) return { ok: false, selector, found: false }
+  const x = Math.max(0, Math.round(Number(rect.x ?? 0) + Number(rect.width ?? 0) / 2))
+  const y = Math.max(0, Math.round(Number(rect.y ?? 0) + Number(rect.height ?? 0) / 2))
+  await dispatchLiveBrowserClick(x, y)
+  return { ok: true, selector, x, y, ...data, result }
 }
 
 async function fillLiveBrowserSelector(selector: string, text: string) {

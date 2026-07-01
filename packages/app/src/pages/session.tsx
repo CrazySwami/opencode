@@ -756,6 +756,12 @@ export default function Page() {
     const target = path.find((item): item is HTMLElement => item instanceof HTMLElement)
     const activeElement = deepActiveElement()
 
+    if (activeElement === inputRef && event.key === "Escape") {
+      inputRef?.blur()
+      event.preventDefault()
+      return
+    }
+
     const protectedTarget = path.some(
       (item) => item instanceof HTMLElement && item.closest("[data-prevent-autofocus]") !== null,
     )
@@ -767,11 +773,6 @@ export default function Page() {
       if (isProtected || isInput) return
     }
     if (dialog.active) return
-
-    if (activeElement === inputRef) {
-      if (event.key === "Escape") inputRef?.blur()
-      return
-    }
 
     // Prefer the open terminal over the composer when it can take focus
     if (view().terminal.opened()) {
