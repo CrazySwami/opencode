@@ -13,6 +13,11 @@ import type { Session } from "@opencode-ai/sdk/v2"
 import { canOpenTabRename, forwardTabRef } from "./titlebar-tab-gesture"
 import "./titlebar-tab-nav.css"
 
+function isTouchLikePointer(event: PointerEvent) {
+  if (event.pointerType === "touch") return true
+  return window.matchMedia("(pointer: coarse)").matches
+}
+
 export function TabNavItem(props: {
   ref?: Ref<HTMLDivElement>
   href: string
@@ -37,6 +42,7 @@ export function TabNavItem(props: {
   let titleEl!: HTMLSpanElement
   let committing = false
   let measureFrame: number | undefined
+  let pointerNavigationRouted = false
 
   const closeTab = (event: MouseEvent) => {
     event.preventDefault()
@@ -150,6 +156,24 @@ export function TabNavItem(props: {
     })
   }
 
+  const navigate = () => {
+    if (editing()) return
+    if (props.suppressNavigation?.()) return
+    props.onNavigate()
+  }
+
+  const handleLinkPointerDown = (event: PointerEvent) => {
+    if (!isTouchLikePointer(event)) return
+    if (editing()) return
+    if (props.suppressNavigation?.()) return
+    pointerNavigationRouted = true
+    event.preventDefault()
+    props.onNavigate()
+    window.setTimeout(() => {
+      pointerNavigationRouted = false
+    }, 1500)
+  }
+
   createEffect(() => {
     if (!editing()) return
 
@@ -202,10 +226,13 @@ export function TabNavItem(props: {
               }}
               onClick={(event) => {
                 event.preventDefault()
-                if (editing()) return
-                if (props.suppressNavigation?.()) return
-                props.onNavigate()
+                if (pointerNavigationRouted) {
+                  pointerNavigationRouted = false
+                  return
+                }
+                navigate()
               }}
+              onPointerDown={handleLinkPointerDown}
               class="flex h-full min-w-0 flex-1 flex-row items-center gap-1.5 text-[13px] font-medium text-v2-text-text-faint group-data-[active='true']:text-v2-text-text-base group-data-[editing='true']:text-v2-text-text-base [-webkit-user-drag:none]"
             >
               <span data-slot="project-avatar-slot">
@@ -286,10 +313,25 @@ export function DraftTabItem(props: {
   pressed?: boolean
   hidden?: boolean
 }) {
+  let pointerNavigationRouted = false
   const closeTab = (event: MouseEvent) => {
     event.preventDefault()
     event.stopPropagation()
     props.onClose()
+  }
+  const navigate = () => {
+    if (props.suppressNavigation?.()) return
+    props.onNavigate()
+  }
+  const handleLinkPointerDown = (event: PointerEvent) => {
+    if (!isTouchLikePointer(event)) return
+    if (props.suppressNavigation?.()) return
+    pointerNavigationRouted = true
+    event.preventDefault()
+    props.onNavigate()
+    window.setTimeout(() => {
+      pointerNavigationRouted = false
+    }, 1500)
   }
   return (
     <div
@@ -317,9 +359,13 @@ export function DraftTabItem(props: {
         }}
         onClick={(event) => {
           event.preventDefault()
-          if (props.suppressNavigation?.()) return
-          props.onNavigate()
+          if (pointerNavigationRouted) {
+            pointerNavigationRouted = false
+            return
+          }
+          navigate()
         }}
+        onPointerDown={handleLinkPointerDown}
         class="flex h-full min-w-0 flex-1 flex-row items-center gap-1.5 text-[13px] font-medium text-v2-text-text-faint group-data-[active='true']:text-v2-text-text-base [-webkit-user-drag:none]"
       >
         <span class="flex size-4 shrink-0 items-center justify-center">
