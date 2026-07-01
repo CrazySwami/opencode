@@ -460,6 +460,36 @@ function buildWorkspaceIndex(projects: any, sessions: any) {
   })
 }
 
+function workspaceIndexSummaryFallback() {
+  return {
+    route: "/__workspace-index",
+    ok: false,
+    projectCount: null,
+    sessionCount: null,
+    roots: fileViewerRoots(),
+    projects: [],
+    sessions: [],
+    note: "Full project and session details are available from /__workspace-index.",
+  }
+}
+
+async function buildWorkspaceIndexSummary(projects: any, sessions: any) {
+  return statusWithTimeout("Workspace index summary", 800, workspaceIndexSummaryFallback(), async () => {
+    const index = await Effect.runPromise(buildWorkspaceIndex(projects, sessions))
+    return {
+      route: "/__workspace-index",
+      ok: index.ok === true,
+      generatedAt: index.generatedAt,
+      projectCount: index.projects.length,
+      sessionCount: index.sessions.length,
+      roots: index.roots,
+      projects: index.projects.slice(0, 8),
+      sessions: index.sessions.slice(0, 8),
+      note: "Full project and session details are available from /__workspace-index.",
+    }
+  })
+}
+
 const fileViewerRoute = HttpRouter.use((router) =>
   Effect.gen(function* () {
     yield* router.add("GET", "/experimental/files/browse", (request) =>
@@ -1194,7 +1224,7 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
     yield* router.add("GET", "/experimental/workspace-suite/status", () =>
       Effect.promise(async () =>
         {
-          const [openDesign, macView, routines, codexAccounts] = await Promise.all([
+          const [openDesign, macView, routines, codexAccounts, workspaceIndex] = await Promise.all([
             statusWithTimeout<any>(
               "Open Design status",
               1000,
@@ -1216,6 +1246,7 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
               },
               codexMultiAuthStatus,
             ),
+            buildWorkspaceIndexSummary(projects, sessions),
           ])
           return HttpServerResponse.jsonUnsafe({
           ok: true,
@@ -1245,10 +1276,7 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
           codexAccounts,
           artifactRootConfigured: !!process.env.OPENCODE_BROWSER_HOME,
           agentChrome: liveBrowserGateStatus(),
-          workspaceIndex: {
-            route: "/__workspace-index",
-            note: "Project and session details are fetched separately so the main workspace status route cannot block initial rendering.",
-          },
+          workspaceIndex,
         })
         },
       ),
