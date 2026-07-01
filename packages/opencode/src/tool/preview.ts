@@ -3,7 +3,9 @@ import * as Tool from "./tool"
 import DESCRIPTION from "./preview.txt"
 import { captureBrowserScreenshot, runBrowserAction, type BrowserActionInput } from "./browser"
 import { publishAppleBridgeEvent } from "./ios-bridge-events"
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import path from "node:path"
+import { sessionPaths } from "./browser"
 
 const actions = [
   "navigate",
@@ -58,6 +60,68 @@ type Metadata = {
   mode: typeof PREVIEW_MODE
 }
 
+export type PreviewSurfaceState = {
+  ok: true
+  mode: typeof PREVIEW_MODE
+  previewSessionID: string
+  browserSessionID?: string
+  url?: string
+  action?: PreviewParams["action"]
+  mappedBrowserAction?: BrowserActionInput["action"]
+  artifactURL?: string
+  screenshotPath?: string
+  screenshotURL?: string
+  updatedAt: string
+  source: "tool" | "client" | "unknown"
+  note: string
+}
+
+export function readPreviewSurfaceState(sessionID: string): PreviewSurfaceState {
+  const paths = sessionPaths(sessionID)
+  const fallback: PreviewSurfaceState = {
+    ok: true,
+    mode: PREVIEW_MODE,
+    previewSessionID: sessionID,
+    updatedAt: new Date(0).toISOString(),
+    source: "unknown",
+    note: "No preview state has been recorded for this session yet.",
+  }
+  try {
+    const file = path.join(paths.sessionDir, "preview-state.json")
+    if (!existsSync(file)) return fallback
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<PreviewSurfaceState>
+    return {
+      ...fallback,
+      ...parsed,
+      ok: true,
+      mode: PREVIEW_MODE,
+      previewSessionID: sessionID,
+      note: parsed.note ?? "Preview state is shared between the visible Preview tab and the preview tool.",
+    }
+  } catch {
+    return fallback
+  }
+}
+
+export function writePreviewSurfaceState(
+  sessionID: string,
+  patch: Partial<Omit<PreviewSurfaceState, "ok" | "mode" | "previewSessionID" | "updatedAt">>,
+) {
+  const paths = sessionPaths(sessionID)
+  mkdirSync(paths.sessionDir, { recursive: true })
+  const next: PreviewSurfaceState = {
+    ...readPreviewSurfaceState(sessionID),
+    ...patch,
+    ok: true,
+    mode: PREVIEW_MODE,
+    previewSessionID: sessionID,
+    updatedAt: new Date().toISOString(),
+    note: patch.note ?? "Preview state is shared between the visible Preview tab and the preview tool.",
+  }
+  writeFileSync(path.join(paths.sessionDir, "preview-state.json"), JSON.stringify(next, null, 2))
+  return next
+}
+
 export const PreviewTool = Tool.define<typeof Parameters, Metadata, never>(
   "preview",
   Effect.gen(function* () {
@@ -79,6 +143,13 @@ export const PreviewTool = Tool.define<typeof Parameters, Metadata, never>(
 
           if (params.action === "attach" || params.action === "screenshot") {
             const shot = yield* Effect.promise(() => captureBrowserScreenshot(ctx.sessionID, ctx.abort))
+            const state = writePreviewSurfaceState(ctx.sessionID, {
+              action: params.action,
+              browserSessionID: shot.browserSessionID,
+              screenshotPath: shot.screenshotPath,
+              screenshotURL: shot.screenshotURL,
+              source: "tool",
+            })
             const attachments =
               existsSync(shot.screenshotPath)
                 ? [
@@ -95,6 +166,7 @@ export const PreviewTool = Tool.define<typeof Parameters, Metadata, never>(
               previewSessionID: ctx.sessionID,
               browserSessionID: shot.browserSessionID,
               screenshotURL: shot.screenshotURL,
+              updatedAt: state.updatedAt,
               hasAttachment: !!attachments?.length,
             })
             return {
@@ -105,6 +177,7 @@ export const PreviewTool = Tool.define<typeof Parameters, Metadata, never>(
                   mode: PREVIEW_MODE,
                   screenshotPath: shot.screenshotPath,
                   screenshotURL: shot.screenshotURL,
+                  previewStateURL: `/experimental/preview/${encodeURIComponent(ctx.sessionID)}/state`,
                   note: "Preview screenshot captured and attached when supported by the client.",
                 },
                 null,
@@ -126,6 +199,14 @@ export const PreviewTool = Tool.define<typeof Parameters, Metadata, never>(
 
           const input = previewToBrowserAction(params)
           const result = yield* Effect.promise(() => runBrowserAction(ctx.sessionID, input, ctx.abort))
+          const state = writePreviewSurfaceState(ctx.sessionID, {
+            action: params.action,
+            mappedBrowserAction: input.action,
+            url: params.action === "navigate" ? params.url : undefined,
+            browserSessionID: result.browserSessionID,
+            artifactURL: result.artifactURL,
+            source: "tool",
+          })
           publishAppleBridgeEvent("preview", "preview.action.completed", {
             ok: true,
             action: params.action,
@@ -136,6 +217,7 @@ export const PreviewTool = Tool.define<typeof Parameters, Metadata, never>(
             selector: params.selector,
             hasText: typeof params.text === "string" && params.text.length > 0,
             artifactURL: result.artifactURL,
+            updatedAt: state.updatedAt,
           })
           return {
             title: `preview ${params.action}`,
@@ -147,6 +229,7 @@ export const PreviewTool = Tool.define<typeof Parameters, Metadata, never>(
                 mappedBrowserAction: input.action,
                 output: result.output,
                 artifactURL: result.artifactURL,
+                previewStateURL: `/experimental/preview/${encodeURIComponent(ctx.sessionID)}/state`,
               },
               null,
               2,

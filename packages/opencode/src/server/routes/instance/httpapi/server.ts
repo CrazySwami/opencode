@@ -119,6 +119,7 @@ import { errorLayer } from "./middleware/error"
 import { fenceLayer } from "./middleware/fence"
 import { schemaErrorLayer } from "./middleware/schema-error"
 import { captureBrowserScreenshot, runBrowserAction, sessionPaths, type BrowserActionInput } from "@/tool/browser"
+import { readPreviewSurfaceState, writePreviewSurfaceState } from "@/tool/preview"
 import { collectResourceStatus } from "@/tool/resource-status"
 import { createRoutineDraft, routineLogs, routinesAction, routinesStatus } from "@/tool/routines"
 import { publishAppleBridgeEvent } from "@/tool/ios-bridge-events"
@@ -201,6 +202,36 @@ const docRoute = HttpRouter.use((router) => router.add("GET", "/doc", () => Effe
 
 const browserPreviewRoute = HttpRouter.use((router) =>
   Effect.gen(function* () {
+    yield* router.add("GET", "/experimental/preview/:sessionID/state", (request) =>
+      Effect.gen(function* () {
+        const sessionID = decodeParam(request.url, /^\/experimental\/preview\/([^/]+)\/state$/)
+        if (!sessionID) return HttpServerResponse.text("Missing session ID", { status: 400 })
+        return HttpServerResponse.jsonUnsafe(readPreviewSurfaceState(sessionID))
+      }),
+    )
+
+    yield* router.add("POST", "/experimental/preview/:sessionID/state", (request) =>
+      Effect.gen(function* () {
+        const sessionID = decodeParam(request.url, /^\/experimental\/preview\/([^/]+)\/state$/)
+        if (!sessionID) return HttpServerResponse.text("Missing session ID", { status: 400 })
+
+        const raw = yield* Effect.orDie(request.text)
+        let body: { url?: string; action?: string; source?: string }
+        try {
+          body = JSON.parse(raw || "{}") as { url?: string; action?: string; source?: string }
+        } catch {
+          return HttpServerResponse.text("Invalid JSON body", { status: 400 })
+        }
+
+        const state = writePreviewSurfaceState(sessionID, {
+          url: typeof body.url === "string" ? body.url : undefined,
+          action: body.action === "navigate" ? "navigate" : undefined,
+          source: body.source === "client" ? "client" : "unknown",
+        })
+        return HttpServerResponse.jsonUnsafe(state)
+      }),
+    )
+
     yield* router.add("GET", "/experimental/browser/:sessionID/screenshot", (request) =>
       Effect.promise(async () => {
         const url = new URL(request.url, "http://localhost")

@@ -1113,10 +1113,11 @@ function previewURLKind(value: string) {
   }
 }
 
-function PreviewTabContent() {
+function PreviewTabContent(props: { sessionID: string }) {
   const initial = readPreviewState().url ?? ""
   const [address, setAddress] = createSignal(initial)
   const [currentURL, setCurrentURL] = createSignal(initial)
+  const [lastPreviewStateAt, setLastPreviewStateAt] = createSignal<string | undefined>()
   const [externalMode, setExternalMode] = createSignal<"idle" | "loading" | "ready" | "failed">("idle")
   const [externalError, setExternalError] = createSignal<string | undefined>()
   const [externalKey, setExternalKey] = createSignal(Date.now())
@@ -1124,6 +1125,32 @@ function PreviewTabContent() {
   let externalImageRef: HTMLImageElement | undefined
   const currentKind = createMemo(() => previewURLKind(currentURL()))
   const externalStreamURL = createMemo(() => `/experimental/browser/live/stream?t=${externalKey()}`)
+  const previewStateURL = createMemo(() => `/experimental/preview/${encodeURIComponent(props.sessionID)}/state`)
+
+  const syncPreviewState = async () => {
+    const response = await fetch(previewStateURL(), { cache: "no-store" }).catch(() => undefined)
+    if (!response?.ok) return
+    const state = await response.json().catch(() => undefined)
+    const stateURL = typeof state?.url === "string" ? state.url : ""
+    const updatedAt = typeof state?.updatedAt === "string" ? state.updatedAt : undefined
+    if (!stateURL || !updatedAt || updatedAt === lastPreviewStateAt()) return
+    setLastPreviewStateAt(updatedAt)
+    if (stateURL !== currentURL()) {
+      setAddress(stateURL)
+      setCurrentURL(stateURL)
+    }
+  }
+
+  const writePreviewServerState = async (url: string) => {
+    const response = await fetch(previewStateURL(), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url, action: "navigate", source: "client" }),
+    }).catch(() => undefined)
+    if (!response?.ok) return
+    const state = await response.json().catch(() => undefined)
+    if (typeof state?.updatedAt === "string") setLastPreviewStateAt(state.updatedAt)
+  }
 
   const runExternalInput = async (body: Record<string, unknown>) => {
     const response = await fetch("/experimental/browser/live/input", {
@@ -1194,6 +1221,10 @@ function PreviewTabContent() {
 
   createEffect(() => writePreviewState({ url: currentURL() || address() }))
 
+  void syncPreviewState()
+  const previewStateTimer = window.setInterval(() => void syncPreviewState(), 2000)
+  onCleanup(() => window.clearInterval(previewStateTimer))
+
   createEffect(() => {
     const url = currentURL()
     if (!url || currentKind() !== "external") {
@@ -1218,6 +1249,7 @@ function PreviewTabContent() {
     const next = normalizePreviewURL(address())
     setAddress(next)
     setCurrentURL(next)
+    if (next) void writePreviewServerState(next)
   }
 
   const refreshPreview = () => {
@@ -3991,7 +4023,7 @@ export function SessionSidePanel(props: {
 
                     <Tabs.Content value={PANEL_PREVIEW_TAB} class="flex flex-col h-full overflow-hidden contain-layout">
                       <Show when={activePanelTab() === PANEL_PREVIEW_TAB}>
-                        <PreviewTabContent />
+                        <PreviewTabContent sessionID={params.id} />
                       </Show>
                     </Tabs.Content>
 
