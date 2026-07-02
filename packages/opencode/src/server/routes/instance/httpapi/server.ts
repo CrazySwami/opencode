@@ -1352,7 +1352,7 @@ async function codexMultiAuthRunProof(input: Record<string, unknown>) {
   const cwd = safeCodexMultiAuthProofCwd(input.cwd)
   const manualProofCommand =
     'cd /home/dev/repos/LLM-Experiments && env -u OPENAI_API_KEY -u OPENAI_API_BASE -u OPENAI_BASE_URL -u OPENAI_ORG_ID OPENCODE_MULTI_AUTH_REQUIRE_ACCOUNT=1 NO_COLOR=1 timeout 180 node scripts/opencode-codex-multi-auth-profile.mjs run --format json --dir /home/dev/repos/opencode "Reply with exactly: MULTI_AUTH_RUNTIME_OK"'
-  if (process.env.OPENCODE_CODEX_MULTI_AUTH_ALLOW_SERVICE_PROOF !== "1") {
+  if (process.env.OPENCODE_CODEX_MULTI_AUTH_DISABLE_SERVICE_PROOF === "1") {
     const proof: CodexMultiAuthRuntimeProof = {
       ok: false,
       providerID: "codex-multi-auth",
@@ -1364,7 +1364,7 @@ async function codexMultiAuthRunProof(input: Record<string, unknown>) {
       outputPreview: "",
       text: "",
       error:
-        "Web-service runtime proof execution is disabled because the child OpenCode runner hangs when launched inside opencode.service. Run the external shell proof command instead.",
+        "Web-service runtime proof execution is disabled by OPENCODE_CODEX_MULTI_AUTH_DISABLE_SERVICE_PROOF=1. Run the external shell proof command instead.",
       exitCode: null,
       durationMs: Date.now() - startedAt,
       verifiedAt: new Date().toISOString(),
