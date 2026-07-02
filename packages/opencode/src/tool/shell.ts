@@ -21,6 +21,7 @@ import { ChildProcess } from "effect/unstable/process"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import { ShellPrompt, type Parameters } from "./shell/prompt"
 import { BashArity } from "@/permission/arity"
+import { workspaceEnvForProcess } from "@opencode-ai/core/workspace-env"
 
 export { Parameters } from "./shell/prompt"
 
@@ -414,6 +415,11 @@ export const ShellTool = Tool.define(
     })
 
     const shellEnv = Effect.fn("ShellTool.shellEnv")(function* (ctx: Tool.Context, cwd: string) {
+      const workspaceEnv = workspaceEnvForProcess({
+        directory: cwd,
+        cwd,
+        surface: "terminal",
+      })
       const extra = yield* plugin.trigger(
         "shell.env",
         { cwd, sessionID: ctx.sessionID, callID: ctx.callID },
@@ -421,6 +427,7 @@ export const ShellTool = Tool.define(
       )
       return {
         ...process.env,
+        ...workspaceEnv,
         ...extra.env,
       }
     })
