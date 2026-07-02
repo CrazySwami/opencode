@@ -1078,6 +1078,28 @@ function summarizeCodexMultiAuthWorkspaceStatus(status: CodexMultiAuthStatusResu
   }
 }
 
+async function codexMultiAuthWorkspaceStatus() {
+  const fallback = readCodexMultiAuthFastAccountStatus() ?? {
+    ok: false,
+    configured: true,
+    accountCount: 0,
+    accountsConfigured: false,
+    sendRouting: "openai-fallback",
+    warning: "Codex multi-auth summary is deferred. Open the Codex tab for direct status.",
+  }
+  const result = await statusWithTimeout<any>("Codex multi-auth status", 600, fallback, codexMultiAuthStatus)
+  if (result?.timedOut && fallback.accountsConfigured === true) {
+    return {
+      ...fallback,
+      timedOut: true,
+      error: null,
+      warning:
+        "Codex multi-auth account summary came from the local profile store. Full plugin status is deferred to the Codex tab.",
+    }
+  }
+  return result
+}
+
 async function statusWithTimeout<T>(label: string, timeoutMs: number, fallback: T, fn: () => Promise<T>) {
   let timedOut = false
   try {
@@ -1479,19 +1501,7 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
             ),
             statusWithTimeout<any>("Mac View status", 1500, { configured: false, mode: "read-only" }, macViewStatus),
             statusWithTimeout<any>("Routines status", 1000, { ok: false, routines: [] }, routinesStatus),
-            statusWithTimeout<any>(
-              "Codex multi-auth status",
-              600,
-              readCodexMultiAuthFastAccountStatus() ?? {
-                ok: false,
-                configured: true,
-                accountCount: 0,
-                accountsConfigured: false,
-                sendRouting: "openai-fallback",
-                warning: "Codex multi-auth summary is deferred. Open the Codex tab for direct status.",
-              },
-              codexMultiAuthStatus,
-            ),
+            codexMultiAuthWorkspaceStatus(),
             buildWorkspaceIndexSummary(projects, sessions),
           ])
           return HttpServerResponse.jsonUnsafe({
