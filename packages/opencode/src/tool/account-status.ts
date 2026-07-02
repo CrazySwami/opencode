@@ -8,8 +8,9 @@ export const Parameters = Schema.Struct({
   detail: Schema.optional(Schema.Literals(["summary", "environment"])).annotate({
     description: "Level of account/status detail. Defaults to summary.",
   }),
-  action: Schema.optional(Schema.Literals(["status", "set-active", "set-rotation"])).annotate({
-    description: "Codex multi-auth action. Defaults to status. set-active requires alias. set-rotation requires strategy.",
+  action: Schema.optional(Schema.Literals(["status", "set-active", "set-rotation", "force-account", "clear-force"])).annotate({
+    description:
+      "Codex multi-auth action. Defaults to status. set-active and force-account require alias. set-rotation requires strategy.",
   }),
   alias: Schema.optional(Schema.String).annotate({
     description: "Codex multi-auth account alias for set-active.",
@@ -17,11 +18,14 @@ export const Parameters = Schema.Struct({
   strategy: Schema.optional(Schema.Literals(["round-robin", "least-used", "random", "weighted-round-robin"])).annotate({
     description: "Codex multi-auth rotation strategy for set-rotation.",
   }),
+  durationMinutes: Schema.optional(Schema.Number).annotate({
+    description: "Duration for force-account, in minutes. Defaults to 120 and is clamped to 5-1440.",
+  }),
 })
 
 type Metadata = {
   detail: "summary" | "environment"
-  action: "status" | "set-active" | "set-rotation"
+  action: "status" | "set-active" | "set-rotation" | "force-account" | "clear-force"
 }
 
 type CodexAccountSummary = {
@@ -94,6 +98,9 @@ function codexStatus() {
     typeof data?.activeAlias === "string" && data.activeAlias.trim()
       ? data.activeAlias.trim()
       : (aliases[0] ?? null)
+  const forcedAlias = typeof data?.forcedAlias === "string" && data.forcedAlias.trim() ? data.forcedAlias.trim() : null
+  const forcedUntil = typeof data?.forcedUntil === "number" && Number.isFinite(data.forcedUntil) ? data.forcedUntil : null
+  const forceActive = Boolean(forcedAlias && (!forcedUntil || forcedUntil > Date.now()))
   const runtimeProof = readJsonObject(codexRuntimeProofPath())
   const runtimeReady = runtimeProof?.ok === true && runtimeProof?.state !== "failed"
   const settings = data?.settings && typeof data.settings === "object" && !Array.isArray(data.settings) ? data.settings as Record<string, unknown> : {}
@@ -111,6 +118,8 @@ function codexStatus() {
     configured: aliases.length > 0,
     accountCount: aliases.length,
     activeAccount: activeAlias,
+    forcedAccount: forceActive ? forcedAlias : null,
+    forcedUntil: forceActive ? forcedUntil : null,
     rotationStrategy,
     runtimeReady,
     sendBlocked: !(aliases.length > 0 && runtimeReady),
@@ -209,6 +218,35 @@ export const AccountStatusTool = Tool.define<typeof Parameters, Metadata, never>
                 settings: { ...settings, rotationStrategy: strategy },
               }
             })
+          }
+
+          if (action === "force-account") {
+            const alias = params.alias?.trim()
+            const durationMinutes = Math.max(5, Math.min(params.durationMinutes ?? 120, 24 * 60))
+            actionResult = updateCodexStore((data, accounts) => {
+              if (!alias || !Object.prototype.hasOwnProperty.call(accounts, alias)) {
+                throw new Error(`Unknown Codex account alias: ${alias || "empty"}`)
+              }
+              return {
+                ...data,
+                activeAlias: alias,
+                forcedAlias: alias,
+                forcedUntil: Date.now() + durationMinutes * 60_000,
+                forcedBy: "account_status_tool",
+                lastManualSwitchAt: Date.now(),
+                lastForceAt: Date.now(),
+              }
+            })
+          }
+
+          if (action === "clear-force") {
+            actionResult = updateCodexStore((data) => ({
+              ...data,
+              forcedAlias: null,
+              forcedUntil: null,
+              forcedBy: null,
+              lastForceClearedAt: Date.now(),
+            }))
           }
 
           const status = {

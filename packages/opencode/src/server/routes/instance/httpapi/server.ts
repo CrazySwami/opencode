@@ -1030,6 +1030,9 @@ function readCodexMultiAuthFastAccountStatus(): CodexMultiAuthStatusResult | nul
       typeof guard.activeAlias === "string" && guard.activeAlias.trim()
         ? guard.activeAlias.trim()
         : (aliases[0] ?? null)
+    const forcedAlias = typeof guard.forcedAlias === "string" && guard.forcedAlias.trim() ? guard.forcedAlias.trim() : null
+    const forcedUntil = typeof guard.forcedUntil === "number" && Number.isFinite(guard.forcedUntil) ? guard.forcedUntil : null
+    const forceActive = Boolean(forcedAlias && (!forcedUntil || forcedUntil > Date.now()))
     const accounts = aliases.map((alias) => codexAccountSummaryFromGuard(alias, (guardAccounts as Record<string, unknown>)[alias], activeAlias))
     const rotationStrategy =
       typeof guard.rotationStrategy === "string"
@@ -1052,6 +1055,8 @@ function readCodexMultiAuthFastAccountStatus(): CodexMultiAuthStatusResult | nul
       accounts,
       accountStore: { type: "guard22", path: guardStore },
       activeAccount: activeAlias,
+      forcedAccount: forceActive ? forcedAlias : null,
+      forcedUntil: forceActive ? forcedUntil : null,
       rotationStrategy,
       sendRouting: codexMultiAuthSendRouting(aliases.length > 0),
       statusPhase: aliases.length > 0 ? "account_written" : "needs_plugin_account",
@@ -1144,7 +1149,41 @@ function codexMultiAuthAccountAction(body: Record<string, unknown>) {
     clearCodexMultiAuthStatusCache()
     return { ok: true, action, strategy, status: readCodexMultiAuthFastAccountStatus() }
   }
-  return { ok: false, error: `Unsupported Codex account action: ${action}`, supported: ["set-active", "set-rotation"] }
+  if (action === "force-account") {
+    if (!alias || !aliases.includes(alias)) return { ok: false, error: `Unknown Codex account alias: ${alias || "empty"}`, aliases }
+    const durationMinutes =
+      typeof body.durationMinutes === "number" && Number.isFinite(body.durationMinutes) ? body.durationMinutes : 120
+    const forcedUntil = Date.now() + Math.max(5, Math.min(durationMinutes, 24 * 60)) * 60_000
+    const next = {
+      ...data,
+      activeAlias: alias,
+      forcedAlias: alias,
+      forcedUntil,
+      forcedBy: "opencode-accounts-panel",
+      lastManualSwitchAt: Date.now(),
+      lastForceAt: Date.now(),
+    }
+    writeFileSync(store, JSON.stringify(next, null, 2))
+    clearCodexMultiAuthStatusCache()
+    return { ok: true, action, alias, forcedUntil, status: readCodexMultiAuthFastAccountStatus() }
+  }
+  if (action === "clear-force") {
+    const next = {
+      ...data,
+      forcedAlias: null,
+      forcedUntil: null,
+      forcedBy: null,
+      lastForceClearedAt: Date.now(),
+    }
+    writeFileSync(store, JSON.stringify(next, null, 2))
+    clearCodexMultiAuthStatusCache()
+    return { ok: true, action, status: readCodexMultiAuthFastAccountStatus() }
+  }
+  return {
+    ok: false,
+    error: `Unsupported Codex account action: ${action}`,
+    supported: ["set-active", "set-rotation", "force-account", "clear-force"],
+  }
 }
 
 function readCodexMultiAuthLoginAttempt() {
@@ -1417,6 +1456,8 @@ function summarizeCodexMultiAuthWorkspaceStatus(status: CodexMultiAuthStatusResu
         ? status.accountStore
         : null,
     activeAccount: typeof status.activeAccount === "string" ? status.activeAccount : null,
+    forcedAccount: typeof status.forcedAccount === "string" ? status.forcedAccount : null,
+    forcedUntil: typeof status.forcedUntil === "number" ? status.forcedUntil : null,
     rotationStrategy: typeof status.rotationStrategy === "string" ? status.rotationStrategy : null,
     sendRouting: typeof status.sendRouting === "string" ? status.sendRouting : null,
     statusPhase: typeof status.statusPhase === "string" ? status.statusPhase : null,

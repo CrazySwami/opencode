@@ -2411,6 +2411,12 @@ function AccountsTabContent() {
   const codexRouting = createMemo(() => codexAccounts()?.sendRouting ?? "unknown")
   const codexStorePath = createMemo(() => codexAccounts()?.accountStore?.path ?? null)
   const codexBaseProviderVisibility = createMemo(() => codexAccounts()?.baseProviderVisibility)
+  const codexForcedAccount = createMemo(() => codexAccounts()?.forcedAccount ?? null)
+  const codexForcedUntilLabel = createMemo(() => {
+    const forcedUntil = codexAccounts()?.forcedUntil
+    if (typeof forcedUntil !== "number") return null
+    return new Date(forcedUntil).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+  })
   const codexBaseProviderLabel = createMemo(() => {
     const visibility = codexBaseProviderVisibility()
     if (!visibility) return "unknown"
@@ -2483,20 +2489,20 @@ function AccountsTabContent() {
     await navigator.clipboard.writeText(value)
   }
 
-  const setCodexActiveAccount = async (alias: string) => {
-    setLoginResult((current: any) => ({ ...(current ?? {}), accountActionPending: alias, accountActionError: undefined }))
+  const runCodexAccountAction = async (payload: Record<string, unknown>, pendingLabel: string, successLabel: string) => {
+    setLoginResult((current: any) => ({ ...(current ?? {}), accountActionPending: pendingLabel, accountActionError: undefined }))
     try {
       const response = await fetch("/experimental/codex-multi-auth/account", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "set-active", alias }),
+        body: JSON.stringify(payload),
       })
       const body = await response.json().catch(() => ({}))
-      if (!response.ok || body?.ok === false) throw new Error(body?.error ?? "Could not set active Codex account")
+      if (!response.ok || body?.ok === false) throw new Error(body?.error ?? "Could not update Codex account state")
       setLoginResult((current: any) => ({
         ...(current ?? {}),
         accountActionPending: undefined,
-        accountActionNote: `Active Codex account set to ${alias}`,
+        accountActionNote: successLabel,
       }))
       void codexStatus.refresh()
       void status.refresh()
@@ -2508,6 +2514,22 @@ function AccountsTabContent() {
       }))
     }
   }
+
+  const setCodexActiveAccount = async (alias: string) =>
+    runCodexAccountAction({ action: "set-active", alias }, `set-active:${alias}`, `Active Codex account set to ${alias}`)
+
+  const forceCodexAccount = async (alias: string) =>
+    runCodexAccountAction(
+      { action: "force-account", alias, durationMinutes: 120 },
+      `force-account:${alias}`,
+      `Codex account forced to ${alias} for 2 hours`,
+    )
+
+  const clearCodexForce = async () =>
+    runCodexAccountAction({ action: "clear-force" }, "clear-force", "Codex forced account override cleared")
+
+  const setCodexRotation = async (strategy: string) =>
+    runCodexAccountAction({ action: "set-rotation", strategy }, `set-rotation:${strategy}`, `Codex rotation set to ${strategy}`)
 
   const runCodexRuntimeProof = async () => {
     setProofStarting(true)
@@ -2584,11 +2606,59 @@ function AccountsTabContent() {
             <StatusRow label="Base OpenAI" value={codexBaseProviderLabel()} />
             <StatusRow label="Account count" value={codexAccountCount()} />
             <StatusRow label="Active account" value={codexAccounts()?.activeAccount ?? "none"} />
+            <StatusRow
+              label="Forced account"
+              value={
+                codexForcedAccount()
+                  ? `${codexForcedAccount()}${codexForcedUntilLabel() ? ` until ${codexForcedUntilLabel()}` : ""}`
+                  : "none"
+              }
+            />
             <StatusRow label="Rotation" value={codexAccounts()?.rotationStrategy ?? "not set"} />
             <StatusRow label="Runtime proof" value={codexRuntimeReady() ? "ready" : "not verified"} />
             <StatusRow label="Send routing" value={codexRouting()} />
             <StatusRow label="Usage" value={codexAccounts()?.usageSummary ?? codexAccounts()?.limitsOutput ?? "not reported"} />
           </div>
+          <Show when={codexAccountCount() > 0}>
+            <div class="mb-3 rounded-md border border-border-weaker-base bg-background-base p-3">
+              <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div class="text-12-medium text-text-strong">Rotation strategy</div>
+                  <div class="text-11-regular text-text-weak">
+                    Rotation is used when no account is forced. Force mode also sets the active account for the current sidecar runner.
+                  </div>
+                </div>
+                <Show when={codexForcedAccount()}>
+                  <button
+                    type="button"
+                    class="rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60"
+                    disabled={loginResult()?.accountActionPending === "clear-force"}
+                    onClick={() => void clearCodexForce()}
+                  >
+                    {loginResult()?.accountActionPending === "clear-force" ? "Clearing..." : "Clear force"}
+                  </button>
+                </Show>
+              </div>
+              <div class="flex flex-wrap gap-2">
+                <For each={["round-robin", "least-used", "random", "weighted-round-robin"]}>
+                  {(strategy) => (
+                    <button
+                      type="button"
+                      class="rounded border px-2 py-1 text-11-regular hover:bg-surface-raised-base-hover disabled:opacity-60"
+                      classList={{
+                        "border-green-500/30 bg-green-500/10 text-green-100": codexAccounts()?.rotationStrategy === strategy,
+                        "border-border-weaker-base bg-background-stronger text-text-strong": codexAccounts()?.rotationStrategy !== strategy,
+                      }}
+                      disabled={loginResult()?.accountActionPending === `set-rotation:${strategy}`}
+                      onClick={() => void setCodexRotation(strategy)}
+                    >
+                      {loginResult()?.accountActionPending === `set-rotation:${strategy}` ? "Setting..." : strategy}
+                    </button>
+                  )}
+                </For>
+              </div>
+            </div>
+          </Show>
           <Show when={codexBaseProviderVisibility()?.hidden}>
             <div class="mb-3 rounded-md border border-green-500/20 bg-green-500/10 px-3 py-2 text-12-regular text-green-100">
               Original OpenAI is hidden from the model picker while Codex Multi-Auth is ready. To temporarily restore it, set <span class="font-mono">OPENCODE_SHOW_BASE_OPENAI_WITH_MULTI_AUTH=1</span>.
@@ -2614,26 +2684,41 @@ function AccountsTabContent() {
                       <div class="truncate">{account.accountId ?? "account id hidden"}</div>
                       <div class="truncate">source: {account.source ?? "unknown"}</div>
                     </div>
-                    <span class="self-center rounded bg-background-stronger px-2 py-1 text-11-regular text-text-weak">
-                      {account.enabled === false ? "disabled" : "enabled"}
-                    </span>
-                    <Show
-                      when={account.active}
-                      fallback={
+                    <div class="flex flex-wrap items-center gap-2 self-center">
+                      <span class="rounded bg-background-stronger px-2 py-1 text-11-regular text-text-weak">
+                        {account.enabled === false ? "disabled" : "enabled"}
+                      </span>
+                      <Show when={codexForcedAccount() === account.alias}>
+                        <span class="rounded bg-orange-500/10 px-2 py-1 text-11-regular text-orange-100">forced</span>
+                      </Show>
+                    </div>
+                    <div class="flex flex-wrap items-center justify-end gap-2 self-center">
+                      <Show
+                        when={account.active}
+                        fallback={
+                          <button
+                            type="button"
+                            class="rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60"
+                            disabled={loginResult()?.accountActionPending === `set-active:${account.alias}`}
+                            onClick={() => void setCodexActiveAccount(account.alias)}
+                          >
+                            {loginResult()?.accountActionPending === `set-active:${account.alias}` ? "Setting..." : "Set active"}
+                          </button>
+                        }
+                      >
+                        <span class="rounded bg-green-500/10 px-2 py-1 text-11-regular text-green-200">active</span>
+                      </Show>
+                      <Show when={codexForcedAccount() !== account.alias}>
                         <button
                           type="button"
                           class="self-center rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60"
-                          disabled={loginResult()?.accountActionPending === account.alias}
-                          onClick={() => void setCodexActiveAccount(account.alias)}
+                          disabled={loginResult()?.accountActionPending === `force-account:${account.alias}`}
+                          onClick={() => void forceCodexAccount(account.alias)}
                         >
-                          {loginResult()?.accountActionPending === account.alias ? "Setting..." : "Set active"}
+                          {loginResult()?.accountActionPending === `force-account:${account.alias}` ? "Forcing..." : "Force 2h"}
                         </button>
-                      }
-                    >
-                      <span class="self-center rounded bg-green-500/10 px-2 py-1 text-11-regular text-green-200">
-                        active
-                      </span>
-                    </Show>
+                      </Show>
+                    </div>
                   </div>
                 )}
               </For>
