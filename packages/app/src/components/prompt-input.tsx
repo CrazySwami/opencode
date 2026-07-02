@@ -2359,9 +2359,10 @@ function CodexMultiAuthChip(props: {
   const [popoverOpen, setPopoverOpen] = createSignal(false)
   const [tick, setTick] = createSignal(0)
   const [status, actions] = createResource(tick, async () => {
-    const response = await fetch("/experimental/codex-multi-auth/status", { cache: "no-store" })
+    const response = await fetch("/experimental/workspace-suite/status", { cache: "no-store" })
     if (!response.ok) throw new Error(`status ${response.status}`)
-    return (await response.json()) as CodexMultiAuthStatus
+    const body = await response.json()
+    return (body?.codexAccounts ?? body) as CodexMultiAuthStatus
   })
 
   const timer = window.setInterval(() => setTick((value) => value + 1), 20_000)

@@ -945,7 +945,6 @@ function redactCodexAuthOutput(value: string | undefined) {
 }
 
 async function buildCodexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> {
-  const status = await runCodexMultiAuthCommand("status", 12_000)
   const loginAttempt = normalizeCodexMultiAuthLoginAttempt(readCodexMultiAuthLoginAttempt())
   const base = {
     commands: ["login", "login-headless", "list", "status", "limits", "health", "run"],
@@ -953,6 +952,23 @@ async function buildCodexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> 
     authFlow: "opencode-multi-auth add <alias>",
     loginAttempt,
   }
+  const fast = readCodexMultiAuthFastAccountStatus()
+  if (fast?.accountsConfigured === true) {
+    return {
+      ...fast,
+      ...base,
+      ok: true,
+      configured: true,
+      statusPhase: "account_written",
+      warning:
+        "Codex multi-auth accounts are configured from the isolated local profile. Prompt execution is blocked until the server-side multi-auth runtime adapter is verified.",
+      listOutput: `Accounts: ${fast.accountCount}`,
+      limitsOutput: "Usage and weekly limits are not reported by this multi-auth wrapper yet.",
+      healthOutput: "Codex multi-auth account store is reachable.",
+    }
+  }
+
+  const status = await runCodexMultiAuthCommand("status", 12_000)
   if (!status.configured || !status.ok)
     return {
       ...status,

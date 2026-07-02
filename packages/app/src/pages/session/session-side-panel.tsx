@@ -2088,7 +2088,7 @@ function AccountsTabContent() {
   const workspace = createPolledJson<any>(() => "/__workspace-index", 15000, 6000)
   const [loginStarting, setLoginStarting] = createSignal(false)
   const [loginResult, setLoginResult] = createSignal<any>()
-  const codexAccounts = createMemo(() => codexStatus.data() ?? status.data()?.codexAccounts)
+  const codexAccounts = createMemo(() => status.data()?.codexAccounts ?? codexStatus.data())
   const authPanel = createMemo(() => loginResult() ?? codexAccounts()?.loginAttempt)
   const codexAccountCount = createMemo(() => {
     const count = codexAccounts()?.accountCount

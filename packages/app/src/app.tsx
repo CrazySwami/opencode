@@ -45,7 +45,7 @@ import { PromptProvider } from "@/context/prompt"
 import { ServerConnection, ServerProvider, serverName, useServer } from "@/context/server"
 import { SettingsProvider, useSettings } from "@/context/settings"
 import { TerminalProvider } from "@/context/terminal"
-import { TabsProvider, useTabs, type DraftTab } from "@/context/tabs"
+import { tabHref, TabsProvider, useTabs, type DraftTab } from "@/context/tabs"
 import { SDKProvider, useSDK } from "@/context/sdk"
 import { WslServersProvider } from "@/wsl/context"
 import DirectoryLayout, { DirectoryDataProvider } from "@/pages/directory-layout"
@@ -209,12 +209,17 @@ function LegacyServerLayout(props: ParentProps) {
 function DraftRoute() {
   const [search] = useSearchParams<{ draftId?: string }>()
   const tabs = useTabs()
+  const fallbackHref = createMemo(() => {
+    const sessionTabs = tabs.store.filter((tab) => tab.type === "session")
+    const latest = sessionTabs[sessionTabs.length - 1]
+    return latest ? tabHref(latest) : "/"
+  })
   return (
     <Show when={tabs.ready()}>
       <Show
         when={tabs.store.find((tab): tab is DraftTab => tab.type === "draft" && tab.draftID === search.draftId)}
         keyed
-        fallback={<Navigate href="/" />}
+        fallback={<Navigate href={fallbackHref()} />}
       >
         {(draft) => <ResolvedDraftRoute draft={draft} />}
       </Show>
