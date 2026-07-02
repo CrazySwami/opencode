@@ -1343,7 +1343,8 @@ function PreviewTabContent(props: { sessionID?: string }) {
                     ref={(el) => (externalImageRef = el)}
                     src={externalStreamURL()}
                     alt="External site preview"
-                    class="block h-auto w-full select-none bg-white"
+                    class="block w-full select-none bg-white object-contain"
+                    style={{ "aspect-ratio": `${externalViewport().width} / ${externalViewport().height}` }}
                     onLoad={() => setExternalMode("ready")}
                     onError={() => {
                       setExternalError("Chromium preview stream is unavailable.")
