@@ -579,7 +579,9 @@ function workspaceIndexSummaryFallback() {
 
 async function buildWorkspaceIndexSummary(projects: any, sessions: any) {
   return statusWithTimeout("Workspace index summary", 800, workspaceIndexSummaryFallback(), async () => {
-    const index = await Effect.runPromise(buildWorkspaceIndex(projects, sessions))
+    const index = await Effect.runPromise(
+      buildWorkspaceIndex(projects, sessions).pipe(Effect.orDie) as Effect.Effect<any, never, never>,
+    )
     return {
       route: "/__workspace-index",
       ok: index.ok === true,
@@ -3139,10 +3141,15 @@ async function openDesignStatus() {
     .catch(errorStatus)
 
   return {
-    configured: !!token,
+    configured: health.ok === true,
+    tokenConfigured: !!token,
     daemonURL,
     publicURL,
     proxyURL: "/experimental/open-design/proxy/",
+    frameMode: proxyReady ? "proxy" : "external_blocked",
+    frameBlockedReason: proxyReady
+      ? null
+      : "Direct design.hustletogether.com embedding is blocked by Cloudflare Access frame headers; open externally instead.",
     proxyReady,
     routeReady: true,
     routeNote: "design.hustletogether.com routes to the Open Design daemon behind Cloudflare Access; the OpenCode tab uses the hosted route for the interactive app.",

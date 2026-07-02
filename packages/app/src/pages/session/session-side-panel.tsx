@@ -1686,14 +1686,14 @@ function OpenDesignTabContent(props: {
   const [frameKey, setFrameKey] = createSignal(Date.now())
   const [localBridgeState, setLocalBridgeState] = createSignal<any>({ mode: "dashboard", active: false })
   const bridgeState = createMemo(() => props.bridgeState?.() ?? localBridgeState())
-  const launchUrl = createMemo(() =>
-    status.data()?.proxyReady === false
-      ? (status.data()?.publicURL ?? "https://design.hustletogether.com")
-      : (status.data()?.proxyURL ?? "/experimental/open-design/proxy/"),
-  )
+  const launchUrl = createMemo(() => {
+    if (status.data()?.proxyReady === false) return undefined
+    return status.data()?.proxyURL ?? "/experimental/open-design/proxy/"
+  })
   const externalUrl = createMemo(() => status.data()?.publicURL ?? "https://design.hustletogether.com")
   const frameUrl = createMemo(() => {
     const base = launchUrl()
+    if (!base) return undefined
     const url = new URL(base, window.location.origin)
     url.searchParams.set("embed", "opencode")
     url.searchParams.set("focus", "1")
@@ -1750,7 +1750,9 @@ function OpenDesignTabContent(props: {
       toolbar={
         <div class="flex h-full min-w-0 items-center gap-1 rounded-md border border-border-weaker-base bg-background-base px-1.5">
           <PanelGlyph tab={PANEL_OPEN_DESIGN_TAB} />
-          <div class="min-w-0 flex-1 truncate px-2 text-13-regular text-text-strong">{launchUrl()}</div>
+          <div class="min-w-0 flex-1 truncate px-2 text-13-regular text-text-strong">
+            {launchUrl() ?? "Open Design proxy disabled"}
+          </div>
           <Show when={bridgeState()?.active}>
             <span class="hidden shrink-0 rounded-full border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 text-11-medium text-blue-300 md:inline-flex">
               Design Mode
@@ -1782,7 +1784,9 @@ function OpenDesignTabContent(props: {
             </summary>
             <div class="absolute right-0 top-9 z-20 grid w-[min(420px,calc(100vw-2rem))] grid-cols-1 gap-2 rounded-md border border-border-weaker-base bg-background-stronger p-2 shadow-lg md:grid-cols-2">
               <StatusRow label="Daemon" value={status.data()?.daemonURL} />
+              <StatusRow label="Frame mode" value={status.data()?.frameMode ?? (status.data()?.proxyReady === false ? "external blocked" : "proxy")} />
               <StatusRow label="Proxy" value={status.data()?.proxyReady ? "enabled" : "disabled"} />
+              <StatusRow label="API token" value={status.data()?.tokenConfigured ? "configured" : "not configured"} />
               <StatusRow label="Health" value={status.data()?.health?.ok ? "healthy" : "not ready"} />
               <StatusRow label="Projects" value={status.data()?.projects?.count} />
               <StatusRow label="Bridge" value={stateLabel()} />
@@ -1805,17 +1809,28 @@ function OpenDesignTabContent(props: {
                 <div class="mx-auto mb-3 flex h-9 w-9 items-center justify-center rounded-full bg-[#f97316]/15 text-11-medium text-[#f97316]">OD</div>
                   <div class="text-14-medium text-text-strong">Open Design is not available</div>
                   <div class="mt-2 text-13-regular text-text-weak">
-                    The hosted Open Design route or daemon status did not return a usable URL.
+                    The embedded Open Design proxy is disabled or unavailable. Direct public embedding is blocked by
+                    Cloudflare Access frame protection, so use the external route while the proxy is unavailable.
                   </div>
+                  <button
+                    type="button"
+                    class="mt-4 rounded-md border border-border-weaker-base px-3 py-1.5 text-12-medium text-text-strong hover:bg-surface-raised-base-hover"
+                    onClick={openExternal}
+                  >
+                    Open externally
+                  </button>
                   <Show when={status.data()?.routeNote}>
                     {(note) => <div class="mt-3 text-12-regular text-text-weak">{note()}</div>}
+                  </Show>
+                  <Show when={status.data()?.frameBlockedReason}>
+                    {(reason) => <div class="mt-3 text-12-regular text-text-weak">{reason()}</div>}
                   </Show>
                 </div>
               </div>
             }
           >
             <iframe
-              src={frameUrl()}
+              src={frameUrl() ?? "about:blank"}
               title="Open Design"
               class="block size-full border-0 bg-white"
               allow="clipboard-read; clipboard-write"
