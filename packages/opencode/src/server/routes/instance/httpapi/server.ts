@@ -678,6 +678,9 @@ const fileViewerRoute = HttpRouter.use((router) =>
 const codexMultiAuthScript = () =>
   process.env.OPENCODE_CODEX_MULTI_AUTH_SCRIPT || "/home/dev/repos/LLM-Experiments/scripts/opencode-codex-multi-auth-profile.mjs"
 
+const CODEX_MULTI_AUTH_RUNTIME_READY = false
+const CODEX_MULTI_AUTH_SEND_BLOCK_REASON = "Server-side multi-auth runtime adapter is not verified."
+
 type CodexMultiAuthCommandResult = {
   ok: boolean
   configured: boolean
@@ -802,6 +805,9 @@ function readCodexMultiAuthFastAccountStatus(): CodexMultiAuthStatusResult | nul
       configured: true,
       providerID: "codex-multi-auth",
       baseProviderID: "openai",
+      runtimeReady: CODEX_MULTI_AUTH_RUNTIME_READY,
+      sendBlocked: true,
+      sendBlockReason: CODEX_MULTI_AUTH_SEND_BLOCK_REASON,
       accountCount: aliases.length,
       accountsConfigured: aliases.length > 0,
       activeAccount: activeAlias,
@@ -827,6 +833,9 @@ function readCodexMultiAuthFastAccountStatus(): CodexMultiAuthStatusResult | nul
       configured: true,
       providerID: "codex-multi-auth",
       baseProviderID: "openai",
+      runtimeReady: CODEX_MULTI_AUTH_RUNTIME_READY,
+      sendBlocked: true,
+      sendBlockReason: CODEX_MULTI_AUTH_SEND_BLOCK_REASON,
       accountCount,
       accountsConfigured: accountCount > 0,
       activeAccount: accountCount > 0 ? `account-${activeIndex + 1}` : null,
@@ -959,6 +968,9 @@ async function buildCodexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> 
       ...base,
       ok: true,
       configured: true,
+      runtimeReady: CODEX_MULTI_AUTH_RUNTIME_READY,
+      sendBlocked: true,
+      sendBlockReason: CODEX_MULTI_AUTH_SEND_BLOCK_REASON,
       statusPhase: "account_written",
       warning:
         "Codex multi-auth accounts are configured from the isolated local profile. Prompt execution is blocked until the server-side multi-auth runtime adapter is verified.",
@@ -975,6 +987,9 @@ async function buildCodexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> 
       ...base,
       accountCount: 0,
       accountsConfigured: false,
+      runtimeReady: CODEX_MULTI_AUTH_RUNTIME_READY,
+      sendBlocked: true,
+      sendBlockReason: "No isolated Codex multi-auth account is configured.",
       sendRouting: "unavailable",
       warning: status.error ?? "Codex multi-auth status is unavailable.",
     }
@@ -1015,6 +1030,11 @@ async function buildCodexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> 
     ...base,
     providerID: "codex-multi-auth",
     baseProviderID: "openai",
+    runtimeReady: CODEX_MULTI_AUTH_RUNTIME_READY,
+    sendBlocked: true,
+    sendBlockReason: accountsConfigured
+      ? CODEX_MULTI_AUTH_SEND_BLOCK_REASON
+      : "No isolated Codex multi-auth account is configured.",
     accountCount,
     accountsConfigured,
     activeAccount,
@@ -1026,7 +1046,7 @@ async function buildCodexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> 
         ? "The last Codex login process exited successfully, but no multi-auth account is visible yet. Refresh status once; if accountCount remains 0, rerun Authenticate Codex account."
         : loginAttemptPhase === "failed_after_device_code"
           ? failedAuthStartWarning
-          : "No Codex multi-auth plugin accounts are configured yet. Normal OpenAI OAuth may exist, but Codex Multi-Auth model selections currently fall back to the normal OpenAI provider.",
+          : "No Codex multi-auth plugin accounts are configured yet. Normal OpenAI OAuth may exist, but Codex Multi-Auth model selections are blocked until an isolated account and runtime adapter are available.",
     statusPhase: accountsConfigured ? "account_written" : loginAttemptPhase ?? "needs_plugin_account",
     usageSummary: parseCodexUsageSummary(limits.output),
     listOutput: list.ok ? list.output : status.output,
@@ -1068,6 +1088,9 @@ function summarizeCodexMultiAuthWorkspaceStatus(status: CodexMultiAuthStatusResu
     configured: status.configured === true,
     providerID: typeof status.providerID === "string" ? status.providerID : "codex-multi-auth",
     baseProviderID: typeof status.baseProviderID === "string" ? status.baseProviderID : "openai",
+    runtimeReady: status.runtimeReady === true,
+    sendBlocked: status.sendBlocked !== false,
+    sendBlockReason: typeof status.sendBlockReason === "string" ? status.sendBlockReason : null,
     accountCount: typeof status.accountCount === "number" ? status.accountCount : 0,
     accountsConfigured: status.accountsConfigured === true,
     activeAccount: typeof status.activeAccount === "string" ? status.activeAccount : null,
@@ -1098,6 +1121,9 @@ async function codexMultiAuthWorkspaceStatus() {
   const fallback = readCodexMultiAuthFastAccountStatus() ?? {
     ok: false,
     configured: true,
+    runtimeReady: CODEX_MULTI_AUTH_RUNTIME_READY,
+    sendBlocked: true,
+    sendBlockReason: CODEX_MULTI_AUTH_SEND_BLOCK_REASON,
     accountCount: 0,
     accountsConfigured: false,
     sendRouting: "openai-fallback",

@@ -2326,6 +2326,9 @@ type CodexMultiAuthStatus = {
   activeAccount?: string | null
   rotationStrategy?: string | null
   sendRouting?: string | null
+  runtimeReady?: boolean
+  sendBlocked?: boolean
+  sendBlockReason?: string | null
   statusPhase?: string | null
   loginAttempt?: string | null
   warning?: string | null
@@ -2369,11 +2372,13 @@ function CodexMultiAuthChip(props: {
   onCleanup(() => window.clearInterval(timer))
 
   const accountCount = createMemo(() => readAccountCount(status()))
+  const sendBlocked = createMemo(() => status()?.sendBlocked !== false)
+  const runtimeReady = createMemo(() => status()?.runtimeReady === true)
   const usage = createMemo(() => readUsageSummary(status()))
   const label = createMemo(() => {
     if (!status()?.configured) return "Codex setup"
-    if (props.active) return accountCount() > 0 ? "Codex auto" : "Codex fallback"
-    return accountCount() > 0 ? "Codex ready" : "Codex"
+    if (props.active) return runtimeReady() ? "Codex auto" : "Codex blocked"
+    return accountCount() > 0 ? (runtimeReady() ? "Codex ready" : "Codex pending") : "Codex"
   })
   const detail = createMemo(() => {
     if (status.loading) return "checking"
@@ -2383,12 +2388,11 @@ function CodexMultiAuthChip(props: {
   })
   const tooltip = createMemo(() => {
     const accountLine = accountCount() === 1 ? "1 account configured" : `${accountCount()} accounts configured`
-    const mode =
-      props.active && accountCount() === 0
-        ? `Active for ${props.currentModelName}, but using normal OpenAI fallback until accounts are configured`
-        : props.active
-          ? `Active for ${props.currentModelName}`
-          : "Select Codex Multi-Auth in the model picker to use this lane"
+    const mode = props.active
+      ? runtimeReady()
+        ? `Active for ${props.currentModelName}`
+        : `Selected for ${props.currentModelName}, but prompt sends are blocked until the multi-auth runtime adapter is verified`
+      : "Select Codex Multi-Auth in the model picker to inspect this lane"
     const usageLine = usage() ? `\n${usage()}` : ""
     const strategy = status()?.rotationStrategy ? `\nStrategy: ${status()?.rotationStrategy}` : ""
     const routing = status()?.sendRouting ? `\nRouting: ${status()?.sendRouting}` : ""
@@ -2456,9 +2460,10 @@ function CodexMultiAuthChip(props: {
                 </div>
               )}
             </Show>
-            <Show when={props.active && accountCount() === 0}>
+            <Show when={props.active && sendBlocked()}>
               <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-2 py-1 text-orange-200">
-                This lane is selected, but sends fall back to normal OpenAI until a Codex account is added.
+                This lane is selected, but sends are blocked until the multi-auth runtime adapter is verified.
+                <Show when={status()?.sendBlockReason}>{(reason) => <span> {reason()}</span>}</Show>
               </div>
             </Show>
             <Show when={status()?.warning}>

@@ -44,6 +44,10 @@ const tryParseJson = (text: string) =>
     catch: () => new HttpApiError.BadRequest({}),
   })
 
+const CODEX_MULTI_AUTH_PROVIDER_ID = "codex-multi-auth"
+
+const rejectCodexMultiAuthRuntime = () => new HttpApiError.BadRequest({})
+
 export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", (handlers) =>
   Effect.gen(function* () {
     const session = yield* Session.Service
@@ -237,6 +241,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof InitPayload.Type
     }) {
       yield* requireSession(ctx.params.sessionID)
+      if (ctx.payload.providerID === CODEX_MULTI_AUTH_PROVIDER_ID) return yield* rejectCodexMultiAuthRuntime()
       yield* promptSvc
         .command({
           sessionID: ctx.params.sessionID,
@@ -273,6 +278,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof SummarizePayload.Type
     }) {
       yield* revertSvc.cleanup(yield* requireSession(ctx.params.sessionID))
+      if (ctx.payload.providerID === CODEX_MULTI_AUTH_PROVIDER_ID) return yield* rejectCodexMultiAuthRuntime()
       const messages = yield* SessionError.mapStorageNotFound(session.messages({ sessionID: ctx.params.sessionID }))
       const defaultAgent = yield* agentSvc.defaultAgent()
       const currentAgent = messages.findLast((message) => message.info.role === "user")?.info.agent ?? defaultAgent
@@ -295,6 +301,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof PromptPayload.Type
     }) {
       yield* requireSession(ctx.params.sessionID)
+      if (ctx.payload.model?.providerID === CODEX_MULTI_AUTH_PROVIDER_ID) return yield* rejectCodexMultiAuthRuntime()
       const message = yield* promptSvc
         .prompt({
           ...ctx.payload,
@@ -311,6 +318,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof PromptPayload.Type
     }) {
       yield* requireSession(ctx.params.sessionID)
+      if (ctx.payload.model?.providerID === CODEX_MULTI_AUTH_PROVIDER_ID) return yield* rejectCodexMultiAuthRuntime()
       yield* promptSvc.prompt({ ...ctx.payload, sessionID: ctx.params.sessionID }).pipe(
         Effect.catchCause((cause) =>
           Effect.gen(function* () {
@@ -331,6 +339,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof CommandPayload.Type
     }) {
       yield* requireSession(ctx.params.sessionID)
+      if (ctx.payload.model?.startsWith(`${CODEX_MULTI_AUTH_PROVIDER_ID}/`)) return yield* rejectCodexMultiAuthRuntime()
       return yield* promptSvc
         .command({ ...ctx.payload, sessionID: ctx.params.sessionID })
         .pipe(Effect.mapError(() => new HttpApiError.BadRequest({})))
@@ -341,6 +350,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof ShellPayload.Type
     }) {
       yield* requireSession(ctx.params.sessionID)
+      if (ctx.payload.model?.providerID === CODEX_MULTI_AUTH_PROVIDER_ID) return yield* rejectCodexMultiAuthRuntime()
       return yield* SessionError.mapBusy(promptSvc.shell({ ...ctx.payload, sessionID: ctx.params.sessionID }))
     })
 
