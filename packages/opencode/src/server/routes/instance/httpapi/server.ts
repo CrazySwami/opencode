@@ -818,6 +818,31 @@ function codexMultiAuthRuntimeProofPath() {
   return path.join(home, ".local", "share", "opencode-codex-multi-auth", "runtime-proof.json")
 }
 
+function codexMultiAuthIsolatedProfileEnv(base: NodeJS.ProcessEnv) {
+  const home = base.HOME || "/home/dev"
+  const profileName = process.env.OPENCODE_MULTI_AUTH_PROFILE || "guard22-codex-multi-auth"
+  const roots = {
+    home: path.join(home, ".opencode-profiles", profileName, "home"),
+    config: path.join(home, ".config", "opencode-profiles", profileName, "config"),
+    data: path.join(home, ".local", "share", "opencode-profiles", profileName, "data"),
+    cache: path.join(home, ".cache", "opencode-profiles", profileName, "cache"),
+    state: path.join(home, ".local", "state", "opencode-profiles", profileName, "state"),
+  }
+  for (const root of Object.values(roots)) mkdirSync(root, { recursive: true })
+  return {
+    ...base,
+    HOME: roots.home,
+    OPENCODE_MULTI_AUTH_REAL_HOME: home,
+    OPENCODE_MULTI_AUTH_PROFILE: profileName,
+    XDG_CONFIG_HOME: roots.config,
+    XDG_DATA_HOME: roots.data,
+    XDG_CACHE_HOME: roots.cache,
+    XDG_STATE_HOME: roots.state,
+    npm_config_loglevel: "silent",
+    NPM_CONFIG_LOGLEVEL: "silent",
+  }
+}
+
 function readJsonObject(file: string): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(readFileSync(file, "utf8"))
@@ -1319,14 +1344,13 @@ async function codexMultiAuthRunProof(input: Record<string, unknown>) {
     }
   }
 
-  const script = codexMultiAuthScript()
   const prompt =
     typeof input.prompt === "string" && input.prompt.trim()
       ? input.prompt.trim().slice(0, 2000)
       : "Reply with exactly: MULTI_AUTH_RUNTIME_OK"
   const modelID = typeof input.modelID === "string" && input.modelID.trim() ? input.modelID.trim() : null
   const cwd = safeCodexMultiAuthProofCwd(input.cwd)
-  const args = [script, "run", "--format", "json", "--dir", cwd]
+  const args = ["run", "--format", "json", "--dir", cwd]
   if (modelID) args.push("--model", modelID)
   args.push(prompt)
 
@@ -1344,6 +1368,7 @@ async function codexMultiAuthRunProof(input: Record<string, unknown>) {
   env.npm_config_loglevel = "error"
   env.NO_COLOR = "1"
   env.OPENCODE_MULTI_AUTH_REQUIRE_ACCOUNT = "1"
+  const proofEnv = codexMultiAuthIsolatedProfileEnv(env)
 
   const result = await new Promise<{
     error: Error | null
@@ -1352,13 +1377,13 @@ async function codexMultiAuthRunProof(input: Record<string, unknown>) {
     exitCode: number | null
   }>((resolve) => {
     execFile(
-      "node",
+      "opencode",
       args,
       {
-        cwd: path.dirname(path.dirname(script)),
+        cwd: cwd,
         timeout: 180_000,
         maxBuffer: 1_000_000,
-        env,
+        env: proofEnv,
       },
       (error, stdout, stderr) => {
         const errorCode = error && typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : null
