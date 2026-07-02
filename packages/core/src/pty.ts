@@ -10,6 +10,8 @@ import { Location } from "./location"
 import { PtyID } from "./pty/schema"
 import { Shell } from "./shell"
 import { lazy } from "./util/lazy"
+import { createHash } from "node:crypto"
+import { spawnSync } from "node:child_process"
 
 const BUFFER_LIMIT = 1024 * 1024 * 2
 // Exited sessions stay observable (status, exit code, retained output) until removed explicitly.
@@ -34,6 +36,7 @@ type Active = {
   cursor: number
   subscribers: Map<object, Subscriber>
   listeners: Disp[]
+  tmuxSession?: string
 }
 
 export const Info = Pty.Info
@@ -48,6 +51,39 @@ export const UpdateInput = Pty.UpdateInput
 export type UpdateInput = Types.DeepMutable<typeof UpdateInput.Type>
 
 export const Event = Pty.Event
+
+const TMUX_COMMAND = process.env.OPENCODE_TERMINAL_TMUX_COMMAND || "tmux"
+
+function tmuxPersistenceEnabled() {
+  return process.env.OPENCODE_TERMINAL_TMUX_PERSISTENCE !== "0"
+}
+
+function tmuxSessionName(input: { cwd: string; title: string }) {
+  const raw = `${input.cwd}:${input.title || "terminal"}`
+  const hash = createHash("sha256").update(raw).digest("hex").slice(0, 16)
+  const label = (input.title || "terminal")
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32)
+  return `opencode-${label || "terminal"}-${hash}`
+}
+
+function shouldUseTmux(input: CreateInput, command: string, args: string[]) {
+  if (!tmuxPersistenceEnabled()) return false
+  if (process.platform === "win32") return false
+  if (input.command) return false
+  if ((input.args ?? []).length > 0) return false
+  if (args.length > 1) return false
+  return Boolean(command)
+}
+
+function killTmuxSession(name: string | undefined) {
+  if (!name) return
+  try {
+    spawnSync(TMUX_COMMAND, ["kill-session", "-t", name], { stdio: "ignore", timeout: 2_000 })
+  } catch {}
+}
 
 export type AttachInput = {
   // Absolute output cursor to replay from. -1 tails from the current end; omitted replays the full retained buffer.
@@ -150,7 +186,8 @@ export const layer = Layer.effect(
     })
 
     const remove = Effect.fn("Pty.remove")(function* (id: PtyID) {
-      yield* requireSession(id)
+      const session = yield* requireSession(id)
+      killTmuxSession(session.tmuxSession)
       yield* removeSession(id)
     })
 
@@ -164,26 +201,33 @@ export const layer = Layer.effect(
 
     const create = Effect.fn("Pty.create")(function* (input: CreateInput) {
       const id = PtyID.ascending()
-      const command = input.command || Shell.preferred(Config.latest(yield* config.entries(), "shell"))
-      const args = Shell.login(command) ? [...(input.args ?? []), "-l"] : [...(input.args ?? [])]
+      const requestedCommand = input.command || Shell.preferred(Config.latest(yield* config.entries(), "shell"))
+      const requestedArgs = Shell.login(requestedCommand) ? [...(input.args ?? []), "-l"] : [...(input.args ?? [])]
       const cwd = input.cwd || location.directory
+      const title = input.title || `Terminal ${id.slice(-4)}`
+      const tmuxSession = shouldUseTmux(input, requestedCommand, requestedArgs)
+        ? tmuxSessionName({ cwd, title })
+        : undefined
+      const command = tmuxSession ? TMUX_COMMAND : requestedCommand
+      const args = tmuxSession ? ["new-session", "-A", "-s", tmuxSession, "-c", cwd] : requestedArgs
       const env = {
         ...process.env,
         ...input.env,
         TERM: "xterm-256color",
         OPENCODE_TERMINAL: "1",
+        ...(tmuxSession ? { OPENCODE_TERMINAL_TMUX_SESSION: tmuxSession } : {}),
       } as Record<string, string>
       if (process.platform === "win32") {
         env.LC_ALL = "C.UTF-8"
         env.LC_CTYPE = "C.UTF-8"
         env.LANG = "C.UTF-8"
       }
-      yield* Effect.logInfo("creating session", { id, cmd: command, args, cwd })
+      yield* Effect.logInfo("creating session", { id, cmd: command, args, cwd, tmuxSession })
       const { spawn } = yield* Effect.promise(() => pty())
       const proc = yield* Effect.sync(() => spawn(command, args, { name: "xterm-256color", cwd, env }))
       const info: Info = {
         id,
-        title: input.title || `Terminal ${id.slice(-4)}`,
+        title,
         command,
         args,
         cwd,
@@ -198,6 +242,7 @@ export const layer = Layer.effect(
         cursor: 0,
         subscribers: new Map(),
         listeners: [],
+        tmuxSession,
       }
       sessions.set(id, session)
       session.listeners.push(
