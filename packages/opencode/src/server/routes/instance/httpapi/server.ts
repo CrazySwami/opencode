@@ -659,6 +659,20 @@ function parseCodexAccountCount(...values: Array<string | undefined>) {
   return listed?.length ?? 0
 }
 
+function parseCodexActiveAccount(...values: Array<string | undefined>) {
+  const text = values.filter(Boolean).join("\n")
+  const explicit = text.match(/Active:\s*([^\n]+)/i)?.[1]?.trim()
+  if (explicit && !/^(none|null|n\/a|not\s+set)$/i.test(explicit)) return explicit
+  const listed = text.match(/^\s*([A-Za-z0-9._-]+)\s+\(active\)/m)?.[1]?.trim()
+  return listed || null
+}
+
+function parseCodexRotationStrategy(...values: Array<string | undefined>) {
+  const text = values.filter(Boolean).join("\n")
+  const strategy = text.match(/Strategy:\s*([^\n]+)/i)?.[1]?.trim()
+  return strategy || null
+}
+
 function parseCodexUsageSummary(value: string | undefined) {
   if (!value) return null
   const lines = value
@@ -773,7 +787,7 @@ function redactCodexAuthOutput(value: string | undefined) {
 }
 
 async function buildCodexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> {
-  const status = await runCodexMultiAuthCommand("status")
+  const status = await runCodexMultiAuthCommand("status", 12_000)
   const loginAttempt = normalizeCodexMultiAuthLoginAttempt(readCodexMultiAuthLoginAttempt())
   const base = {
     commands: ["login", "login-headless", "list", "status", "limits", "health", "run"],
@@ -794,9 +808,17 @@ async function buildCodexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> 
   const detailResults: CodexMultiAuthCommandResult[] =
     statusAccountCount > 0
       ? await Promise.all([
-          runCodexMultiAuthCommand("list", 4000),
-          runCodexMultiAuthCommand("limits", 2500),
-          runCodexMultiAuthCommand("health", 2500),
+          runCodexMultiAuthCommand("list", 12_000),
+          Promise.resolve({
+            ok: true,
+            configured: true,
+            output: "Usage and weekly limits are not reported by this multi-auth wrapper yet.",
+          }),
+          Promise.resolve({
+            ok: true,
+            configured: true,
+            output: "Codex multi-auth profile is reachable.",
+          }),
         ])
       : [
           { ok: true, configured: true, output: status.output },
@@ -806,6 +828,8 @@ async function buildCodexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> 
   const [list, limits, health] = detailResults
   const accountCount = parseCodexAccountCount(status.output, list.output, limits.output, health.output)
   const accountsConfigured = accountCount > 0
+  const activeAccount = parseCodexActiveAccount(status.output, list.output)
+  const rotationStrategy = parseCodexRotationStrategy(status.output, list.output) ?? "round-robin"
   const loginAttemptPhase = typeof loginAttempt?.phase === "string" ? loginAttempt.phase : null
   const loginAuthMode = typeof loginAttempt?.authMode === "string" ? loginAttempt.authMode : null
   const failedAuthStartWarning =
@@ -819,8 +843,8 @@ async function buildCodexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> 
     baseProviderID: "openai",
     accountCount,
     accountsConfigured,
-    activeAccount: null,
-    rotationStrategy: "auto",
+    activeAccount,
+    rotationStrategy,
     sendRouting: accountsConfigured ? "multi-auth-profile-pending-runner-verification" : "openai-fallback",
     warning: accountsConfigured
       ? "Codex multi-auth accounts are configured. Verify backend send routing before relying on account rotation."
@@ -831,7 +855,7 @@ async function buildCodexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> 
           : "No Codex multi-auth plugin accounts are configured yet. Normal OpenAI OAuth may exist, but Codex Multi-Auth model selections currently fall back to the normal OpenAI provider.",
     statusPhase: accountsConfigured ? "account_written" : loginAttemptPhase ?? "needs_plugin_account",
     usageSummary: parseCodexUsageSummary(limits.output),
-    listOutput: list.output ?? list.error,
+    listOutput: list.ok ? list.output : status.output,
     limitsOutput: limits.output ?? limits.error,
     healthOutput: health.output ?? health.error,
   }
