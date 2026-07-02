@@ -43,8 +43,8 @@ export const AccountStatusTool = Tool.define<typeof Parameters, Metadata, never>
               authRoute: "/experimental/codex-multi-auth/login",
               authFlow: "opencode auth login --provider openai --method \"Codex OAuth (Device Code)\"",
               fallbackBehavior:
-                "When the isolated multi-auth plugin has zero accounts, Codex Multi-Auth model selections fall back to the normal OpenAI provider and the UI must say so. A normal OpenAI OAuth credential is not the same as a Codex multi-auth account.",
-              note: "The composer provider lane mirrors OpenAI models. Account rotation is only trustworthy after accountCount is greater than zero and backend send routing has been verified through the isolated multi-auth runner.",
+                "Codex Multi-Auth model selections must not silently fall back to the normal OpenAI provider. Until the server-side multi-auth runtime adapter is verified, the UI and server mark sends as blocked even when the isolated account pool has accounts.",
+              note: "The composer provider lane mirrors OpenAI models for visibility. Account rotation is only trustworthy after accountCount is greater than zero and backend send routing has been verified through the isolated multi-auth runner.",
             },
             tools: [
               "browser",

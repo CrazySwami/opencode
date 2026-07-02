@@ -2377,12 +2377,14 @@ function CodexMultiAuthChip(props: {
   const usage = createMemo(() => readUsageSummary(status()))
   const label = createMemo(() => {
     if (!status()?.configured) return "Codex setup"
+    if (sendBlocked()) return "Codex blocked"
     if (props.active) return runtimeReady() ? "Codex auto" : "Codex blocked"
     return accountCount() > 0 ? (runtimeReady() ? "Codex ready" : "Codex pending") : "Codex"
   })
   const detail = createMemo(() => {
     if (status.loading) return "checking"
     if (status.error || status()?.error) return "status error"
+    if (sendBlocked() && accountCount() > 0) return "runtime blocked"
     if (accountCount() === 1) return "1 account"
     return `${accountCount()} accounts`
   })
@@ -2450,7 +2452,11 @@ function CodexMultiAuthChip(props: {
             <div class="flex items-center justify-between gap-3">
               <span>Status</span>
               <span class="max-w-[190px] truncate text-v2-text-text-base">
-                {status.loading ? "checking" : (status()?.statusPhase ?? status()?.loginAttempt ?? "ready")}
+                {status.loading
+                  ? "checking"
+                  : sendBlocked()
+                    ? "runtime blocked"
+                    : (status()?.statusPhase ?? status()?.loginAttempt ?? "ready")}
               </span>
             </div>
             <Show when={usage()}>
