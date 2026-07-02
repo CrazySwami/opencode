@@ -537,6 +537,15 @@ function ServerKey(props: ParentProps) {
   )
 }
 
+function RouteLoadingFallback() {
+  return (
+    <div class="flex h-full min-h-[280px] flex-col items-center justify-center gap-2 px-6 text-center text-12-regular text-text-weak">
+      <div class="text-13-medium text-text-strong">Loading workspace...</div>
+      <div class="max-w-[320px]">Restoring the active session, tabs, and workspace state.</div>
+    </div>
+  )
+}
+
 export function AppInterface(props: {
   children?: JSX.Element
   defaultServer: ServerConnection.Key
@@ -581,7 +590,9 @@ export function AppInterface(props: {
                   </TabsProvider>
                 )}
               >
-                <Routes />
+                <Suspense fallback={<RouteLoadingFallback />}>
+                  <Routes />
+                </Suspense>
               </Dynamic>
             </Show>
           </ConnectionGate>
