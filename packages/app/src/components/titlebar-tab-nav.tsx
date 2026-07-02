@@ -18,6 +18,13 @@ function isTouchLikePointer(event: PointerEvent) {
   return window.matchMedia("(pointer: coarse)").matches
 }
 
+function blurActiveEditable() {
+  const activeElement = document.activeElement
+  if (!(activeElement instanceof HTMLElement)) return
+  const editable = activeElement.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(activeElement.tagName)
+  if (editable) activeElement.blur()
+}
+
 export function TabNavItem(props: {
   ref?: Ref<HTMLDivElement>
   href: string
@@ -42,7 +49,6 @@ export function TabNavItem(props: {
   let titleEl!: HTMLSpanElement
   let committing = false
   let measureFrame: number | undefined
-  let pointerNavigationRouted = false
 
   const closeTab = (event: MouseEvent) => {
     event.preventDefault()
@@ -164,14 +170,7 @@ export function TabNavItem(props: {
 
   const handleLinkPointerDown = (event: PointerEvent) => {
     if (!isTouchLikePointer(event)) return
-    if (editing()) return
-    if (props.suppressNavigation?.()) return
-    pointerNavigationRouted = true
-    event.preventDefault()
-    props.onNavigate()
-    window.setTimeout(() => {
-      pointerNavigationRouted = false
-    }, 1500)
+    blurActiveEditable()
   }
 
   createEffect(() => {
@@ -226,10 +225,6 @@ export function TabNavItem(props: {
               }}
               onClick={(event) => {
                 event.preventDefault()
-                if (pointerNavigationRouted) {
-                  pointerNavigationRouted = false
-                  return
-                }
                 navigate()
               }}
               onPointerDown={handleLinkPointerDown}
@@ -313,7 +308,6 @@ export function DraftTabItem(props: {
   pressed?: boolean
   hidden?: boolean
 }) {
-  let pointerNavigationRouted = false
   const closeTab = (event: MouseEvent) => {
     event.preventDefault()
     event.stopPropagation()
@@ -325,13 +319,7 @@ export function DraftTabItem(props: {
   }
   const handleLinkPointerDown = (event: PointerEvent) => {
     if (!isTouchLikePointer(event)) return
-    if (props.suppressNavigation?.()) return
-    pointerNavigationRouted = true
-    event.preventDefault()
-    props.onNavigate()
-    window.setTimeout(() => {
-      pointerNavigationRouted = false
-    }, 1500)
+    blurActiveEditable()
   }
   return (
     <div
@@ -359,10 +347,6 @@ export function DraftTabItem(props: {
         }}
         onClick={(event) => {
           event.preventDefault()
-          if (pointerNavigationRouted) {
-            pointerNavigationRouted = false
-            return
-          }
           navigate()
         }}
         onPointerDown={handleLinkPointerDown}

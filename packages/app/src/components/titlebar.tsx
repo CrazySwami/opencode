@@ -353,7 +353,6 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
               if (editable) activeElement.blur()
             }
 
-            let homePointerRouted = false
             const routeHome = () => tabs.toggleHome({ home: layout.route().type === "home", current: currentTab() })
             const toggleHome = () => {
               blurActiveEditable()
@@ -362,18 +361,10 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
             const handleHomePointerDown = (event: PointerEvent) => {
               blurActiveEditable()
               if (!mobile() && event.pointerType !== "touch") return
-              homePointerRouted = true
-              event.preventDefault()
-              routeHome()
-              window.setTimeout(() => {
-                homePointerRouted = false
-              }, 500)
+              // Let click own navigation. Touch pointerdown route changes can be
+              // swallowed by WKWebView while a composer/editor still owns focus.
             }
             const handleHomeClick = () => {
-              if (homePointerRouted) {
-                homePointerRouted = false
-                return
-              }
               toggleHome()
             }
 
@@ -480,6 +471,7 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
                     class="!w-9 shrink-0"
                     icon={<IconV2 name="grid-plus" />}
                     state={layout.route().type === "home" ? "pressed" : undefined}
+                    data-action="titlebar-home"
                     onPointerDown={handleHomePointerDown}
                     onClick={handleHomeClick}
                     aria-label={language.t("home.title")}
