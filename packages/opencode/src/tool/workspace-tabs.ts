@@ -46,9 +46,12 @@ type Metadata = {
 
 type WorkspaceTabsClientState = {
   sessionID?: string
+  clientID?: string
   route?: string
   activeTab?: string
+  rawActiveTab?: string
   activePanelTab?: string
+  rawActivePanelTab?: string
   openTabs?: string[]
   openedTabs?: string[]
   openPanelTabs?: string[]
@@ -57,6 +60,7 @@ type WorkspaceTabsClientState = {
   openedFileTabs?: string[]
   reviewOpen?: boolean
   panelOpen?: boolean
+  rightRailOpen?: boolean
   mobile?: boolean
   desktop?: boolean
   selected?: Record<string, unknown>
@@ -70,6 +74,7 @@ type PendingWorkspaceTabAction = {
   id: string
   createdAt: string
   sessionID?: string
+  clientID?: string
   action: Action
   tab?: WorkspacePanelTabID
   requestedTab?: string
@@ -86,6 +91,7 @@ type PendingWorkspaceTabAction = {
 }
 
 let latestClientState: WorkspaceTabsClientState | undefined
+const latestClientStateBySession = new Map<string, WorkspaceTabsClientState>()
 let lastAck: unknown
 const pendingActions: PendingWorkspaceTabAction[] = []
 
@@ -116,23 +122,43 @@ export const WorkspaceTabsTool = Tool.define<typeof Parameters, Metadata, never>
 
 function normalizeClientState(state: WorkspaceTabsClientState | undefined) {
   if (!state) return undefined
-  const openTabs = state.openedTabs ?? state.openTabs ?? []
-  const openPanelTabs = state.openedPanelTabs ?? state.openPanelTabs ?? []
-  const openFileTabs = state.openedFileTabs ?? state.openFileTabs ?? []
+  const unique = (items: unknown[] | undefined) => Array.from(new Set((items ?? []).filter((item): item is string => typeof item === "string")))
+  const openTabs = unique(state.openedTabs ?? state.openTabs)
+  const openPanelTabs = unique(state.openedPanelTabs ?? state.openPanelTabs)
+  const openFileTabs = unique(state.openedFileTabs ?? state.openFileTabs)
+  const workspacePanelOpen = state.panelOpen === true || state.reviewOpen === true || state.mobile === true
+  const rawActiveTab = state.rawActiveTab ?? state.activeTab
+  const rawActivePanelTab = state.rawActivePanelTab ?? state.activePanelTab
+  const normalizedActivePanelTab = rawActivePanelTab ? canonicalWorkspaceTab(rawActivePanelTab) : undefined
+  const visibleActivePanelTab =
+    workspacePanelOpen && normalizedActivePanelTab && openPanelTabs.includes(normalizedActivePanelTab)
+      ? normalizedActivePanelTab
+      : undefined
+  const activeTab = rawActiveTab && canonicalWorkspaceTab(rawActiveTab) === visibleActivePanelTab
+    ? visibleActivePanelTab
+    : rawActiveTab && !rawActiveTab.startsWith("panel://")
+      ? rawActiveTab
+      : undefined
   return {
     ...state,
+    activeTab,
+    rawActiveTab,
+    activePanelTab: visibleActivePanelTab,
+    rawActivePanelTab,
     openTabs,
     openedTabs: openTabs,
     openPanelTabs,
     openedPanelTabs: openPanelTabs,
     openFileTabs,
     openedFileTabs: openFileTabs,
+    panelOpen: workspacePanelOpen,
+    rightRailOpen: state.rightRailOpen ?? workspacePanelOpen,
   }
 }
 
-export function workspaceTabsStatus() {
+export function workspaceTabsStatus(sessionID?: string) {
   const now = new Date().toISOString()
-  const clientState = normalizeClientState(latestClientState)
+  const clientState = normalizeClientState(sessionID ? latestClientStateBySession.get(sessionID) : latestClientState)
   return {
     ok: true,
     generatedAt: now,
@@ -185,7 +211,7 @@ export function workspaceTabsAction(input: Schema.Schema.Type<typeof Parameters>
   if ((input.action === "open" || input.action === "focus" || input.action === "close" || input.action === "actions" || input.action === "run_action" || input.action === "attach_to_chat") && !tab) {
     return { ok: false, error: `Unknown or missing tab: ${requestedTab ?? "(none)"}`, availableTabs: workspaceTabs.map((item) => item.id) }
   }
-  if (input.action === "list" || input.action === "state" || input.action === "snapshot") return workspaceTabsStatus()
+  if (input.action === "list" || input.action === "state" || input.action === "snapshot") return workspaceTabsStatus(input.sessionID)
   if (input.action === "actions") return { ok: true, tab, actions: tab?.actions ?? [], clientState: normalizeClientState(latestClientState) ?? null }
   if (input.action === "run_action") {
     if (!input.tabAction) return { ok: false, error: "run_action requires tabAction", tab }
@@ -220,13 +246,16 @@ export function workspaceTabsAction(input: Schema.Schema.Type<typeof Parameters>
 }
 
 export function updateWorkspaceTabsClientState(input: WorkspaceTabsClientState) {
-  latestClientState = normalizeClientState({
+  const normalized = normalizeClientState({
     ...input,
     updatedAt: new Date().toISOString(),
   })
+  latestClientState = normalized
+  if (normalized?.sessionID) latestClientStateBySession.set(normalized.sessionID, normalized)
   const clientState = latestClientState
   publishWorkspaceTabEvent("workspace.tab.state", {
     sessionID: clientState?.sessionID,
+    clientID: clientState?.clientID,
     activeTab: clientState?.activeTab,
     activePanelTab: clientState?.activePanelTab,
     openedPanelTabs: clientState?.openedPanelTabs,
@@ -236,10 +265,16 @@ export function updateWorkspaceTabsClientState(input: WorkspaceTabsClientState) 
   return { ok: true, clientState, pendingCount: pendingActions.length }
 }
 
-export function workspaceTabsPendingActions(sessionID?: string) {
-  const targetSessionID = sessionID || latestClientState?.sessionID
-  const actions = pendingActions.filter((action) => !action.sessionID || !targetSessionID || action.sessionID === targetSessionID)
-  return { ok: true, sessionID: targetSessionID ?? null, actions }
+export function workspaceTabsPendingActions(sessionID?: string, clientID?: string) {
+  const sessionState = sessionID ? latestClientStateBySession.get(sessionID) : latestClientState
+  const targetSessionID = sessionID || sessionState?.sessionID
+  const targetClientID = clientID || sessionState?.clientID
+  const actions = pendingActions.filter((action) => {
+    const sessionMatches = !action.sessionID || !targetSessionID || action.sessionID === targetSessionID
+    const clientMatches = !action.clientID || (!!targetClientID && action.clientID === targetClientID)
+    return sessionMatches && clientMatches
+  })
+  return { ok: true, sessionID: targetSessionID ?? null, clientID: targetClientID ?? null, actions }
 }
 
 export function ackWorkspaceTabsAction(input: { actionID?: string; ok?: boolean; error?: string; state?: unknown }) {
@@ -265,13 +300,16 @@ function queueWorkspaceTabClientAction(input: {
   requestedTab?: string
   tabAction?: string
   sessionID?: string
+  clientID?: string
 }) {
   const actionID = `wta_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
   const type = input.action === "run_action" ? "workspace_tab_action" : input.action === "attach_to_chat" ? "workspace_tab_snapshot" : "workspace_tab"
+  const targetState = input.sessionID ? latestClientStateBySession.get(input.sessionID) : latestClientState
   const item: PendingWorkspaceTabAction = {
     id: actionID,
     createdAt: new Date().toISOString(),
-    sessionID: input.sessionID ?? latestClientState?.sessionID,
+    sessionID: input.sessionID ?? targetState?.sessionID,
+    clientID: input.clientID ?? targetState?.clientID,
     action: input.action,
     tab: input.tab,
     requestedTab: input.requestedTab,

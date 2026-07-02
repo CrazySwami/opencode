@@ -177,7 +177,7 @@ export async function runPreviewAction(
   const state = writePreviewSurfaceState(sessionID, {
     action: params.action,
     mappedBrowserAction: input.action,
-    url: params.action === "navigate" ? params.url : undefined,
+    ...(params.action === "navigate" ? { url: params.url } : {}),
     browserSessionID: result.browserSessionID,
     artifactURL: result.artifactURL,
     source,

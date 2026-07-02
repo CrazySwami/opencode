@@ -64,6 +64,12 @@ const ARTIFACT_VIEWER_TAB_PREFIX = "artifact://"
 const FILE_BROWSER_STATE_KEY = "opencode:workspace-suite:file-browser"
 const PREVIEW_STATE_KEY = "opencode:workspace-suite:preview"
 const PANEL_TABS = new Set([...WORKSPACE_PANEL_TAB_IDS, PANEL_QUEUE_TAB])
+const MOBILE_PANEL_SHELL_MIN_HEIGHT_CLASS = "max-md:min-h-[calc(100svh-5rem)]"
+const MOBILE_PANEL_TABS_MIN_HEIGHT_CLASS = "max-md:min-h-[calc(100svh-6rem)]"
+const MOBILE_PANEL_CONTENT_MIN_HEIGHT_CLASS = "max-md:min-h-[calc(100svh-8rem)]"
+const MOBILE_PANEL_BODY_MIN_HEIGHT_CLASS = "max-md:min-h-[calc(100svh-9rem)]"
+const WORKSPACE_PANEL_CONTENT_LAYOUT_CLASS = `flex h-full min-h-0 flex-1 basis-0 flex-col overflow-hidden contain-layout ${MOBILE_PANEL_CONTENT_MIN_HEIGHT_CLASS}`
+const WORKSPACE_PANEL_CONTENT_STRICT_CLASS = `flex h-full min-h-0 flex-1 basis-0 flex-col overflow-hidden contain-strict ${MOBILE_PANEL_CONTENT_MIN_HEIGHT_CLASS}`
 
 function renderDiff(value: SnapshotFileDiff | VcsFileDiff): value is RenderDiff {
   return typeof value.file === "string"
@@ -863,7 +869,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
     <TabChrome
       iconTab={PANEL_BROWSER_TAB}
       headerClass="h-12 shrink-0 border-b border-border-weaker-base bg-background-stronger px-2 py-1.5"
-      bodyClass="relative min-h-0 flex-1 overflow-hidden bg-background-base p-0"
+      bodyClass="relative flex h-full min-h-0 flex-1 basis-0 overflow-hidden bg-background-base p-0"
       toolbar={
         <div class="flex h-full min-w-0 items-center gap-1 rounded-md border border-border-weaker-base bg-background-base px-1.5">
           <IconButton
@@ -1147,7 +1153,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
       }
     >
       <div
-        class="relative size-full bg-background-base outline-none"
+        class="absolute inset-0 bg-background-base outline-none"
         tabIndex={0}
         onClick={handleViewportClick}
         onWheel={handleViewportWheel}
@@ -1201,7 +1207,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
           <Show
             when={!annotating() && useNoVNC() && !vncFailed() ? interactiveUrl() : undefined}
             fallback={
-              <div class="size-full overflow-auto">
+              <div class="relative size-full min-h-0 overflow-auto">
                 <img
                   ref={(el) => (imageRef = el)}
                   src={streamSrc()}
@@ -1221,7 +1227,7 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
               <iframe
                 src={url()}
                 title="Interactive Chromium browser"
-                class="block size-full border-0 bg-white"
+                class="absolute inset-0 block h-full w-full border-0 bg-white"
                 allow="clipboard-read; clipboard-write"
                 onLoad={() => {
                   setPreviewReady(false)
@@ -1466,7 +1472,7 @@ function PreviewTabContent(props: { sessionID?: string }) {
     <TabChrome
       iconTab={PANEL_PREVIEW_TAB}
       headerClass="h-12 shrink-0 border-b border-border-weaker-base bg-background-stronger px-2 py-1.5"
-      bodyClass="flex-1 min-h-0 overflow-hidden"
+      bodyClass="relative flex h-full min-h-0 flex-1 basis-0 overflow-hidden"
       toolbar={
         <div class="flex h-full min-w-0 items-center gap-1 rounded-md border border-border-weaker-base bg-background-base px-1.5">
           <form
@@ -1523,7 +1529,7 @@ function PreviewTabContent(props: { sessionID?: string }) {
             when={currentKind() !== "external"}
             fallback={
               <div
-                class="relative size-full overflow-auto bg-background-base outline-none"
+                class="absolute inset-0 overflow-auto bg-background-base outline-none"
                 tabIndex={0}
                 onClick={handleExternalClick}
                 onWheel={handleExternalWheel}
@@ -1576,7 +1582,7 @@ function PreviewTabContent(props: { sessionID?: string }) {
             <iframe
               src={url()}
               title="Preview"
-              class="block size-full border-0 bg-white"
+              class="absolute inset-0 block h-full w-full border-0 bg-white"
               sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-downloads"
               allow="clipboard-read; clipboard-write"
             />
@@ -1866,7 +1872,10 @@ function TabChrome(props: {
     </Show>
   )
   return (
-    <div class="flex h-full min-h-0 flex-col bg-background-base">
+    <div
+      class={`flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-background-base ${MOBILE_PANEL_SHELL_MIN_HEIGHT_CLASS}`}
+      data-workspace-panel-shell={props.iconTab}
+    >
       <Show when={hasHeader()}>
         <div
           class={
@@ -1913,7 +1922,12 @@ function TabChrome(props: {
           </Show>
         </div>
       </Show>
-      <div class={props.bodyClass ?? "min-h-0 flex-1 overflow-auto p-3"}>{props.children}</div>
+      <div
+        class={`${props.bodyClass ?? "flex h-full min-h-0 flex-1 basis-0 flex-col overflow-auto p-3"} ${MOBILE_PANEL_BODY_MIN_HEIGHT_CLASS}`}
+        data-workspace-panel-body={props.iconTab}
+      >
+        {props.children}
+      </div>
     </div>
   )
 }
@@ -1988,7 +2002,7 @@ function OpenDesignTabContent(
     <TabChrome
       iconTab={PANEL_OPEN_DESIGN_TAB}
       headerClass="h-12 shrink-0 border-b border-border-weaker-base bg-background-stronger px-2 py-1.5"
-      bodyClass="flex-1 min-h-0 overflow-hidden"
+      bodyClass="relative flex h-full min-h-0 flex-1 basis-0 overflow-hidden"
       toolbar={
         <div class="flex h-full min-w-0 items-center gap-1 rounded-md border border-border-weaker-base bg-background-base px-1.5">
           <PanelGlyph tab={PANEL_OPEN_DESIGN_TAB} />
@@ -2057,8 +2071,8 @@ function OpenDesignTabContent(
           </div>
         )}
       </Show>
-      <div class="relative size-full min-h-0 overflow-hidden bg-background-base">
-        <div class="size-full overflow-hidden bg-background-stronger">
+      <div class="absolute inset-0 overflow-hidden bg-background-base">
+        <div class="absolute inset-0 overflow-hidden bg-background-stronger">
           <Show
             when={canEmbed()}
             fallback={
@@ -2092,7 +2106,7 @@ function OpenDesignTabContent(
             <iframe
               src={frameUrl() ?? "about:blank"}
               title="Open Design"
-              class="block size-full border-0 bg-white"
+              class="absolute inset-0 block h-full w-full border-0 bg-white"
               allow="clipboard-read; clipboard-write"
             />
           </Show>
@@ -2211,7 +2225,7 @@ function MacViewTabContent() {
     <TabChrome
       iconTab={PANEL_MAC_VIEW_TAB}
       headerClass="h-10 shrink-0 flex items-center justify-between gap-3 px-3 border-b border-border-weaker-base bg-background-stronger"
-      bodyClass="flex-1 min-h-0 overflow-hidden"
+      bodyClass="flex h-full min-h-0 flex-1 basis-0 overflow-hidden"
       toolbar={
         <>
           <div class="flex min-w-0 items-center gap-2 text-14-medium text-text-strong">
@@ -2390,6 +2404,10 @@ function AccountsTabContent() {
     const count = codexAccounts()?.accountCount
     return typeof count === "number" ? count : 0
   })
+  const codexAccountList = createMemo(() => (Array.isArray(codexAccounts()?.accounts) ? codexAccounts().accounts : []))
+  const codexRuntimeReady = createMemo(() => codexAccounts()?.runtimeReady === true)
+  const codexRouting = createMemo(() => codexAccounts()?.sendRouting ?? "unknown")
+  const codexStorePath = createMemo(() => codexAccounts()?.accountStore?.path ?? null)
   const codexStatusLabel = createMemo(() => {
     const accounts = codexAccounts()
     if (!accounts?.configured) return "not configured"
@@ -2457,6 +2475,32 @@ function AccountsTabContent() {
     await navigator.clipboard.writeText(value)
   }
 
+  const setCodexActiveAccount = async (alias: string) => {
+    setLoginResult((current: any) => ({ ...(current ?? {}), accountActionPending: alias, accountActionError: undefined }))
+    try {
+      const response = await fetch("/experimental/codex-multi-auth/account", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "set-active", alias }),
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok || body?.ok === false) throw new Error(body?.error ?? "Could not set active Codex account")
+      setLoginResult((current: any) => ({
+        ...(current ?? {}),
+        accountActionPending: undefined,
+        accountActionNote: `Active Codex account set to ${alias}`,
+      }))
+      void codexStatus.refresh()
+      void status.refresh()
+    } catch (error) {
+      setLoginResult((current: any) => ({
+        ...(current ?? {}),
+        accountActionPending: undefined,
+        accountActionError: error instanceof Error ? error.message : String(error),
+      }))
+    }
+  }
+
   return (
     <TabChrome
       title="Accounts"
@@ -2498,6 +2542,64 @@ function AccountsTabContent() {
               </div>
             )}
           </Show>
+          <div class="mb-3 grid gap-2 md:grid-cols-3">
+            <StatusRow label="Account count" value={codexAccountCount()} />
+            <StatusRow label="Active account" value={codexAccounts()?.activeAccount ?? "none"} />
+            <StatusRow label="Rotation" value={codexAccounts()?.rotationStrategy ?? "not set"} />
+            <StatusRow label="Runtime proof" value={codexRuntimeReady() ? "ready" : "not verified"} />
+            <StatusRow label="Send routing" value={codexRouting()} />
+            <StatusRow label="Usage" value={codexAccounts()?.usageSummary ?? codexAccounts()?.limitsOutput ?? "not reported"} />
+          </div>
+          <Show when={codexStorePath()}>
+            {(storePath) => (
+              <div class="mb-3 rounded bg-background-base px-3 py-2 text-11-regular text-text-weak">
+                Isolated account store: <span class="font-mono text-text-strong">{storePath()}</span>
+              </div>
+            )}
+          </Show>
+          <Show when={codexAccountList().length > 0}>
+            <div class="mb-3 overflow-hidden rounded-md border border-border-weaker-base">
+              <For each={codexAccountList()}>
+                {(account: any) => (
+                  <div class="grid gap-2 border-b border-border-weaker-base bg-background-base px-3 py-2 text-12-regular last:border-b-0 md:grid-cols-[1fr_1fr_auto_auto]">
+                    <div class="min-w-0">
+                      <div class="truncate text-text-strong">{account.alias ?? "account"}</div>
+                      <div class="truncate text-11-regular text-text-weak">{account.email ?? account.label ?? "email not reported"}</div>
+                    </div>
+                    <div class="min-w-0 text-11-regular text-text-weak">
+                      <div class="truncate">{account.accountId ?? "account id hidden"}</div>
+                      <div class="truncate">source: {account.source ?? "unknown"}</div>
+                    </div>
+                    <span class="self-center rounded bg-background-stronger px-2 py-1 text-11-regular text-text-weak">
+                      {account.enabled === false ? "disabled" : "enabled"}
+                    </span>
+                    <Show
+                      when={account.active}
+                      fallback={
+                        <button
+                          type="button"
+                          class="self-center rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60"
+                          disabled={loginResult()?.accountActionPending === account.alias}
+                          onClick={() => void setCodexActiveAccount(account.alias)}
+                        >
+                          {loginResult()?.accountActionPending === account.alias ? "Setting..." : "Set active"}
+                        </button>
+                      }
+                    >
+                      <span class="self-center rounded bg-green-500/10 px-2 py-1 text-11-regular text-green-200">
+                        active
+                      </span>
+                    </Show>
+                  </div>
+                )}
+              </For>
+            </div>
+          </Show>
+          <Show when={codexAccountList().length === 0}>
+            <div class="mb-3 rounded-md border border-border-weaker-base bg-background-base px-3 py-2 text-12-regular text-text-weak">
+              No isolated Codex multi-auth accounts are visible yet. Normal OpenAI sign-in is separate from this store.
+            </div>
+          </Show>
           <div class="mb-3 flex flex-wrap gap-2">
             <button
               type="button"
@@ -2524,6 +2626,12 @@ function AccountsTabContent() {
                 Codex status refresh failed: {error()}
               </div>
             )}
+          </Show>
+          <Show when={loginResult()?.accountActionNote}>
+            {(note) => <div class="mb-3 rounded-md border border-green-500/20 bg-green-500/10 px-3 py-2 text-12-regular text-green-100">{note()}</div>}
+          </Show>
+          <Show when={loginResult()?.accountActionError}>
+            {(error) => <div class="mb-3 rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-12-regular text-orange-100">{error()}</div>}
           </Show>
           <Show when={authPanel()}>
             {(result) => (
@@ -2636,8 +2744,10 @@ function AccountsTabContent() {
               </div>
             )}
           </Show>
-          <div class="whitespace-pre-wrap break-words text-12-regular text-text-weak">
-            {codexAccounts()?.output ??
+          <div class="whitespace-pre-wrap break-words rounded bg-background-base px-3 py-2 text-12-regular text-text-weak">
+            {codexAccounts()?.healthOutput ??
+              codexAccounts()?.listOutput ??
+              codexAccounts()?.output ??
               codexAccounts()?.error ??
               codexAccounts()?.warning ??
               "No Codex account status reported yet."}
@@ -2835,10 +2945,15 @@ function RoutinesTabContent() {
 
 function EnvironmentTabContent() {
   const environment = createPolledJson<any>(() => "/experimental/workspace-suite/environments", 15000)
+  const workspaceEnv = createPolledJson<any>(() => "/experimental/workspace-env", 15000)
   const data = () => environment.data()
+  const refreshAll = () => {
+    void environment.refresh()
+    void workspaceEnv.refresh()
+  }
 
   return (
-    <TabChrome title="Environment" iconTab={PANEL_ENVIRONMENT_TAB} onRefresh={environment.refresh}>
+    <TabChrome title="Environment" iconTab={PANEL_ENVIRONMENT_TAB} onRefresh={refreshAll}>
       <div class="flex flex-col gap-3">
         <Show when={environment.error()}>
           {(error) => (
@@ -2965,9 +3080,259 @@ function EnvironmentTabContent() {
           </div>
         </div>
 
+        <EnvironmentVariableManager
+          registry={workspaceEnv.data()?.registry}
+          effective={workspaceEnv.data()?.effective}
+          error={workspaceEnv.error()}
+          onRefresh={refreshAll}
+        />
+
         <StatusRow label="Last checked" value={data()?.generatedAt} />
       </div>
     </TabChrome>
+  )
+}
+
+type EnvironmentDraft = {
+  id?: string
+  name: string
+  value: string
+  scope: string
+  target: string
+  enabled: boolean
+  secret: boolean
+  description: string
+}
+
+const emptyEnvironmentDraft = (): EnvironmentDraft => ({
+  name: "",
+  value: "",
+  scope: "repos",
+  target: "",
+  enabled: true,
+  secret: false,
+  description: "",
+})
+
+function EnvironmentVariableManager(props: {
+  registry?: any
+  effective?: any
+  error?: string
+  onRefresh: () => void
+}) {
+  const [draft, setDraft] = createSignal<EnvironmentDraft>(emptyEnvironmentDraft())
+  const [saving, setSaving] = createSignal(false)
+  const [message, setMessage] = createSignal<string>()
+  const entries = createMemo(() => props.registry?.entries ?? [])
+  const editing = createMemo(() => !!draft().id)
+
+  const updateDraft = (patch: Partial<EnvironmentDraft>) => setDraft((current) => ({ ...current, ...patch }))
+  const loadEntry = (entry: any) => {
+    setDraft({
+      id: entry.id,
+      name: entry.name ?? "",
+      value: "",
+      scope: entry.scope ?? "repos",
+      target: entry.target ?? "",
+      enabled: entry.enabled !== false,
+      secret: !!entry.secret,
+      description: entry.description ?? "",
+    })
+    setMessage("Loaded entry. Leave value blank to keep the current stored value.")
+  }
+  const resetDraft = () => {
+    setDraft(emptyEnvironmentDraft())
+    setMessage(undefined)
+  }
+
+  const saveDraft = async (event: SubmitEvent) => {
+    event.preventDefault()
+    const next = draft()
+    setSaving(true)
+    setMessage(undefined)
+    try {
+      const body: Record<string, unknown> = {
+        action: "upsert",
+        id: next.id,
+        name: next.name,
+        scope: next.scope,
+        target: next.target || undefined,
+        enabled: next.enabled,
+        secret: next.secret,
+        description: next.description || undefined,
+      }
+      if (!next.id || next.value !== "") body.value = next.value
+      const response = await fetch("/experimental/workspace-env", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      })
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok || result?.ok === false) throw new Error(result?.error ?? "Could not save environment variable")
+      setMessage(`Saved ${next.name}. New processes launched through OpenCode will inherit matching enabled variables.`)
+      resetDraft()
+      props.onRefresh()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const deleteEntry = async (entry: any) => {
+    if (!entry?.id) return
+    const confirmed = window.confirm(`Delete ${entry.name}? This removes it from future OpenCode-launched processes.`)
+    if (!confirmed) return
+    setSaving(true)
+    setMessage(undefined)
+    try {
+      const response = await fetch("/experimental/workspace-env", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "delete", id: entry.id }),
+      })
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok || result?.ok === false) throw new Error(result?.error ?? "Could not delete environment variable")
+      setMessage(`Deleted ${entry.name}.`)
+      if (draft().id === entry.id) resetDraft()
+      props.onRefresh()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+      <div class="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <div class="text-13-medium text-text-strong">Environment Variables</div>
+          <div class="text-12-regular text-text-weak">
+            Server-local registry for OpenCode-launched tools and terminals. Secret values stay redacted in the UI and prompt.
+          </div>
+        </div>
+        <EnvironmentPill tone={(entries().length ?? 0) > 0 ? "ready" : "warn"} label={`${entries().length ?? 0} vars`} />
+      </div>
+
+      <Show when={props.error}>
+        {(error) => <div class="mb-3 rounded bg-background-base p-2 text-12-regular text-text-weak">{error()}</div>}
+      </Show>
+
+      <div class="mb-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        <EnvironmentInfoRow label="Registry path" value={props.registry?.path} />
+        <EnvironmentInfoRow label="Repos root" value={props.effective?.reposRoot} />
+        <EnvironmentInfoRow label="Inherited now" value={(props.effective?.inheritedBy ?? []).join(", ") || "terminal, bash"} />
+        <EnvironmentInfoRow label="Planned next" value={(props.effective?.plannedScopes ?? []).join(", ") || "routines, browser, preview"} />
+      </div>
+
+      <form class="grid gap-2 xl:grid-cols-[1fr_1.2fr_0.8fr_1fr]" onSubmit={saveDraft}>
+        <input
+          value={draft().name}
+          onInput={(event) => updateDraft({ name: event.currentTarget.value })}
+          class="h-9 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
+          placeholder="VARIABLE_NAME"
+          required
+        />
+        <input
+          value={draft().value}
+          onInput={(event) => updateDraft({ value: event.currentTarget.value })}
+          class="h-9 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
+          placeholder={editing() ? "New value, or blank to keep current" : "Value"}
+          type={draft().secret ? "password" : "text"}
+        />
+        <select
+          value={draft().scope}
+          onChange={(event) => updateDraft({ scope: event.currentTarget.value })}
+          class="h-9 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
+        >
+          <option value="repos">repos</option>
+          <option value="global">global</option>
+          <option value="project">project</option>
+          <option value="terminal">terminal</option>
+          <option value="bash">bash</option>
+          <option value="routines">routines</option>
+          <option value="browser">browser</option>
+          <option value="preview">preview</option>
+          <option value="open_design">open_design</option>
+        </select>
+        <input
+          value={draft().target}
+          onInput={(event) => updateDraft({ target: event.currentTarget.value })}
+          class="h-9 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
+          placeholder="Optional project path"
+        />
+        <input
+          value={draft().description}
+          onInput={(event) => updateDraft({ description: event.currentTarget.value })}
+          class="h-9 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none xl:col-span-2"
+          placeholder="Description shown to the LLM, no secrets"
+        />
+        <label class="flex h-9 items-center gap-2 rounded border border-border-weaker-base bg-background-base px-2 text-12-regular text-text-strong">
+          <input
+            type="checkbox"
+            checked={draft().secret}
+            onChange={(event) => updateDraft({ secret: event.currentTarget.checked })}
+          />
+          Secret
+        </label>
+        <label class="flex h-9 items-center gap-2 rounded border border-border-weaker-base bg-background-base px-2 text-12-regular text-text-strong">
+          <input
+            type="checkbox"
+            checked={draft().enabled}
+            onChange={(event) => updateDraft({ enabled: event.currentTarget.checked })}
+          />
+          Enabled
+        </label>
+        <div class="flex gap-2 xl:col-span-4">
+          <button
+            type="submit"
+            class="rounded-md border border-border-weaker-base px-3 py-1.5 text-12-medium text-text-strong hover:bg-surface-raised-base-hover disabled:text-text-disabled"
+            disabled={saving()}
+          >
+            {editing() ? "Update variable" : "Add variable"}
+          </button>
+          <button
+            type="button"
+            class="rounded-md border border-border-weaker-base px-3 py-1.5 text-12-medium text-text-weak hover:bg-surface-raised-base-hover"
+            onClick={resetDraft}
+          >
+            Clear
+          </button>
+        </div>
+      </form>
+
+      <Show when={message()}>
+        {(value) => <div class="mt-3 rounded bg-background-base p-2 text-12-regular text-text-weak">{value()}</div>}
+      </Show>
+
+      <div class="mt-3 flex flex-col gap-2">
+        <For
+          each={entries()}
+          fallback={<div class="rounded bg-background-base p-3 text-12-regular text-text-weak">No variables yet.</div>}
+        >
+          {(entry: any) => (
+            <div class="grid gap-2 rounded bg-background-base p-2 text-12-regular text-text-weak xl:grid-cols-[1fr_0.7fr_0.7fr_1fr_auto]">
+              <div class="min-w-0">
+                <div class="truncate text-text-strong">{entry.name}</div>
+                <div class="truncate">{entry.description ?? "No description"}</div>
+              </div>
+              <div>{entry.scope}</div>
+              <div>{entry.enabled ? "enabled" : "disabled"}</div>
+              <div>{entry.secret ? "secret" : entry.valuePreview ?? (entry.hasValue ? "value set" : "empty")}</div>
+              <div class="flex justify-end gap-2">
+                <button class="rounded px-2 py-1 text-text-strong hover:bg-surface-raised-base-hover" type="button" onClick={() => loadEntry(entry)}>
+                  Edit
+                </button>
+                <button class="rounded px-2 py-1 text-red-400 hover:bg-red-500/10" type="button" onClick={() => void deleteEntry(entry)}>
+                  Delete
+                </button>
+              </div>
+            </div>
+          )}
+        </For>
+      </div>
+    </div>
   )
 }
 
@@ -3653,7 +4018,7 @@ function ArtifactViewerTabContent(props: { tab: string }) {
     <TabChrome
       iconTab={props.tab}
       headerClass="h-10 shrink-0 flex items-center justify-between gap-3 px-3 border-b border-border-weaker-base bg-background-base"
-      bodyClass="flex-1 min-h-0 overflow-hidden"
+      bodyClass="flex h-full min-h-0 flex-1 basis-0 overflow-hidden"
       toolbar={<FileViewerBar file={file()} url={url()} />}
     >
       <Show
@@ -3990,7 +4355,24 @@ export function SessionSidePanel(props: {
 
   const closePanelTab = (tab: string) => {
     const nextTab = canonicalPanelTab(tab)
+    const current = activeTab()
+    const wasActive = current === nextTab || (!!current && canonicalPanelTab(current) === nextTab)
+    const remainingPanelTabs = openedPanelTabs().filter((id) => id !== nextTab)
+    const remainingFileTabs = openedFileTabs().filter((id) => id !== nextTab)
     tabs().close(nextTab)
+    if (!wasActive) return
+
+    if (remainingPanelTabs.length > 0) {
+      tabs().setActive(remainingPanelTabs[remainingPanelTabs.length - 1]!)
+    } else if (reviewTab() && props.canReview()) {
+      tabs().setActive("review")
+    } else if (contextOpen()) {
+      tabs().setActive("context")
+    } else if (remainingFileTabs.length > 0) {
+      tabs().setActive(remainingFileTabs[remainingFileTabs.length - 1]!)
+    } else {
+      tabs().setActive("empty")
+    }
   }
 
   const [browserLaunch, setBrowserLaunch] = createSignal<BrowserLaunchRequest | undefined>()
@@ -3998,40 +4380,57 @@ export function SessionSidePanel(props: {
     mode: "dashboard",
     active: false,
   })
+  const workspaceTabClientID = (() => {
+    if (typeof window === "undefined") return `server-${params.id ?? "unknown"}`
+    const key = `opencode:workspace-tabs:client:${params.id ?? "global"}`
+    const existing = window.sessionStorage.getItem(key)
+    if (existing) return existing
+    const generated = `wtc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+    window.sessionStorage.setItem(key, generated)
+    return generated
+  })()
   const [panelMenuOpen, setPanelMenuOpen] = createSignal(false)
-  const [panelMenuAnchorElement, setPanelMenuAnchorElement] = createSignal<HTMLElement | undefined>()
-  const [panelMenuPosition, setPanelMenuPosition] = createSignal({ left: 0, top: 0 })
 
-  const collectWorkspaceTabClientState = () => ({
-    sessionID: params.id,
-    route: typeof window === "undefined" ? undefined : window.location.pathname,
-    activeTab: activeTab(),
-    activePanelTab: activePanelTab(),
-    openTabs: openedTabs(),
-    openedTabs: openedTabs(),
-    openPanelTabs: openedPanelTabs(),
-    openedPanelTabs: openedPanelTabs(),
-    openFileTabs: openedFileTabs(),
-    openedFileTabs: openedFileTabs(),
-    reviewOpen: reviewOpen(),
-    panelOpen: open(),
-    mobile: mobile(),
-    desktop: isDesktop(),
-    selected: {
-      fileBrowser: readFileBrowserState(),
-      activeArtifact: activeArtifactTab(),
-      activeFile: activeFileTab(),
-      openDesign: openDesignBridgeState(),
-    },
-    bridges: {
-      openDesign: openDesignBridgeState(),
-    },
-    visibleControls: {
-      plusMenuOpen: panelMenuOpen(),
-      canReview: props.canReview(),
-      fileTreeOpen: fileOpen(),
-    },
-  })
+  const collectWorkspaceTabClientState = () => {
+    const workspacePanelOpen = reviewOpen()
+    const visibleActivePanelTab = workspacePanelOpen ? activePanelTab() : undefined
+    const currentActiveTab = activeTab()
+    return {
+      sessionID: params.id,
+      clientID: workspaceTabClientID,
+      route: typeof window === "undefined" ? undefined : window.location.pathname,
+      activeTab: isPanelTab(currentActiveTab ?? "") && !workspacePanelOpen ? undefined : currentActiveTab,
+      rawActiveTab: currentActiveTab,
+      activePanelTab: visibleActivePanelTab,
+      rawActivePanelTab: activePanelTab(),
+      openTabs: openedTabs(),
+      openedTabs: openedTabs(),
+      openPanelTabs: openedPanelTabs(),
+      openedPanelTabs: openedPanelTabs(),
+      openFileTabs: openedFileTabs(),
+      openedFileTabs: openedFileTabs(),
+      reviewOpen: workspacePanelOpen,
+      panelOpen: workspacePanelOpen,
+      rightRailOpen: open(),
+      mobile: mobile(),
+      desktop: isDesktop(),
+      selected: {
+        fileBrowser: readFileBrowserState(),
+        activeArtifact: workspacePanelOpen ? activeArtifactTab() : undefined,
+        activeFile: activeFileTab(),
+        openDesign: openDesignBridgeState(),
+      },
+      bridges: {
+        openDesign: openDesignBridgeState(),
+      },
+      visibleControls: {
+        plusMenuOpen: panelMenuOpen(),
+        canReview: props.canReview(),
+        fileTreeOpen: fileOpen(),
+        workspacePanelOpen,
+      },
+    }
+  }
 
   const postWorkspaceTabClientState = async () => {
     if (typeof window === "undefined") return
@@ -4128,7 +4527,10 @@ export function SessionSidePanel(props: {
   const pollWorkspaceTabActions = async () => {
     if (typeof window === "undefined") return
     try {
-      const query = params.id ? `?sessionID=${encodeURIComponent(params.id)}` : ""
+      const search = new URLSearchParams()
+      if (params.id) search.set("sessionID", params.id)
+      search.set("clientID", workspaceTabClientID)
+      const query = `?${search.toString()}`
       const response = await fetch(`/experimental/workspace-tabs/pending${query}`)
       if (!response.ok) return
       const payload = await response.json()
@@ -4144,51 +4546,10 @@ export function SessionSidePanel(props: {
   }
 
   const workspaceActionPoller = setInterval(() => void pollWorkspaceTabActions(), 1000)
-  onCleanup(() => clearInterval(workspaceActionPoller))
-
-  const updatePanelMenuPosition = (element = panelMenuAnchorElement()) => {
-    if (!element) return
-    const rect = element.getBoundingClientRect()
-    const menuWidth = 192
-    const edgePadding = 8
-    setPanelMenuPosition({
-      left: Math.max(edgePadding, Math.min(rect.left, window.innerWidth - menuWidth - edgePadding)),
-      top: Math.max(edgePadding, Math.min(rect.bottom + 4, window.innerHeight - edgePadding)),
-    })
-  }
-
-  const setPanelMenuAnchor = (element: HTMLElement) => {
-    setPanelMenuAnchorElement(element)
-    updatePanelMenuPosition(element)
-  }
-
-  createEffect(() => {
-    if (!panelMenuOpen()) return
-
-    const frame = requestAnimationFrame(() => updatePanelMenuPosition())
-    const closeMenu = () => setPanelMenuOpen(false)
-    const updatePosition = () => updatePanelMenuPosition()
-    const closeOnPointerDown = (event: PointerEvent) => {
-      const target = event.target instanceof Element ? event.target : undefined
-      if (target?.closest("[data-panel-menu-root], [data-panel-menu-trigger]")) return
-      closeMenu()
-    }
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeMenu()
-    }
-
-    document.addEventListener("pointerdown", closeOnPointerDown, true)
-    document.addEventListener("keydown", closeOnEscape)
-    window.addEventListener("resize", updatePosition)
-    window.addEventListener("scroll", updatePosition, true)
-
-    onCleanup(() => {
-      cancelAnimationFrame(frame)
-      document.removeEventListener("pointerdown", closeOnPointerDown, true)
-      document.removeEventListener("keydown", closeOnEscape)
-      window.removeEventListener("resize", updatePosition)
-      window.removeEventListener("scroll", updatePosition, true)
-    })
+  const workspaceStateHeartbeat = setInterval(() => void postWorkspaceTabClientState(), 10000)
+  onCleanup(() => {
+    clearInterval(workspaceActionPoller)
+    clearInterval(workspaceStateHeartbeat)
   })
 
   const launchOpenDesign = () => {
@@ -4300,7 +4661,7 @@ export function SessionSidePanel(props: {
           aria-label={language.t("session.panel.reviewAndFiles")}
           aria-hidden={!open()}
           inert={!open()}
-          class="relative min-w-0 h-full flex shrink-0 overflow-hidden bg-background-base"
+          class={`relative min-w-0 h-full flex shrink-0 overflow-hidden bg-background-base ${MOBILE_PANEL_SHELL_MIN_HEIGHT_CLASS}`}
           classList={{
             "pointer-events-none": !open(),
             "transition-[width] duration-[240ms] ease-[cubic-bezier(0.22,1,0.36,1)] will-change-[width] motion-reduce:transition-none":
@@ -4326,7 +4687,7 @@ export function SessionSidePanel(props: {
                   "pointer-events-none": !reviewOpen(),
                 }}
               >
-                <div class="size-full min-w-0 h-full bg-background-base">
+                <div class={`size-full min-w-0 h-full bg-background-base ${MOBILE_PANEL_SHELL_MIN_HEIGHT_CLASS}`}>
                   <DragDropProvider
                     onDragStart={handleDragStart}
                     onDragEnd={handleDragEnd}
@@ -4335,11 +4696,16 @@ export function SessionSidePanel(props: {
                   >
                     <DragDropSensors />
                     <ConstrainDragYAxis />
-                    <Tabs value={activeTab()} onChange={changeActiveTab}>
+                    <Tabs
+                      value={activeTab()}
+                      onChange={changeActiveTab}
+                      class={`flex h-full min-h-0 min-w-0 flex-col overflow-hidden ${MOBILE_PANEL_TABS_MIN_HEIGHT_CLASS}`}
+                    >
                       <div class="sticky top-0 z-40 flex min-w-0 shrink-0 overflow-visible">
                         <Tabs.List
                           class="min-w-0 flex-1 overflow-x-auto overflow-y-visible pr-12 [scrollbar-width:none]"
                           ref={(el: HTMLDivElement) => {
+                            if (mobile()) return
                             const stop = createFileTabListSync({ el, contextOpen })
                             onCleanup(stop)
                           }}
@@ -4348,7 +4714,7 @@ export function SessionSidePanel(props: {
                             <Tabs.Trigger value="review">
                               <div class="flex items-center gap-1.5">
                                 <div>{language.t("session.tab.review")}</div>
-                                <Show when={props.hasReview()}>
+                                <Show when={!mobile() && props.hasReview()}>
                                   <div>{props.reviewCount()}</div>
                                 </Show>
                               </div>
@@ -4395,69 +4761,66 @@ export function SessionSidePanel(props: {
                             </For>
                           </SortableProvider>
                         </Tabs.List>
-                        <div
-                          data-panel-menu-trigger
-                          data-action="workspace-add-tab"
-                          class="bg-background-stronger h-full shrink-0 z-50 flex items-center justify-center border-l border-border-weaker-base px-2 max-sm:w-14 max-sm:px-0 relative"
+                        <MenuV2
+                          gutter={4}
+                          modal={false}
+                          placement="bottom-end"
+                          open={panelMenuOpen()}
+                          onOpenChange={setPanelMenuOpen}
                         >
-                          <IconButton
-                            icon="plus-small"
-                            variant="ghost"
-                            iconSize="large"
-                            class="!rounded-md max-sm:size-10"
+                          <MenuV2.Trigger
+                            data-panel-menu-trigger
+                            data-action="workspace-add-tab"
+                            class="z-50 flex h-full shrink-0 items-center justify-center border-l border-border-weaker-base bg-background-stronger px-2 text-text-weak outline-none hover:bg-surface-base-hover hover:text-text-strong data-[expanded]:bg-surface-base-active data-[expanded]:text-text-strong max-sm:w-14 max-sm:px-0"
                             aria-label="Add workspace tab"
                             title="Add workspace tab"
-                            aria-expanded={panelMenuOpen()}
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              if (!panelMenuOpen()) setPanelMenuAnchor(event.currentTarget)
-                              setPanelMenuOpen((open) => !open)
-                            }}
-                          />
-                        </div>
+                            onPointerDown={(event) => event.stopPropagation()}
+                          >
+                            <span class="flex size-8 items-center justify-center rounded-md max-sm:size-10">
+                              <Icon name="plus-small" size="large" />
+                            </span>
+                          </MenuV2.Trigger>
+                          <MenuV2.Portal>
+                            <MenuV2.Content
+                              data-panel-menu-root
+                              class="max-h-[min(360px,calc(100vh-1rem))] w-52 overflow-auto"
+                            >
+                              <MenuV2.Group>
+                                <MenuV2.GroupLabel>Open Workspace Tab</MenuV2.GroupLabel>
+                                <MenuV2.Item onSelect={showFilePicker}>
+                                  <span class="flex min-w-0 items-center gap-2">
+                                    <span class="size-4 shrink-0" />
+                                    <span class="truncate">Files</span>
+                                  </span>
+                                </MenuV2.Item>
+                                <For each={WORKSPACE_PANEL_TABS.filter((tab) => !tab.hidden)}>
+                                  {(tab) => (
+                                    <MenuV2.Item
+                                      data-panel-menu-item-id={tab.id}
+                                      onSelect={() =>
+                                        tab.id === PANEL_OPEN_DESIGN_TAB ? launchOpenDesign() : openPanelTab(tab.id)
+                                      }
+                                    >
+                                      <span class="flex min-w-0 items-center gap-2">
+                                        <PanelGlyph tab={tab.id} />
+                                        <span class="truncate">{tab.label}</span>
+                                      </span>
+                                    </MenuV2.Item>
+                                  )}
+                                </For>
+                              </MenuV2.Group>
+                            </MenuV2.Content>
+                          </MenuV2.Portal>
+                        </MenuV2>
                       </div>
 
-                      <Show when={panelMenuOpen()}>
-                        <Portal>
-                          <div
-                            data-panel-menu-root
-                            class="fixed z-[1000] w-48 overflow-auto rounded-lg border border-border-base bg-background-stronger p-1 shadow-lg"
-                            style={{
-                              left: panelMenuPosition().left + "px",
-                              top: panelMenuPosition().top + "px",
-                              "max-height": "min(320px, calc(100vh - " + (panelMenuPosition().top + 8) + "px))",
-                            }}
-                            onPointerDown={(event) => event.stopPropagation()}
-                            onClick={(event) => event.stopPropagation()}
-                          >
-                            <button
-                              type="button"
-                              class="flex h-8 w-full items-center rounded-md px-3 text-left text-13-regular text-text-base hover:bg-surface-base-hover"
-                              onClick={showFilePicker}
-                            >
-                              Files
-                            </button>
-                            <For each={WORKSPACE_PANEL_TABS.filter((tab) => !tab.hidden)}>
-                              {(tab) => (
-                                <PanelMenuButton
-                                  tab={tab.id}
-                                  onSelect={() =>
-                                    tab.id === PANEL_OPEN_DESIGN_TAB ? launchOpenDesign() : openPanelTab(tab.id)
-                                  }
-                                />
-                              )}
-                            </For>
-                          </div>
-                        </Portal>
-                      </Show>
-
                       <Show when={reviewTab() && props.canReview()}>
-                        <Tabs.Content value="review" class="flex flex-col h-full overflow-hidden contain-strict">
+                        <Tabs.Content value="review" class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}>
                           <Show when={reviewOpen() && activeTab() === "review"}>{props.reviewPanel()}</Show>
                         </Tabs.Content>
                       </Show>
 
-                      <Tabs.Content value="empty" class="flex flex-col h-full overflow-hidden contain-strict">
+                      <Tabs.Content value="empty" class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}>
                         <Show when={activeTab() === "empty"}>
                           <div class="relative pt-2 flex-1 min-h-0 overflow-hidden">
                             <div class="h-full px-6 pb-42 -mt-4 flex flex-col items-center justify-center text-center gap-6">
@@ -4471,7 +4834,7 @@ export function SessionSidePanel(props: {
                       </Tabs.Content>
 
                       <Show when={contextOpen()}>
-                        <Tabs.Content value="context" class="flex flex-col h-full overflow-hidden contain-strict">
+                        <Tabs.Content value="context" class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}>
                           <Show when={activeTab() === "context"}>
                             <div class="relative pt-2 flex-1 min-h-0 overflow-hidden">
                               <SessionContextTab />
@@ -4482,7 +4845,7 @@ export function SessionSidePanel(props: {
 
                       <Tabs.Content
                         value={PANEL_TERMINAL_TAB}
-                        class="flex flex-col h-full overflow-hidden contain-strict"
+                        class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
                       >
                         <Show when={activePanelTab() === PANEL_TERMINAL_TAB}>
                           <SessionTerminalTab />
@@ -4491,7 +4854,7 @@ export function SessionSidePanel(props: {
 
                       <Tabs.Content
                         value={PANEL_BROWSER_TAB}
-                        class="flex flex-col h-full overflow-hidden contain-layout"
+                        class={WORKSPACE_PANEL_CONTENT_LAYOUT_CLASS}
                       >
                         <Show when={activePanelTab() === PANEL_BROWSER_TAB}>
                           <BrowserTabContent sessionID={params.id} launch={browserLaunch()} />
@@ -4500,7 +4863,7 @@ export function SessionSidePanel(props: {
 
                       <Tabs.Content
                         value={PANEL_PREVIEW_TAB}
-                        class="flex flex-col h-full overflow-hidden contain-layout"
+                        class={WORKSPACE_PANEL_CONTENT_LAYOUT_CLASS}
                       >
                         <Show when={activePanelTab() === PANEL_PREVIEW_TAB}>
                           <PreviewTabContent sessionID={params.id} />
@@ -4509,7 +4872,7 @@ export function SessionSidePanel(props: {
 
                       <Tabs.Content
                         value={PANEL_OPEN_DESIGN_TAB}
-                        class="flex flex-col h-full overflow-hidden contain-layout"
+                        class={WORKSPACE_PANEL_CONTENT_LAYOUT_CLASS}
                       >
                         <Show when={activePanelTab() === PANEL_OPEN_DESIGN_TAB}>
                           <OpenDesignTabContent
@@ -4521,7 +4884,7 @@ export function SessionSidePanel(props: {
 
                       <Tabs.Content
                         value={PANEL_MAC_VIEW_TAB}
-                        class="flex flex-col h-full overflow-hidden contain-layout"
+                        class={WORKSPACE_PANEL_CONTENT_LAYOUT_CLASS}
                       >
                         <Show when={activePanelTab() === PANEL_MAC_VIEW_TAB}>
                           <MacViewTabContent />
@@ -4530,7 +4893,7 @@ export function SessionSidePanel(props: {
 
                       <Tabs.Content
                         value={PANEL_ACCOUNTS_TAB}
-                        class="flex flex-col h-full overflow-hidden contain-strict"
+                        class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
                       >
                         <Show when={activePanelTab() === PANEL_ACCOUNTS_TAB}>
                           <AccountsTabContent />
@@ -4539,7 +4902,7 @@ export function SessionSidePanel(props: {
 
                       <Tabs.Content
                         value={PANEL_ROUTINES_TAB}
-                        class="flex flex-col h-full overflow-hidden contain-strict"
+                        class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
                       >
                         <Show when={activePanelTab() === PANEL_ROUTINES_TAB}>
                           <RoutinesTabContent />
@@ -4548,7 +4911,7 @@ export function SessionSidePanel(props: {
 
                       <Tabs.Content
                         value={PANEL_ENVIRONMENT_TAB}
-                        class="flex flex-col h-full overflow-hidden contain-strict"
+                        class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
                       >
                         <Show when={activePanelTab() === PANEL_ENVIRONMENT_TAB}>
                           <EnvironmentTabContent />
@@ -4557,7 +4920,7 @@ export function SessionSidePanel(props: {
 
                       <Tabs.Content
                         value={PANEL_RESOURCES_TAB}
-                        class="flex flex-col h-full overflow-hidden contain-strict"
+                        class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
                       >
                         <Show when={activePanelTab() === PANEL_RESOURCES_TAB}>
                           <ResourcesTabContent />
@@ -4566,7 +4929,7 @@ export function SessionSidePanel(props: {
 
                       <Tabs.Content
                         value={PANEL_ARTIFACTS_TAB}
-                        class="flex flex-col h-full overflow-hidden contain-layout"
+                        class={WORKSPACE_PANEL_CONTENT_LAYOUT_CLASS}
                       >
                         <Show when={activePanelTab() === PANEL_ARTIFACTS_TAB}>
                           <ArtifactsTabContent sessionID={params.id} />
@@ -4575,7 +4938,7 @@ export function SessionSidePanel(props: {
 
                       <Tabs.Content
                         value={PANEL_FILE_BROWSER_TAB}
-                        class="flex flex-col h-full overflow-hidden contain-strict"
+                        class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
                       >
                         <Show when={activePanelTab() === PANEL_FILE_BROWSER_TAB}>
                           <FileBrowserTabContent />
@@ -4584,7 +4947,7 @@ export function SessionSidePanel(props: {
 
                       <Show when={activeArtifactTab()} keyed>
                         {(tab) => (
-                          <Tabs.Content value={tab} class="flex flex-col h-full overflow-hidden contain-layout">
+                          <Tabs.Content value={tab} class={WORKSPACE_PANEL_CONTENT_LAYOUT_CLASS}>
                             <ArtifactViewerTabContent tab={tab} />
                           </Tabs.Content>
                         )}

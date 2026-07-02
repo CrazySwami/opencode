@@ -4,6 +4,8 @@ import { ModelsDev } from "@opencode-ai/core/models-dev"
 import { Provider } from "@/provider/provider"
 
 import { mapValues } from "remeda"
+import { readFileSync } from "node:fs"
+import path from "node:path"
 import { Effect, Schema } from "effect"
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
@@ -14,6 +16,37 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 
 const CODEX_MULTI_AUTH_PROVIDER_ID = "codex-multi-auth"
 const CODEX_MULTI_AUTH_BASE_PROVIDER_ID = "openai"
+
+function codexMultiAuthGuardStorePath() {
+  const home = process.env.HOME || "/home/dev"
+  const profileName = process.env.OPENCODE_MULTI_AUTH_PROFILE || "guard22-codex-multi-auth"
+  return path.join(home, ".opencode-profiles", profileName, "home", ".config", "opencode-multi-auth", "accounts.json")
+}
+
+function codexMultiAuthAccountCount() {
+  try {
+    const parsed = JSON.parse(readFileSync(codexMultiAuthGuardStorePath(), "utf8"))
+    const accounts = parsed?.accounts
+    if (!accounts || typeof accounts !== "object" || Array.isArray(accounts)) return 0
+    return Object.keys(accounts).length
+  } catch {
+    return 0
+  }
+}
+
+function shouldHideBaseOpenAIProvider() {
+  if (process.env.OPENCODE_SHOW_BASE_OPENAI_WITH_MULTI_AUTH === "1") return false
+  if (process.env.OPENCODE_HIDE_BASE_OPENAI_WITH_MULTI_AUTH === "0") return false
+  return codexMultiAuthAccountCount() > 0
+}
+
+function withoutBaseOpenAIProvider<T extends Record<string, any>>(providers: T, connected: T) {
+  const nextProviders = { ...providers }
+  const nextConnected = { ...connected }
+  delete nextProviders[CODEX_MULTI_AUTH_BASE_PROVIDER_ID]
+  delete nextConnected[CODEX_MULTI_AUTH_BASE_PROVIDER_ID]
+  return { providers: nextProviders, connected: nextConnected }
+}
 
 function withCodexMultiAuthProvider<T extends Record<string, any>>(providers: T, connected: T) {
   const base = providers[CODEX_MULTI_AUTH_BASE_PROVIDER_ID]
@@ -28,6 +61,7 @@ function withCodexMultiAuthProvider<T extends Record<string, any>>(providers: T,
       },
     ]),
   )
+  const hideBaseProvider = shouldHideBaseOpenAIProvider()
   const codexProvider = {
     ...base,
     id: CODEX_MULTI_AUTH_PROVIDER_ID,
@@ -38,14 +72,17 @@ function withCodexMultiAuthProvider<T extends Record<string, any>>(providers: T,
       ...(base.options ?? {}),
       baseProviderID: CODEX_MULTI_AUTH_BASE_PROVIDER_ID,
       experimental: true,
+      hideBaseProvider,
+      baseProviderVisibility: hideBaseProvider ? "hidden-while-multi-auth-ready" : "visible",
     },
     models,
   }
 
-  return {
+  const next = {
     providers: { ...providers, [CODEX_MULTI_AUTH_PROVIDER_ID]: codexProvider },
     connected: { ...connected, [CODEX_MULTI_AUTH_PROVIDER_ID]: codexProvider },
   }
+  return hideBaseProvider ? withoutBaseOpenAIProvider(next.providers, next.connected) : next
 }
 
 function mapProviderAuthError<A, R>(self: Effect.Effect<A, ProviderAuth.Error, R>) {

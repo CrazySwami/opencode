@@ -4,7 +4,26 @@ const emptyProviderCatalog: NormalizedProviderListResponse = { all: new Map(), c
 export const CODEX_MULTI_AUTH_PROVIDER_ID = "codex-multi-auth"
 export const CODEX_MULTI_AUTH_BASE_PROVIDER_ID = "openai"
 
+function shouldHideBaseProvider(catalog: NormalizedProviderListResponse) {
+  const existing = catalog.all.get(CODEX_MULTI_AUTH_PROVIDER_ID)
+  return (existing?.options as Record<string, unknown> | undefined)?.hideBaseProvider === true
+}
+
+function withoutBaseProvider(catalog: NormalizedProviderListResponse): NormalizedProviderListResponse {
+  const all = new Map(catalog.all)
+  all.delete(CODEX_MULTI_AUTH_BASE_PROVIDER_ID)
+  const { [CODEX_MULTI_AUTH_BASE_PROVIDER_ID]: _baseDefault, ...defaultModels } = catalog.default
+  return {
+    ...catalog,
+    all,
+    connected: catalog.connected.filter((id) => id !== CODEX_MULTI_AUTH_BASE_PROVIDER_ID),
+    default: defaultModels,
+  }
+}
+
 function withCodexMultiAuthProvider(catalog: NormalizedProviderListResponse): NormalizedProviderListResponse {
+  if (shouldHideBaseProvider(catalog)) return withoutBaseProvider(catalog)
+
   const base = catalog.all.get(CODEX_MULTI_AUTH_BASE_PROVIDER_ID)
   if (!base) return catalog
   if (!catalog.connected.includes(CODEX_MULTI_AUTH_BASE_PROVIDER_ID)) return catalog

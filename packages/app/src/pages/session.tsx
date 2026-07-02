@@ -1816,12 +1816,7 @@ export default function Page() {
         onPointerDown={handleMobileTabPointerDown("workspace")}
         onClick={() => switchMobileTab("workspace")}
       >
-        <div class="flex items-center justify-center gap-1.5">
-          <span>Workspace</span>
-          <Show when={hasReview()}>
-            <span class="text-12-regular text-text-weak">{reviewCount()}</span>
-          </Show>
-        </div>
+        <span>Workspace</span>
       </button>
     </div>
   )
