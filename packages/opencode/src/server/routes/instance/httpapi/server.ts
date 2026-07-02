@@ -119,7 +119,7 @@ import { errorLayer } from "./middleware/error"
 import { fenceLayer } from "./middleware/fence"
 import { schemaErrorLayer } from "./middleware/schema-error"
 import { captureBrowserScreenshot, runBrowserAction, sessionPaths, type BrowserActionInput } from "@/tool/browser"
-import { readPreviewSurfaceState, writePreviewSurfaceState } from "@/tool/preview"
+import { readPreviewSurfaceState, runPreviewAction, writePreviewSurfaceState } from "@/tool/preview"
 import { collectResourceStatus } from "@/tool/resource-status"
 import { createRoutineDraft, routineLogs, routinesAction, routinesStatus } from "@/tool/routines"
 import { publishAppleBridgeEvent } from "@/tool/ios-bridge-events"
@@ -200,6 +200,49 @@ const docRoute = HttpRouter.use((router) => router.add("GET", "/doc", () => Effe
   Layer.provide(authOnlyRouterLayer),
 )
 
+function normalizePreviewAction(body: any) {
+  if (!body || typeof body !== "object") return null
+  const rawAction = typeof body.action === "string" ? body.action : ""
+  const action =
+    rawAction === "goto" || rawAction === "open"
+      ? "navigate"
+      : rawAction === "click" && typeof body.x === "number" && typeof body.y === "number"
+        ? "click-point"
+        : rawAction === "key"
+          ? "key"
+          : rawAction
+  const supported = new Set([
+    "navigate",
+    "snapshot",
+    "screenshot",
+    "accessibility",
+    "dom",
+    "inspect",
+    "click",
+    "click-point",
+    "fill",
+    "submit",
+    "scroll",
+    "type",
+    "key",
+    "reload",
+    "attach",
+  ])
+  if (!supported.has(action)) return null
+  return {
+    action,
+    url: typeof body.url === "string" ? body.url : undefined,
+    selector: typeof body.selector === "string" ? body.selector : typeof body.target === "string" ? body.target : undefined,
+    x: typeof body.x === "number" ? body.x : undefined,
+    y: typeof body.y === "number" ? body.y : undefined,
+    text: typeof body.text === "string" ? body.text : undefined,
+    key: typeof body.key === "string" ? body.key : typeof body.text === "string" ? body.text : undefined,
+    deltaX: typeof body.deltaX === "number" ? body.deltaX : undefined,
+    deltaY: typeof body.deltaY === "number" ? body.deltaY : undefined,
+    json: typeof body.json === "boolean" ? body.json : undefined,
+  }
+}
+
 const browserPreviewRoute = HttpRouter.use((router) =>
   Effect.gen(function* () {
     yield* router.add("GET", "/experimental/preview/:sessionID/state", (request) =>
@@ -229,6 +272,36 @@ const browserPreviewRoute = HttpRouter.use((router) =>
           source: body.source === "client" ? "client" : "unknown",
         })
         return HttpServerResponse.jsonUnsafe(state)
+      }),
+    )
+
+    yield* router.add("POST", "/experimental/preview/:sessionID/action", (request) =>
+      Effect.gen(function* () {
+        const sessionID = decodeParam(request.url, /^\/experimental\/preview\/([^/]+)\/action$/)
+        if (!sessionID) return HttpServerResponse.text("Missing session ID", { status: 400 })
+
+        const raw = yield* Effect.orDie(request.text)
+        let body: any
+        try {
+          body = JSON.parse(raw || "{}")
+        } catch {
+          return HttpServerResponse.text("Invalid JSON body", { status: 400 })
+        }
+
+        const action = normalizePreviewAction(body)
+        if (!action) return HttpServerResponse.text("Unsupported preview action", { status: 400 })
+
+        const result = yield* Effect.tryPromise({
+          try: () => runPreviewAction(sessionID, action, AbortSignal.timeout(30_000), "client"),
+          catch: (error) => error instanceof Error ? error.message : String(error),
+        }).pipe(
+          Effect.match({
+            onFailure: (error) => ({ ok: false, error }),
+            onSuccess: (value) => value,
+          }),
+        )
+        const status = result && typeof result === "object" && "ok" in result && result.ok === false ? 500 : 200
+        return HttpServerResponse.jsonUnsafe(result, { status })
       }),
     )
 

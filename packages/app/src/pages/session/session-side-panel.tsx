@@ -1124,9 +1124,16 @@ function PreviewTabContent(props: { sessionID?: string }) {
   const [externalViewport, setExternalViewport] = createSignal({ width: 1920, height: 1400 })
   let externalImageRef: HTMLImageElement | undefined
   const currentKind = createMemo(() => previewURLKind(currentURL()))
-  const externalStreamURL = createMemo(() => `/experimental/browser/live/stream?t=${externalKey()}`)
+  const externalStreamURL = createMemo(() =>
+    props.sessionID
+      ? `/experimental/browser/${encodeURIComponent(props.sessionID)}/screenshot?t=${externalKey()}`
+      : `/experimental/browser/live/stream?t=${externalKey()}`,
+  )
   const previewStateURL = createMemo(() =>
     props.sessionID ? `/experimental/preview/${encodeURIComponent(props.sessionID)}/state` : undefined,
+  )
+  const previewActionURL = createMemo(() =>
+    props.sessionID ? `/experimental/preview/${encodeURIComponent(props.sessionID)}/action` : undefined,
   )
 
   const syncPreviewState = async () => {
@@ -1159,7 +1166,9 @@ function PreviewTabContent(props: { sessionID?: string }) {
   }
 
   const runExternalInput = async (body: Record<string, unknown>) => {
-    const response = await fetch("/experimental/browser/live/input", {
+    const actionURL = previewActionURL()
+    if (!actionURL) throw new Error("Preview actions require an active session.")
+    const response = await fetch(actionURL, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
