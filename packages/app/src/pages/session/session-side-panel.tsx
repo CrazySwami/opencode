@@ -2398,6 +2398,8 @@ function AccountsTabContent() {
   const workspace = createPolledJson<any>(() => "/__workspace-index", 15000, 6000)
   const [loginStarting, setLoginStarting] = createSignal(false)
   const [loginResult, setLoginResult] = createSignal<any>()
+  const [proofStarting, setProofStarting] = createSignal(false)
+  const [proofResult, setProofResult] = createSignal<any>()
   const codexAccounts = createMemo(() => status.data()?.codexAccounts ?? codexStatus.data())
   const authPanel = createMemo(() => loginResult() ?? codexAccounts()?.loginAttempt)
   const codexAccountCount = createMemo(() => {
@@ -2408,6 +2410,12 @@ function AccountsTabContent() {
   const codexRuntimeReady = createMemo(() => codexAccounts()?.runtimeReady === true)
   const codexRouting = createMemo(() => codexAccounts()?.sendRouting ?? "unknown")
   const codexStorePath = createMemo(() => codexAccounts()?.accountStore?.path ?? null)
+  const codexBaseProviderVisibility = createMemo(() => codexAccounts()?.baseProviderVisibility)
+  const codexBaseProviderLabel = createMemo(() => {
+    const visibility = codexBaseProviderVisibility()
+    if (!visibility) return "unknown"
+    return visibility.hidden ? "hidden by Codex Multi-Auth" : "visible"
+  })
   const codexStatusLabel = createMemo(() => {
     const accounts = codexAccounts()
     if (!accounts?.configured) return "not configured"
@@ -2501,6 +2509,35 @@ function AccountsTabContent() {
     }
   }
 
+  const runCodexRuntimeProof = async () => {
+    setProofStarting(true)
+    setProofResult(undefined)
+    try {
+      const response = await fetch("/experimental/codex-multi-auth/run-proof", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prompt: "Reply with exactly: MULTI_AUTH_RUNTIME_OK" }),
+      })
+      const body = await response.json().catch(() => ({}))
+      const proofRunning = body?.state === "running"
+      if (!response.ok || (body?.ok === false && !proofRunning))
+        throw new Error(body?.error ?? body?.sendBlockReason ?? "Codex runtime proof failed")
+      setProofResult(body)
+      void codexStatus.refresh()
+      void status.refresh()
+      if (proofRunning) {
+        window.setTimeout(() => {
+          void codexStatus.refresh()
+          void status.refresh()
+        }, 12_000)
+      }
+    } catch (error) {
+      setProofResult({ ok: false, error: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setProofStarting(false)
+    }
+  }
+
   return (
     <TabChrome
       title="Accounts"
@@ -2543,6 +2580,8 @@ function AccountsTabContent() {
             )}
           </Show>
           <div class="mb-3 grid gap-2 md:grid-cols-3">
+            <StatusRow label="Provider owner" value={codexAccounts()?.providerID ?? "codex-multi-auth"} />
+            <StatusRow label="Base OpenAI" value={codexBaseProviderLabel()} />
             <StatusRow label="Account count" value={codexAccountCount()} />
             <StatusRow label="Active account" value={codexAccounts()?.activeAccount ?? "none"} />
             <StatusRow label="Rotation" value={codexAccounts()?.rotationStrategy ?? "not set"} />
@@ -2550,6 +2589,11 @@ function AccountsTabContent() {
             <StatusRow label="Send routing" value={codexRouting()} />
             <StatusRow label="Usage" value={codexAccounts()?.usageSummary ?? codexAccounts()?.limitsOutput ?? "not reported"} />
           </div>
+          <Show when={codexBaseProviderVisibility()?.hidden}>
+            <div class="mb-3 rounded-md border border-green-500/20 bg-green-500/10 px-3 py-2 text-12-regular text-green-100">
+              Original OpenAI is hidden from the model picker while Codex Multi-Auth is ready. To temporarily restore it, set <span class="font-mono">OPENCODE_SHOW_BASE_OPENAI_WITH_MULTI_AUTH=1</span>.
+            </div>
+          </Show>
           <Show when={codexStorePath()}>
             {(storePath) => (
               <div class="mb-3 rounded bg-background-base px-3 py-2 text-11-regular text-text-weak">
@@ -2619,7 +2663,37 @@ function AccountsTabContent() {
             >
               Refresh status
             </button>
+            <button
+              type="button"
+              class="rounded-md border border-border-weaker-base bg-background-base px-3 py-1.5 text-12-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60"
+              disabled={proofStarting() || codexAccountCount() === 0}
+              onClick={() => void runCodexRuntimeProof()}
+            >
+              {proofStarting() ? "Running proof..." : "Run runtime proof"}
+            </button>
           </div>
+          <Show when={proofResult()}>
+            {(result) => (
+              <div
+                class="mb-3 rounded-md border px-3 py-2 text-12-regular"
+                classList={{
+                  "border-green-500/20 bg-green-500/10 text-green-100": result().ok === true,
+                  "border-orange-500/20 bg-orange-500/10 text-orange-100": result().ok !== true,
+                }}
+              >
+                <div class="mb-1 text-12-medium">Runtime proof {result().ok === true ? "passed" : "failed"}</div>
+                <div class="whitespace-pre-wrap break-words text-11-regular">
+                  {result().text ?? result().error ?? result().sendBlockReason ?? result().outputPreview ?? "No proof output reported."}
+                </div>
+                <Show when={result().sessionID ?? result().durationMs}>
+                  <div class="mt-1 text-11-regular opacity-80">
+                    <Show when={result().sessionID}>{(sessionID) => <span>Session {sessionID()} </span>}</Show>
+                    <Show when={result().durationMs}>{(durationMs) => <span>{durationMs()}ms</span>}</Show>
+                  </div>
+                </Show>
+              </div>
+            )}
+          </Show>
           <Show when={codexStatus.error()}>
             {(error) => (
               <div class="mb-3 rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-12-regular text-orange-100">

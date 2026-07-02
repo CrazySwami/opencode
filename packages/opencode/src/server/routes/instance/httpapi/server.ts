@@ -2200,7 +2200,8 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
           sendBlocked: result.sendBlocked === true,
           error: typeof resultRecord.error === "string" ? resultRecord.error.slice(0, 500) : null,
         })
-        return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : 500 })
+        const status = result.ok ? 200 : (resultRecord.state === "running" ? 202 : 500)
+        return HttpServerResponse.jsonUnsafe(result, { status })
       }),
     )
 
