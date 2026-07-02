@@ -8,5 +8,7 @@ Actions:
 - `set-rotation` changes the Codex multi-auth rotation strategy.
 - `force-account` temporarily forces a specific Codex multi-auth account by alias and also makes it active for the sidecar runner.
 - `clear-force` clears the forced account override and returns to the configured rotation strategy.
+- `set-enabled` enables or disables a Codex multi-auth account by alias.
+- `remove-account` removes a Codex multi-auth account from the isolated profile.
 
 Never expose tokens, raw OAuth files, cookies, or private env values. Account changes only affect the isolated multi-auth metadata store; normal OpenCode OpenAI auth remains separate.

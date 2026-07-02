@@ -1179,10 +1179,55 @@ function codexMultiAuthAccountAction(body: Record<string, unknown>) {
     clearCodexMultiAuthStatusCache()
     return { ok: true, action, status: readCodexMultiAuthFastAccountStatus() }
   }
+  if (action === "remove-account") {
+    if (!alias || !aliases.includes(alias)) return { ok: false, error: `Unknown Codex account alias: ${alias || "empty"}`, aliases }
+    const nextAccounts = { ...(accounts as Record<string, unknown>) }
+    delete nextAccounts[alias]
+    const remainingAliases = Object.keys(nextAccounts)
+    const nextActive =
+      data.activeAlias === alias
+        ? (remainingAliases[0] ?? null)
+        : typeof data.activeAlias === "string"
+          ? data.activeAlias
+          : (remainingAliases[0] ?? null)
+    const next = {
+      ...data,
+      accounts: nextAccounts,
+      activeAlias: nextActive,
+      forcedAlias: data.forcedAlias === alias ? null : data.forcedAlias,
+      forcedUntil: data.forcedAlias === alias ? null : data.forcedUntil,
+      forcedBy: data.forcedAlias === alias ? null : data.forcedBy,
+      lastAccountRemovedAt: Date.now(),
+    }
+    writeFileSync(store, JSON.stringify(next, null, 2))
+    clearCodexMultiAuthStatusCache()
+    return { ok: true, action, alias, status: readCodexMultiAuthFastAccountStatus() }
+  }
+  if (action === "set-enabled") {
+    if (!alias || !aliases.includes(alias)) return { ok: false, error: `Unknown Codex account alias: ${alias || "empty"}`, aliases }
+    const enabled = body.enabled !== false
+    const current = (accounts as Record<string, unknown>)[alias]
+    const currentRecord =
+      current && typeof current === "object" && !Array.isArray(current) ? (current as Record<string, unknown>) : {}
+    const next = {
+      ...data,
+      accounts: {
+        ...(accounts as Record<string, unknown>),
+        [alias]: {
+          ...currentRecord,
+          enabled,
+        },
+      },
+      lastAccountEnabledAt: Date.now(),
+    }
+    writeFileSync(store, JSON.stringify(next, null, 2))
+    clearCodexMultiAuthStatusCache()
+    return { ok: true, action, alias, enabled, status: readCodexMultiAuthFastAccountStatus() }
+  }
   return {
     ok: false,
     error: `Unsupported Codex account action: ${action}`,
-    supported: ["set-active", "set-rotation", "force-account", "clear-force"],
+    supported: ["set-active", "set-rotation", "force-account", "clear-force", "remove-account", "set-enabled"],
   }
 }
 

@@ -8,9 +8,9 @@ export const Parameters = Schema.Struct({
   detail: Schema.optional(Schema.Literals(["summary", "environment"])).annotate({
     description: "Level of account/status detail. Defaults to summary.",
   }),
-  action: Schema.optional(Schema.Literals(["status", "set-active", "set-rotation", "force-account", "clear-force"])).annotate({
+  action: Schema.optional(Schema.Literals(["status", "set-active", "set-rotation", "force-account", "clear-force", "remove-account", "set-enabled"])).annotate({
     description:
-      "Codex multi-auth action. Defaults to status. set-active and force-account require alias. set-rotation requires strategy.",
+      "Codex multi-auth action. Defaults to status. set-active, force-account, remove-account, and set-enabled require alias. set-rotation requires strategy.",
   }),
   alias: Schema.optional(Schema.String).annotate({
     description: "Codex multi-auth account alias for set-active.",
@@ -21,11 +21,14 @@ export const Parameters = Schema.Struct({
   durationMinutes: Schema.optional(Schema.Number).annotate({
     description: "Duration for force-account, in minutes. Defaults to 120 and is clamped to 5-1440.",
   }),
+  enabled: Schema.optional(Schema.Boolean).annotate({
+    description: "Enabled state for set-enabled. Defaults to true.",
+  }),
 })
 
 type Metadata = {
   detail: "summary" | "environment"
-  action: "status" | "set-active" | "set-rotation" | "force-account" | "clear-force"
+  action: "status" | "set-active" | "set-rotation" | "force-account" | "clear-force" | "remove-account" | "set-enabled"
 }
 
 type CodexAccountSummary = {
@@ -265,6 +268,58 @@ export const AccountStatusTool = Tool.define<typeof Parameters, Metadata, never>
               forcedBy: null,
               lastForceClearedAt: Date.now(),
             }))
+          }
+
+          if (action === "remove-account") {
+            const alias = params.alias?.trim()
+            actionResult = updateCodexStore((data, accounts) => {
+              if (!alias || !Object.prototype.hasOwnProperty.call(accounts, alias)) {
+                throw new Error(`Unknown Codex account alias: ${alias || "empty"}`)
+              }
+              const nextAccounts = { ...accounts }
+              delete nextAccounts[alias]
+              const remainingAliases = Object.keys(nextAccounts)
+              const nextActive =
+                data.activeAlias === alias
+                  ? (remainingAliases[0] ?? null)
+                  : typeof data.activeAlias === "string"
+                    ? data.activeAlias
+                    : (remainingAliases[0] ?? null)
+              return {
+                ...data,
+                accounts: nextAccounts,
+                activeAlias: nextActive,
+                forcedAlias: data.forcedAlias === alias ? null : data.forcedAlias,
+                forcedUntil: data.forcedAlias === alias ? null : data.forcedUntil,
+                forcedBy: data.forcedAlias === alias ? null : data.forcedBy,
+                lastAccountRemovedAt: Date.now(),
+              }
+            })
+          }
+
+          if (action === "set-enabled") {
+            const alias = params.alias?.trim()
+            actionResult = updateCodexStore((data, accounts) => {
+              if (!alias || !Object.prototype.hasOwnProperty.call(accounts, alias)) {
+                throw new Error(`Unknown Codex account alias: ${alias || "empty"}`)
+              }
+              const current = accounts[alias]
+              const currentRecord =
+                current && typeof current === "object" && !Array.isArray(current)
+                  ? (current as Record<string, unknown>)
+                  : {}
+              return {
+                ...data,
+                accounts: {
+                  ...accounts,
+                  [alias]: {
+                    ...currentRecord,
+                    enabled: params.enabled !== false,
+                  },
+                },
+                lastAccountEnabledAt: Date.now(),
+              }
+            })
           }
 
           const status = {
