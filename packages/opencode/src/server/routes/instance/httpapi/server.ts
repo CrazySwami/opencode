@@ -1445,6 +1445,10 @@ function summarizeCodexMultiAuthWorkspaceStatus(status: CodexMultiAuthStatusResu
     configured: status.configured === true,
     providerID: typeof status.providerID === "string" ? status.providerID : "codex-multi-auth",
     baseProviderID: typeof status.baseProviderID === "string" ? status.baseProviderID : "openai",
+    baseProviderVisibility:
+      status.baseProviderVisibility && typeof status.baseProviderVisibility === "object" && !Array.isArray(status.baseProviderVisibility)
+        ? status.baseProviderVisibility
+        : codexMultiAuthBaseProviderVisibility(status.accountsConfigured === true),
     runtimeReady: status.runtimeReady === true,
     sendBlocked: status.sendBlocked !== false,
     sendBlockReason: typeof status.sendBlockReason === "string" ? status.sendBlockReason : null,

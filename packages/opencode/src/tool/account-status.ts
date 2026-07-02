@@ -62,6 +62,23 @@ function codexRuntimeProofPath() {
   return path.join(home, ".local", "share", "opencode-codex-multi-auth", "runtime-proof.json")
 }
 
+function codexBaseProviderVisibility(accountsConfigured: boolean) {
+  const showBaseOpenAI = process.env.OPENCODE_SHOW_BASE_OPENAI_WITH_MULTI_AUTH === "1"
+  const disableHide = process.env.OPENCODE_HIDE_BASE_OPENAI_WITH_MULTI_AUTH === "0"
+  const hidden = accountsConfigured && !showBaseOpenAI && !disableHide
+  return {
+    hidden,
+    providerID: "openai",
+    replacementProviderID: "codex-multi-auth",
+    reason: hidden
+      ? "hidden-while-multi-auth-ready"
+      : accountsConfigured
+        ? "visible-by-env-override"
+        : "visible-until-multi-auth-account-exists",
+    restoreEnv: "OPENCODE_SHOW_BASE_OPENAI_WITH_MULTI_AUTH=1",
+  }
+}
+
 function conversationStatePath() {
   return path.join(
     process.env.OPENCODE_STATE_EXPORT_DIR || "/home/dev/.local/share/opencode-workspace-state/conversations",
@@ -115,6 +132,7 @@ function codexStatus() {
   return {
     providerID: "codex-multi-auth",
     baseProviderID: "openai",
+    baseProviderVisibility: codexBaseProviderVisibility(aliases.length > 0),
     configured: aliases.length > 0,
     accountCount: aliases.length,
     activeAccount: activeAlias,
