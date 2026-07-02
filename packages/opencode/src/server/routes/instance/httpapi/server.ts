@@ -762,6 +762,89 @@ function codexMultiAuthLoginAttemptPath() {
   return path.join(home, ".local", "share", "opencode-codex-multi-auth", "login-status.json")
 }
 
+function readJsonObject(file: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"))
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null
+    return parsed as Record<string, unknown>
+  } catch {
+    return null
+  }
+}
+
+function readCodexMultiAuthFastAccountStatus(): CodexMultiAuthStatusResult | null {
+  const home = process.env.HOME || "/home/dev"
+  const profileName = process.env.OPENCODE_MULTI_AUTH_PROFILE || "guard22-codex-multi-auth"
+  const guardStore = path.join(home, ".opencode-profiles", profileName, "home", ".config", "opencode-multi-auth", "accounts.json")
+  const legacyStore = path.join(
+    home,
+    ".opencode-profiles",
+    "codex-multi-auth",
+    "home",
+    ".opencode",
+    "oc-codex-multi-auth-accounts.json",
+  )
+
+  const guard = readJsonObject(guardStore)
+  const guardAccounts = guard?.accounts
+  if (guardAccounts && typeof guardAccounts === "object" && !Array.isArray(guardAccounts)) {
+    const aliases = Object.keys(guardAccounts)
+    const activeAlias =
+      typeof guard.activeAlias === "string" && guard.activeAlias.trim() ? guard.activeAlias.trim() : aliases[0] ?? null
+    const rotationStrategy =
+      typeof guard.rotationStrategy === "string"
+        ? guard.rotationStrategy
+        : typeof (guard.settings as Record<string, unknown> | undefined)?.rotationStrategy === "string"
+          ? ((guard.settings as Record<string, unknown>).rotationStrategy as string)
+          : null
+    return {
+      ok: aliases.length > 0,
+      configured: true,
+      providerID: "codex-multi-auth",
+      baseProviderID: "openai",
+      accountCount: aliases.length,
+      accountsConfigured: aliases.length > 0,
+      activeAccount: activeAlias,
+      rotationStrategy,
+      sendRouting: aliases.length > 0 ? "multi-auth-profile-pending-runner-verification" : "openai-fallback",
+      statusPhase: aliases.length > 0 ? "account_written" : "needs_plugin_account",
+      usageSummary: null,
+      warning:
+        aliases.length > 0
+          ? "Codex multi-auth accounts are configured. Verify backend send routing before relying on account rotation."
+          : "No Codex multi-auth plugin accounts are configured yet.",
+      source: "fast-account-store",
+    }
+  }
+
+  const legacy = readJsonObject(legacyStore)
+  const legacyAccounts = legacy?.accounts
+  if (Array.isArray(legacyAccounts)) {
+    const accountCount = legacyAccounts.length
+    const activeIndex = typeof legacy.activeIndex === "number" ? legacy.activeIndex : 0
+    return {
+      ok: accountCount > 0,
+      configured: true,
+      providerID: "codex-multi-auth",
+      baseProviderID: "openai",
+      accountCount,
+      accountsConfigured: accountCount > 0,
+      activeAccount: accountCount > 0 ? `account-${activeIndex + 1}` : null,
+      rotationStrategy: "round-robin",
+      sendRouting: accountCount > 0 ? "multi-auth-profile-pending-runner-verification" : "openai-fallback",
+      statusPhase: accountCount > 0 ? "account_written" : "needs_plugin_account",
+      usageSummary: null,
+      warning:
+        accountCount > 0
+          ? "Codex multi-auth accounts are configured in the legacy profile. Verify backend send routing before relying on account rotation."
+          : "No Codex multi-auth plugin accounts are configured yet.",
+      source: "fast-legacy-account-store",
+    }
+  }
+
+  return null
+}
+
 function readCodexMultiAuthLoginAttempt() {
   const file = codexMultiAuthLoginAttemptPath()
   try {
@@ -1399,7 +1482,7 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
             statusWithTimeout<any>(
               "Codex multi-auth status",
               600,
-              {
+              readCodexMultiAuthFastAccountStatus() ?? {
                 ok: false,
                 configured: true,
                 accountCount: 0,
