@@ -10,6 +10,7 @@ import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/l
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { Shell } from "@opencode-ai/core/shell"
+import { workspaceEnvForProcess } from "@opencode-ai/core/workspace-env"
 import { CorsConfig, isAllowedRequestOrigin, type CorsOptions } from "@opencode-ai/server/cors"
 import {
   PTY_CONNECT_TICKET_QUERY,
@@ -68,6 +69,11 @@ export const ptyHandlers = HttpApiBuilder.group(InstanceHttpApi, "pty", (handler
 
     const create = Effect.fn("PtyHttpApi.create")(function* (ctx: { payload: typeof Pty.CreateInput.Type }) {
       const cwd = ctx.payload.cwd || (yield* InstanceState.context).directory
+      const workspaceEnv = workspaceEnvForProcess({
+        directory: (yield* InstanceState.context).directory,
+        cwd,
+        surface: "terminal",
+      })
       const shell = yield* plugin.trigger("shell.env", { cwd }, { env: {} as Record<string, string> })
       return yield* pty(
         Pty.Service.use((service) =>
@@ -75,7 +81,7 @@ export const ptyHandlers = HttpApiBuilder.group(InstanceHttpApi, "pty", (handler
             ...ctx.payload,
             args: ctx.payload.args ? [...ctx.payload.args] : undefined,
             cwd,
-            env: { ...ctx.payload.env, ...shell.env },
+            env: { ...ctx.payload.env, ...workspaceEnv, ...shell.env },
           }),
         ),
       )

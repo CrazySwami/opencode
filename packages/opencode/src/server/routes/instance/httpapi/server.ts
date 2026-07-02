@@ -822,31 +822,6 @@ function codexMultiAuthRuntimeProofPath() {
   return path.join(home, ".local", "share", "opencode-codex-multi-auth", "runtime-proof.json")
 }
 
-function codexMultiAuthIsolatedProfileEnv(base: NodeJS.ProcessEnv) {
-  const home = base.HOME || "/home/dev"
-  const profileName = process.env.OPENCODE_MULTI_AUTH_PROFILE || "guard22-codex-multi-auth"
-  const roots = {
-    home: path.join(home, ".opencode-profiles", profileName, "home"),
-    config: path.join(home, ".config", "opencode-profiles", profileName, "config"),
-    data: path.join(home, ".local", "share", "opencode-profiles", profileName, "data"),
-    cache: path.join(home, ".cache", "opencode-profiles", profileName, "cache"),
-    state: path.join(home, ".local", "state", "opencode-profiles", profileName, "state"),
-  }
-  for (const root of Object.values(roots)) mkdirSync(root, { recursive: true })
-  return {
-    ...base,
-    HOME: roots.home,
-    OPENCODE_MULTI_AUTH_REAL_HOME: home,
-    OPENCODE_MULTI_AUTH_PROFILE: profileName,
-    XDG_CONFIG_HOME: roots.config,
-    XDG_DATA_HOME: roots.data,
-    XDG_CACHE_HOME: roots.cache,
-    XDG_STATE_HOME: roots.state,
-    npm_config_loglevel: "silent",
-    NPM_CONFIG_LOGLEVEL: "silent",
-  }
-}
-
 function readJsonObject(file: string): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(readFileSync(file, "utf8"))
@@ -863,15 +838,16 @@ function sanitizeCodexMultiAuthRuntimeProof(value: Record<string, unknown> | nul
   const cwd = typeof value.cwd === "string" ? value.cwd : "/home/dev/repos/opencode"
   const verifiedAt = typeof value.verifiedAt === "string" ? value.verifiedAt : null
   if (!verifiedAt) return null
-  const state =
-    value.state === "running" || value.state === "success" || value.state === "failed" || value.state === "disabled"
-      ? value.state
-      : ok
-        ? "success"
-        : "failed"
   return {
     ok,
-    state,
+    state:
+      value.state === "running" || value.state === "success" || value.state === "failed" || value.state === "disabled"
+        ? value.state
+        : ok
+          ? "success"
+          : typeof value.error === "string"
+            ? "failed"
+            : undefined,
     providerID: "codex-multi-auth",
     fallbackUsed: false,
     accountAlias: typeof value.accountAlias === "string" ? value.accountAlias : null,
@@ -1368,6 +1344,7 @@ async function codexMultiAuthRunProof(input: Record<string, unknown>) {
   if (process.env.OPENCODE_CODEX_MULTI_AUTH_DISABLE_SERVICE_PROOF === "1") {
     const proof: CodexMultiAuthRuntimeProof = {
       ok: false,
+      state: "disabled",
       providerID: "codex-multi-auth",
       fallbackUsed: false,
       accountAlias: typeof status.activeAccount === "string" ? status.activeAccount : null,
@@ -1395,6 +1372,7 @@ async function codexMultiAuthRunProof(input: Record<string, unknown>) {
       status: summarizeCodexMultiAuthWorkspaceStatus(await codexMultiAuthStatus()),
     }
   }
+
   const args = ["run", "--format", "json", "--dir", cwd]
   if (modelID) args.push("--model", modelID)
   args.push(prompt)

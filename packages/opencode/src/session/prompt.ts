@@ -38,6 +38,7 @@ import { LLM } from "./llm"
 import { Shell } from "@opencode-ai/core/shell"
 import { ShellID } from "@/tool/shell/id"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { workspaceEnvForProcess } from "@opencode-ai/core/workspace-env"
 import { Truncate } from "@/tool/truncate"
 import { Image } from "@/image/image"
 import { decodeDataUrl } from "@/util/data-url"
@@ -556,10 +557,15 @@ export const layer = Layer.effect(
                 { cwd, sessionID: input.sessionID, callID: part.callID },
                 { env: {} },
               )
+              const workspaceEnv = workspaceEnvForProcess({
+                directory: cwd,
+                cwd,
+                surface: "terminal",
+              })
               const cmd = ChildProcess.make(sh, args, {
                 cwd,
                 extendEnv: true,
-                env: { ...shellEnv.env, TERM: "dumb" },
+                env: { ...workspaceEnv, ...shellEnv.env, TERM: "dumb" },
                 stdin: "ignore",
                 forceKillAfter: "3 seconds",
               })
