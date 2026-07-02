@@ -392,15 +392,6 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       return
     }
 
-    if (currentModel.provider.id === CODEX_MULTI_AUTH_PROVIDER_ID) {
-      showToast({
-        title: "Codex Multi-Auth routing is not ready",
-        description:
-          "Account status is connected, but prompt execution still needs the server-side multi-auth runtime adapter. Select OpenAI for now.",
-      })
-      return
-    }
-
     const providerID = currentModel.provider.id
     const model = {
       modelID: currentModel.id,

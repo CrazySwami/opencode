@@ -1,6 +1,7 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import path from "path"
+import { spawn } from "child_process"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import os from "os"
 import { SessionID, MessageID, PartID } from "./schema"
@@ -81,6 +82,150 @@ IMPORTANT:
 - This tool provides your final answer - no further actions are taken after calling it`
 
 const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested structured output. You MUST use the StructuredOutput tool to provide your final response. Do NOT respond with plain text - you MUST call the StructuredOutput tool with your answer formatted according to the schema.`
+
+const CODEX_MULTI_AUTH_PROVIDER_ID = ProviderV2.ID.make("codex-multi-auth")
+
+function codexMultiAuthScript() {
+  return (
+    process.env.OPENCODE_CODEX_MULTI_AUTH_SCRIPT ||
+    "/home/dev/repos/LLM-Experiments/scripts/opencode-codex-multi-auth-profile.mjs"
+  )
+}
+
+function promptTextForCodexMultiAuth(parts: PromptInput["parts"]) {
+  const text = parts
+    .map((part) => {
+      if (part.type === "text") return part.text
+      if (part.type === "file") return `[Attached file: ${part.filename ?? part.url}]`
+      if (part.type === "agent") return `[@${part.name}]`
+      if (part.type === "subtask") return `[Subtask: ${part.description}]\n${part.prompt}`
+      return ""
+    })
+    .filter(Boolean)
+    .join("\n\n")
+    .trim()
+  return text || "Continue."
+}
+
+type CodexMultiAuthSidecarResult = {
+  ok: boolean
+  text: string
+  output: string
+  error?: string
+  exitCode: number | null
+  durationMs: number
+}
+
+function parseCodexMultiAuthJsonLines(output: string) {
+  const text: string[] = []
+  for (const line of output.split("\n")) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith("{")) continue
+    try {
+      const event = JSON.parse(trimmed) as Record<string, unknown>
+      const part = event.part as Record<string, unknown> | undefined
+      if (event.type === "text" && typeof part?.text === "string") text.push(part.text)
+      if (event.type === "error") {
+        const error = event.error as Record<string, unknown> | undefined
+        const data = error?.data as Record<string, unknown> | undefined
+        const message =
+          typeof data?.message === "string"
+            ? data.message
+            : typeof error?.message === "string"
+              ? error.message
+              : undefined
+        if (message) text.push(`[error] ${message}`)
+      }
+    } catch {}
+  }
+  return text.join("\n").replace(/\[error\]\s*/g, "").trim()
+}
+
+function runCodexMultiAuthSidecar(input: { prompt: string; cwd: string; modelID?: string }) {
+  const startedAt = Date.now()
+  const script = codexMultiAuthScript()
+  // The multi-auth wrapper owns model/account selection. Passing OpenCode UI
+  // model ids here can break wrappers that expose aliased model labels, so keep
+  // the session metadata on the OpenCode message but let the isolated profile
+  // choose its configured runtime model.
+  const args = [script, "run", "--format", "json", "--dir", input.cwd, input.prompt]
+
+  const realHome = process.env.HOME || "/home/dev"
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: realHome,
+    USER: process.env.USER || "dev",
+    LOGNAME: process.env.LOGNAME || "dev",
+    SHELL: process.env.SHELL || "/bin/bash",
+    PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
+    XDG_CONFIG_HOME: path.join(realHome, ".config"),
+    XDG_DATA_HOME: path.join(realHome, ".local", "share"),
+    XDG_CACHE_HOME: path.join(realHome, ".cache"),
+    NO_COLOR: "1",
+    OPENCODE_MULTI_AUTH_REQUIRE_ACCOUNT: "1",
+    OPENCODE_MULTI_AUTH_PROFILE: process.env.OPENCODE_MULTI_AUTH_PROFILE || "guard22-codex-multi-auth",
+  }
+  delete env.OPENAI_API_KEY
+  delete env.OPENAI_API_BASE
+  delete env.OPENAI_BASE_URL
+  delete env.OPENAI_ORG_ID
+
+  return new Promise<CodexMultiAuthSidecarResult>((resolve) => {
+    const child = spawn("node", args, {
+      cwd: path.dirname(path.dirname(script)),
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    let stdout = ""
+    let stderr = ""
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      child.kill("SIGTERM")
+      setTimeout(() => child.kill("SIGKILL"), 2_000).unref()
+    }, 180_000)
+    timer.unref()
+    child.stdout?.setEncoding("utf8")
+    child.stderr?.setEncoding("utf8")
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk
+      if (stdout.length > 1_000_000) stdout = stdout.slice(-1_000_000)
+    })
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk
+      if (stderr.length > 1_000_000) stderr = stderr.slice(-1_000_000)
+    })
+    child.on("close", (code) => {
+      clearTimeout(timer)
+      const output = [stdout, stderr].filter(Boolean).join("\n")
+      const text = parseCodexMultiAuthJsonLines(output)
+      const ok = !timedOut && code === 0 && text.length > 0
+      resolve({
+        ok,
+        text,
+        output,
+        error: ok
+          ? undefined
+          : timedOut
+            ? "Codex multi-auth sidecar timed out after 180000ms."
+            : output || `Codex multi-auth sidecar exited with code ${code ?? "null"}.`,
+        exitCode: typeof code === "number" ? code : null,
+        durationMs: Date.now() - startedAt,
+      })
+    })
+    child.on("error", (error) => {
+      clearTimeout(timer)
+      resolve({
+        ok: false,
+        text: "",
+        output: stderr || stdout,
+        error: error.message,
+        exitCode: null,
+        durationMs: Date.now() - startedAt,
+      })
+    })
+  })
+}
 
 function mcpResourceBase64Size(value: string) {
   const trimmed = value.replace(/\s/g, "")
@@ -1055,6 +1200,58 @@ export const layer = Layer.effect(
       return { info, parts }
     }, Effect.scoped)
 
+    const codexMultiAuthPrompt = Effect.fn("SessionPrompt.codexMultiAuthPrompt")(function* (
+      input: PromptInput,
+      user: SessionV1.User,
+    ) {
+      const ctx = yield* InstanceState.context
+      yield* status.set(input.sessionID, { type: "busy" })
+      const modelID = input.model?.modelID ?? user.model.modelID
+      const assistantMessage: SessionV1.Assistant = yield* sessions.updateMessage({
+        id: MessageID.ascending(),
+        role: "assistant",
+        parentID: user.id,
+        sessionID: input.sessionID,
+        mode: user.agent,
+        agent: user.agent,
+        variant: user.model.variant,
+        path: { cwd: ctx.directory, root: ctx.worktree },
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID,
+        providerID: CODEX_MULTI_AUTH_PROVIDER_ID,
+        time: { created: Date.now() },
+      })
+      const part: SessionV1.TextPart = yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: assistantMessage.id,
+        sessionID: input.sessionID,
+        type: "text",
+        text: "",
+      })
+      const result = yield* Effect.promise(() =>
+        runCodexMultiAuthSidecar({
+          prompt: promptTextForCodexMultiAuth(input.parts),
+          cwd: ctx.directory,
+          modelID,
+        }),
+      )
+      part.text = result.ok ? result.text : `Codex Multi-Auth failed.\n\n${(result.error ?? result.output).slice(0, 4000)}`
+      yield* sessions.updatePart(part)
+      assistantMessage.time.completed = Date.now()
+      assistantMessage.finish = result.ok ? "stop" : "error"
+      assistantMessage.cost = 0
+      assistantMessage.tokens = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+      if (!result.ok) {
+        assistantMessage.error = MessageV2.fromError(new Error(result.error ?? "Codex Multi-Auth failed"), {
+          providerID: CODEX_MULTI_AUTH_PROVIDER_ID,
+        })
+      }
+      yield* sessions.updateMessage(assistantMessage)
+      yield* status.set(input.sessionID, { type: "idle" })
+      return { info: assistantMessage, parts: [part] }
+    })
+
     const prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error> = Effect.fn(
       "SessionPrompt.prompt",
     )(function* (input: PromptInput) {
@@ -1073,6 +1270,9 @@ export const layer = Layer.effect(
       }
 
       if (input.noReply === true) return message
+      if (message.info.model.providerID === CODEX_MULTI_AUTH_PROVIDER_ID) {
+        return yield* codexMultiAuthPrompt(input, message.info)
+      }
       return yield* loop({ sessionID: input.sessionID })
     })
 

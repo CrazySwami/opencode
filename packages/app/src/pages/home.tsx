@@ -666,6 +666,13 @@ function HomeRoutinesDashboard() {
   const [draftCommand, setDraftCommand] = createSignal("")
   const [draftSaving, setDraftSaving] = createSignal(false)
   const [draftError, setDraftError] = createSignal<string | undefined>()
+  const [editOpen, setEditOpen] = createSignal(false)
+  const [editName, setEditName] = createSignal("")
+  const [editSchedule, setEditSchedule] = createSignal("")
+  const [editDescription, setEditDescription] = createSignal("")
+  const [editCommand, setEditCommand] = createSignal("")
+  const [actionBusy, setActionBusy] = createSignal<string | undefined>()
+  const [actionError, setActionError] = createSignal<string | undefined>()
   const jobs = createMemo(() => routines.data.value?.routines ?? [])
   const selected = createMemo(() => jobs().find((job: any) => job.id === selectedID()) ?? jobs()[0])
   const mutationsEnabled = createMemo(() => routines.data.value?.status?.mutationsEnabled ?? false)
@@ -682,6 +689,85 @@ function HomeRoutinesDashboard() {
     setDraftCommand("")
     setDraftError(undefined)
     setDraftOpen(true)
+  }
+
+  const routinePath = (id: string, suffix = "") => `/experimental/routines/jobs/${encodeURIComponent(id)}${suffix}`
+
+  const mutateSelectedRoutine = async (input: {
+    id: string
+    method: "PATCH" | "DELETE" | "POST"
+    body?: Record<string, unknown>
+    successTitle: string
+    suffix?: string
+  }) => {
+    if (actionBusy()) return
+    setActionBusy(`${input.method}:${input.id}${input.suffix ?? ""}`)
+    setActionError(undefined)
+    try {
+      const response = await fetch(routinePath(input.id, input.suffix), {
+        method: input.method,
+        headers: input.body ? { "content-type": "application/json" } : undefined,
+        body: input.body ? JSON.stringify(input.body) : undefined,
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok || body?.ok === false) throw new Error(body?.error ?? `Request failed: ${response.status}`)
+      showToast({ title: input.successTitle, variant: "success" })
+      await routines.refresh()
+      return body
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setActionError(message)
+      showToast({ title: "Routine action failed", description: message, variant: "error" })
+    } finally {
+      setActionBusy(undefined)
+    }
+  }
+
+  const openEditDialog = (routine: any) => {
+    setEditName(routine.name ?? "")
+    setEditSchedule(routine.schedule ?? "manual")
+    setEditDescription(routine.description ?? "")
+    setEditCommand(routine.command ?? "")
+    setActionError(undefined)
+    setEditOpen(true)
+  }
+
+  const submitEditRoutine = async () => {
+    const routine = selected()
+    if (!routine?.id) return
+    const result = await mutateSelectedRoutine({
+      id: routine.id,
+      method: "PATCH",
+      body: {
+        name: editName(),
+        schedule: editSchedule(),
+        description: editDescription(),
+        command: editCommand(),
+      },
+      successTitle: "Routine updated",
+    })
+    if (result?.ok) setEditOpen(false)
+  }
+
+  const toggleSelectedRoutine = async (routine: any) => {
+    if (!routine?.id) return
+    await mutateSelectedRoutine({
+      id: routine.id,
+      method: "PATCH",
+      body: { enabled: !routine.enabled },
+      successTitle: routine.enabled ? "Routine disabled" : "Routine enabled",
+    })
+  }
+
+  const deleteSelectedRoutine = async (routine: any) => {
+    if (!routine?.id) return
+    if (!window.confirm(`Delete routine "${routine.name}"?`)) return
+    const result = await mutateSelectedRoutine({
+      id: routine.id,
+      method: "DELETE",
+      successTitle: "Routine deleted",
+    })
+    if (result?.ok) setSelectedID(undefined)
   }
 
   const submitDraftRoutine = async () => {
@@ -790,6 +876,39 @@ function HomeRoutinesDashboard() {
                       {routine().enabled ? "enabled" : "off"}
                     </span>
                   </div>
+                  <Show when={mutationsEnabled()}>
+                    <div class="mt-3 flex flex-wrap gap-2">
+                      <ButtonV2 variant="neutral" size="small" onClick={() => openEditDialog(routine())}>
+                        Edit
+                      </ButtonV2>
+                      <ButtonV2
+                        variant="neutral"
+                        size="small"
+                        disabled={!!actionBusy()}
+                        onClick={() => toggleSelectedRoutine(routine())}
+                      >
+                        {routine().enabled ? "Disable" : "Enable"}
+                      </ButtonV2>
+                      <ButtonV2
+                        variant="ghost"
+                        size="small"
+                        disabled={!!actionBusy()}
+                        onClick={() => deleteSelectedRoutine(routine())}
+                      >
+                        Delete
+                      </ButtonV2>
+                      <ButtonV2 variant="ghost-muted" size="small" onClick={() => void routines.refresh()}>
+                        Refresh
+                      </ButtonV2>
+                    </div>
+                  </Show>
+                  <Show when={actionError()}>
+                    {(error) => (
+                      <div class="mt-3 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-base p-2 text-[12px] text-v2-state-fg-danger">
+                        {error()}
+                      </div>
+                    )}
+                  </Show>
                 </div>
                 <ScrollView class="min-h-0 flex-1">
                   <div class="grid gap-3 p-4">
@@ -813,6 +932,75 @@ function HomeRoutinesDashboard() {
           </Show>
         </div>
       </div>
+      <Show when={editOpen()}>
+        <Portal>
+          <div
+            class="fixed inset-0 z-[1000] flex items-center justify-center bg-v2-background-bg-deep/60 p-4 backdrop-blur-sm"
+            onPointerDown={() => setEditOpen(false)}
+          >
+            <div
+              class="w-[min(520px,calc(100vw-2rem))] rounded-[12px] border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-floating)]"
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              <div class="text-[14px] text-v2-text-text-base [font-weight:600]">Edit routine</div>
+              <div class="mt-3 grid gap-3">
+                <label class="grid gap-1 text-[12px] text-v2-text-text-muted">
+                  Name
+                  <input
+                    class="h-9 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-layer-01 px-3 text-[13px] text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+                    value={editName()}
+                    onInput={(event) => setEditName(event.currentTarget.value)}
+                  />
+                </label>
+                <label class="grid gap-1 text-[12px] text-v2-text-text-muted">
+                  Schedule
+                  <input
+                    class="h-9 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-layer-01 px-3 text-[13px] text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+                    value={editSchedule()}
+                    onInput={(event) => setEditSchedule(event.currentTarget.value)}
+                  />
+                </label>
+                <label class="grid gap-1 text-[12px] text-v2-text-text-muted">
+                  Description
+                  <textarea
+                    class="min-h-16 resize-y rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-layer-01 px-3 py-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+                    value={editDescription()}
+                    onInput={(event) => setEditDescription(event.currentTarget.value)}
+                  />
+                </label>
+                <label class="grid gap-1 text-[12px] text-v2-text-text-muted">
+                  Command
+                  <textarea
+                    class="min-h-16 resize-y rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-layer-01 px-3 py-2 font-mono text-[12px] text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+                    value={editCommand()}
+                    onInput={(event) => setEditCommand(event.currentTarget.value)}
+                  />
+                </label>
+              </div>
+              <Show when={actionError()}>
+                {(error) => (
+                  <div class="mt-3 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-layer-01 p-3 text-[12px] text-v2-state-fg-danger">
+                    {error()}
+                  </div>
+                )}
+              </Show>
+              <div class="mt-4 flex justify-end gap-2">
+                <ButtonV2 variant="neutral" size="normal" onClick={() => setEditOpen(false)}>
+                  Close
+                </ButtonV2>
+                <ButtonV2
+                  variant="contrast"
+                  size="normal"
+                  disabled={!!actionBusy() || !editName().trim()}
+                  onClick={submitEditRoutine}
+                >
+                  {actionBusy() ? "Saving" : "Save changes"}
+                </ButtonV2>
+              </div>
+            </div>
+          </div>
+        </Portal>
+      </Show>
       <Show when={draftOpen()}>
         <Portal>
           <div

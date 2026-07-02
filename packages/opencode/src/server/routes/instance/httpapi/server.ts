@@ -700,8 +700,8 @@ const codexMultiAuthScript = () =>
   "/home/dev/repos/LLM-Experiments/scripts/opencode-codex-multi-auth-profile.mjs"
 
 const CODEX_MULTI_AUTH_SEND_BLOCK_REASON = "Server-side multi-auth runtime adapter is not verified."
-const CODEX_MULTI_AUTH_PROMPT_ADAPTER_BLOCK_REASON =
-  "Runtime proof may be available, but normal session prompt routing is still blocked until the multi-auth prompt adapter is wired."
+const CODEX_MULTI_AUTH_NO_ACCOUNT_BLOCK_REASON = "No isolated Codex multi-auth account is configured."
+const CODEX_MULTI_AUTH_PROMPT_ADAPTER_READY_ROUTING = "multi-auth-sidecar-prompt-adapter"
 
 type CodexMultiAuthCommandResult = {
   ok: boolean
@@ -740,6 +740,7 @@ let codexMultiAuthStatusCache: {
   value: CodexMultiAuthStatusResult
 } | null = null
 let codexMultiAuthRuntimeProofInFlight = false
+const CODEX_MULTI_AUTH_RUNTIME_PROOF_RUNNING_TTL_MS = 2 * 60 * 1000
 
 function clearCodexMultiAuthStatusCache() {
   codexMultiAuthStatusCache = null
@@ -812,6 +813,40 @@ function parseCodexUsageSummary(value: string | undefined) {
   return lines.slice(0, 3).join(" · ") || null
 }
 
+function codexAccountSummaryFromGuard(alias: string, value: unknown, activeAlias: string | null) {
+  const record = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
+  return {
+    alias,
+    email: typeof record.email === "string" ? record.email : null,
+    accountId: typeof record.accountId === "string" ? record.accountId : null,
+    enabled: record.enabled !== false,
+    active: alias === activeAlias,
+    source: typeof record.source === "string" ? record.source : "opencode-multi-auth",
+    usageCount: typeof record.usageCount === "number" ? record.usageCount : null,
+    lastUsed: typeof record.lastUsed === "number" ? record.lastUsed : null,
+    lastSeenAt: typeof record.lastSeenAt === "number" ? record.lastSeenAt : null,
+    expiresAt: typeof record.expiresAt === "number" ? record.expiresAt : null,
+  }
+}
+
+function codexAccountSummaryFromLegacy(value: unknown, index: number, activeIndex: number) {
+  const record = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
+  const email = typeof record.email === "string" ? record.email : null
+  return {
+    alias: email ? email.split("@")[0] : `account-${index + 1}`,
+    email,
+    accountId: typeof record.accountId === "string" ? record.accountId : null,
+    label: typeof record.accountLabel === "string" ? record.accountLabel : null,
+    enabled: true,
+    active: index === activeIndex,
+    source: "legacy-oc-codex-multi-auth",
+    usageCount: null,
+    lastUsed: typeof record.lastUsed === "number" ? record.lastUsed : null,
+    lastSeenAt: typeof record.addedAt === "number" ? record.addedAt : null,
+    expiresAt: typeof record.expiresAt === "number" ? record.expiresAt : null,
+  }
+}
+
 function codexMultiAuthLoginAttemptPath() {
   const home = process.env.HOME || "/home/dev"
   return path.join(home, ".local", "share", "opencode-codex-multi-auth", "login-status.json")
@@ -832,16 +867,41 @@ function readJsonObject(file: string): Record<string, unknown> | null {
   }
 }
 
+function codexMultiAuthRuntimeProofPidAlive(pid: unknown) {
+  if (typeof pid !== "number" || !Number.isFinite(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function codexMultiAuthRuntimeProofStaleReason(value: Record<string, unknown>) {
+  if (value.state !== "running") return null
+  const startedAtMs = typeof value.startedAt === "string" ? Date.parse(value.startedAt) : Number.NaN
+  if (!Number.isFinite(startedAtMs)) return "Runtime proof process is stale because it has no valid start time."
+  if (Date.now() - startedAtMs > CODEX_MULTI_AUTH_RUNTIME_PROOF_RUNNING_TTL_MS)
+    return "Runtime proof process is stale because it exceeded the running proof timeout."
+  if (!codexMultiAuthRuntimeProofPidAlive(value.pid))
+    return "Runtime proof process is stale because the recorded process is no longer running."
+  return null
+}
+
 function sanitizeCodexMultiAuthRuntimeProof(value: Record<string, unknown> | null): CodexMultiAuthRuntimeProof | null {
   if (!value) return null
-  const ok = value.ok === true
+  const staleReason = codexMultiAuthRuntimeProofStaleReason(value)
+  const ok = staleReason ? false : value.ok === true
   const cwd = typeof value.cwd === "string" ? value.cwd : "/home/dev/repos/opencode"
   const verifiedAt = typeof value.verifiedAt === "string" ? value.verifiedAt : null
   if (!verifiedAt) return null
+  const startedAtMs = typeof value.startedAt === "string" ? Date.parse(value.startedAt) : Number.NaN
   return {
     ok,
     state:
-      value.state === "running" || value.state === "success" || value.state === "failed" || value.state === "disabled"
+      staleReason
+        ? "failed"
+        : value.state === "running" || value.state === "success" || value.state === "failed" || value.state === "disabled"
         ? value.state
         : ok
           ? "success"
@@ -856,11 +916,16 @@ function sanitizeCodexMultiAuthRuntimeProof(value: Record<string, unknown> | nul
     promptPreview: typeof value.promptPreview === "string" ? value.promptPreview.slice(0, 200) : "",
     outputPreview: typeof value.outputPreview === "string" ? value.outputPreview.slice(0, 500) : undefined,
     text: typeof value.text === "string" ? value.text.slice(0, 1000) : undefined,
-    error: typeof value.error === "string" ? cleanStatusOutput(value.error).slice(0, 1000) : undefined,
+    error: staleReason ?? (typeof value.error === "string" ? cleanStatusOutput(value.error).slice(0, 1000) : undefined),
     exitCode: typeof value.exitCode === "number" ? value.exitCode : null,
-    durationMs: typeof value.durationMs === "number" ? value.durationMs : 0,
+    durationMs:
+      staleReason && Number.isFinite(startedAtMs)
+        ? Math.max(0, Date.now() - startedAtMs)
+        : typeof value.durationMs === "number"
+          ? value.durationMs
+          : 0,
     startedAt: typeof value.startedAt === "string" ? value.startedAt : undefined,
-    verifiedAt,
+    verifiedAt: staleReason ? new Date().toISOString() : verifiedAt,
     pid: typeof value.pid === "number" ? value.pid : null,
     sessionID: typeof value.sessionID === "string" ? value.sessionID : null,
     profileSource: "isolated-profile-plugin",
@@ -868,7 +933,16 @@ function sanitizeCodexMultiAuthRuntimeProof(value: Record<string, unknown> | nul
 }
 
 function readCodexMultiAuthRuntimeProof() {
-  return sanitizeCodexMultiAuthRuntimeProof(readJsonObject(codexMultiAuthRuntimeProofPath()))
+  const file = codexMultiAuthRuntimeProofPath()
+  const raw = readJsonObject(file)
+  const proof = sanitizeCodexMultiAuthRuntimeProof(raw)
+  if (raw?.state === "running" && proof?.state === "failed" && proof.error) {
+    try {
+      mkdirSync(path.dirname(file), { recursive: true })
+      writeFileSync(file, JSON.stringify(proof, null, 2))
+    } catch {}
+  }
+  return proof
 }
 
 function writeCodexMultiAuthRuntimeProof(value: CodexMultiAuthRuntimeProof) {
@@ -881,14 +955,47 @@ function codexMultiAuthRuntimeReady() {
   return readCodexMultiAuthRuntimeProof()?.ok === true
 }
 
-function codexMultiAuthSendBlockReason() {
-  return codexMultiAuthRuntimeReady() ? CODEX_MULTI_AUTH_PROMPT_ADAPTER_BLOCK_REASON : CODEX_MULTI_AUTH_SEND_BLOCK_REASON
+function codexMultiAuthPromptAdapterReady(accountsConfigured: boolean) {
+  return accountsConfigured && codexMultiAuthRuntimeReady()
 }
 
-function readCodexMultiAuthFastAccountStatus(): CodexMultiAuthStatusResult | null {
+function codexMultiAuthSendBlocked(accountsConfigured: boolean) {
+  return !codexMultiAuthPromptAdapterReady(accountsConfigured)
+}
+
+function codexMultiAuthSendBlockReason(accountsConfigured: boolean) {
+  if (!accountsConfigured) return CODEX_MULTI_AUTH_NO_ACCOUNT_BLOCK_REASON
+  return codexMultiAuthRuntimeReady() ? null : CODEX_MULTI_AUTH_SEND_BLOCK_REASON
+}
+
+function codexMultiAuthSendRouting(accountsConfigured: boolean) {
+  if (!accountsConfigured) return "blocked-no-isolated-account"
+  return codexMultiAuthRuntimeReady()
+    ? CODEX_MULTI_AUTH_PROMPT_ADAPTER_READY_ROUTING
+    : "multi-auth-profile-pending-runner-verification"
+}
+
+function codexMultiAuthBaseProviderVisibility(accountsConfigured: boolean) {
+  const showBaseOpenAI = process.env.OPENCODE_SHOW_BASE_OPENAI_WITH_MULTI_AUTH === "1"
+  const disableHide = process.env.OPENCODE_HIDE_BASE_OPENAI_WITH_MULTI_AUTH === "0"
+  const hidden = accountsConfigured && !showBaseOpenAI && !disableHide
+  return {
+    hidden,
+    providerID: "openai",
+    replacementProviderID: "codex-multi-auth",
+    reason: hidden
+      ? "hidden-while-multi-auth-ready"
+      : accountsConfigured
+        ? "visible-by-env-override"
+        : "visible-until-multi-auth-account-exists",
+    restoreEnv: "OPENCODE_SHOW_BASE_OPENAI_WITH_MULTI_AUTH=1",
+  }
+}
+
+function codexMultiAuthGuardStorePath() {
   const home = process.env.HOME || "/home/dev"
   const profileName = process.env.OPENCODE_MULTI_AUTH_PROFILE || "guard22-codex-multi-auth"
-  const guardStore = path.join(
+  return path.join(
     home,
     ".opencode-profiles",
     profileName,
@@ -897,7 +1004,11 @@ function readCodexMultiAuthFastAccountStatus(): CodexMultiAuthStatusResult | nul
     "opencode-multi-auth",
     "accounts.json",
   )
-  const legacyStore = path.join(
+}
+
+function codexMultiAuthLegacyStorePath() {
+  const home = process.env.HOME || "/home/dev"
+  return path.join(
     home,
     ".opencode-profiles",
     "codex-multi-auth",
@@ -905,6 +1016,11 @@ function readCodexMultiAuthFastAccountStatus(): CodexMultiAuthStatusResult | nul
     ".opencode",
     "oc-codex-multi-auth-accounts.json",
   )
+}
+
+function readCodexMultiAuthFastAccountStatus(): CodexMultiAuthStatusResult | null {
+  const guardStore = codexMultiAuthGuardStorePath()
+  const legacyStore = codexMultiAuthLegacyStorePath()
 
   const guard = readJsonObject(guardStore)
   const guardAccounts = guard?.accounts
@@ -914,6 +1030,7 @@ function readCodexMultiAuthFastAccountStatus(): CodexMultiAuthStatusResult | nul
       typeof guard.activeAlias === "string" && guard.activeAlias.trim()
         ? guard.activeAlias.trim()
         : (aliases[0] ?? null)
+    const accounts = aliases.map((alias) => codexAccountSummaryFromGuard(alias, (guardAccounts as Record<string, unknown>)[alias], activeAlias))
     const rotationStrategy =
       typeof guard.rotationStrategy === "string"
         ? guard.rotationStrategy
@@ -925,20 +1042,25 @@ function readCodexMultiAuthFastAccountStatus(): CodexMultiAuthStatusResult | nul
       configured: true,
       providerID: "codex-multi-auth",
       baseProviderID: "openai",
+      baseProviderVisibility: codexMultiAuthBaseProviderVisibility(aliases.length > 0),
       runtimeReady: codexMultiAuthRuntimeReady(),
-      sendBlocked: true,
-      sendBlockReason: codexMultiAuthSendBlockReason(),
+      sendBlocked: codexMultiAuthSendBlocked(aliases.length > 0),
+      sendBlockReason: codexMultiAuthSendBlockReason(aliases.length > 0),
       runtimeProof: readCodexMultiAuthRuntimeProof(),
       accountCount: aliases.length,
       accountsConfigured: aliases.length > 0,
+      accounts,
+      accountStore: { type: "guard22", path: guardStore },
       activeAccount: activeAlias,
       rotationStrategy,
-      sendRouting: aliases.length > 0 ? "multi-auth-profile-pending-runner-verification" : "blocked-no-isolated-account",
+      sendRouting: codexMultiAuthSendRouting(aliases.length > 0),
       statusPhase: aliases.length > 0 ? "account_written" : "needs_plugin_account",
       usageSummary: null,
       warning:
         aliases.length > 0
-          ? "Codex multi-auth accounts are configured. Verify backend send routing before relying on account rotation."
+          ? codexMultiAuthRuntimeReady()
+            ? "Codex multi-auth runtime and prompt adapter are ready. Prompts route through the isolated sidecar profile."
+            : "Codex multi-auth accounts are configured. Runtime proof is still required before account rotation is available."
           : "No Codex multi-auth plugin accounts are configured yet.",
       source: "fast-account-store",
     }
@@ -949,31 +1071,80 @@ function readCodexMultiAuthFastAccountStatus(): CodexMultiAuthStatusResult | nul
   if (legacy && Array.isArray(legacyAccounts)) {
     const accountCount = legacyAccounts.length
     const activeIndex = typeof legacy.activeIndex === "number" ? legacy.activeIndex : 0
+    const accounts = legacyAccounts.map((account, index) => codexAccountSummaryFromLegacy(account, index, activeIndex))
     return {
       ok: accountCount > 0,
       configured: true,
       providerID: "codex-multi-auth",
       baseProviderID: "openai",
+      baseProviderVisibility: codexMultiAuthBaseProviderVisibility(accountCount > 0),
       runtimeReady: codexMultiAuthRuntimeReady(),
-      sendBlocked: true,
-      sendBlockReason: codexMultiAuthSendBlockReason(),
+      sendBlocked: codexMultiAuthSendBlocked(accountCount > 0),
+      sendBlockReason: codexMultiAuthSendBlockReason(accountCount > 0),
       runtimeProof: readCodexMultiAuthRuntimeProof(),
       accountCount,
       accountsConfigured: accountCount > 0,
-      activeAccount: accountCount > 0 ? `account-${activeIndex + 1}` : null,
+      accounts,
+      accountStore: { type: "legacy", path: legacyStore },
+      activeAccount: accounts[activeIndex]?.alias ?? (accountCount > 0 ? `account-${activeIndex + 1}` : null),
       rotationStrategy: "round-robin",
-      sendRouting: accountCount > 0 ? "multi-auth-profile-pending-runner-verification" : "blocked-no-isolated-account",
+      sendRouting: codexMultiAuthSendRouting(accountCount > 0),
       statusPhase: accountCount > 0 ? "account_written" : "needs_plugin_account",
       usageSummary: null,
       warning:
         accountCount > 0
-          ? "Codex multi-auth accounts are configured in the legacy profile. Verify backend send routing before relying on account rotation."
+          ? codexMultiAuthRuntimeReady()
+            ? "Codex multi-auth legacy profile is runtime proofed and prompt adapter ready. Prompts route through the isolated sidecar profile."
+            : "Codex multi-auth accounts are configured in the legacy profile. Runtime proof is still required before account rotation is available."
           : "No Codex multi-auth plugin accounts are configured yet.",
       source: "fast-legacy-account-store",
     }
   }
 
   return null
+}
+
+function codexMultiAuthAccountAction(body: Record<string, unknown>) {
+  const action = typeof body.action === "string" ? body.action : ""
+  const alias = typeof body.alias === "string" ? body.alias.trim() : ""
+  const store = codexMultiAuthGuardStorePath()
+  const data = readJsonObject(store)
+  const accounts = data?.accounts
+  if (!data || !accounts || typeof accounts !== "object" || Array.isArray(accounts)) {
+    return { ok: false, error: "Guard22 Codex multi-auth account store is not available.", store }
+  }
+  const aliases = Object.keys(accounts)
+  if (action === "set-active") {
+    if (!alias || !aliases.includes(alias)) return { ok: false, error: `Unknown Codex account alias: ${alias || "empty"}`, aliases }
+    const next = {
+      ...data,
+      activeAlias: alias,
+      lastManualSwitchAt: Date.now(),
+      forcedAlias: null,
+      forcedUntil: null,
+    }
+    writeFileSync(store, JSON.stringify(next, null, 2))
+    clearCodexMultiAuthStatusCache()
+    return { ok: true, action, alias, status: readCodexMultiAuthFastAccountStatus() }
+  }
+  if (action === "set-rotation") {
+    const strategy = typeof body.strategy === "string" ? body.strategy.trim() : ""
+    const allowed = new Set(["round-robin", "least-used", "random", "weighted-round-robin"])
+    if (!allowed.has(strategy)) return { ok: false, error: `Unsupported rotation strategy: ${strategy}`, allowed: Array.from(allowed) }
+    const settings = data.settings && typeof data.settings === "object" && !Array.isArray(data.settings) ? (data.settings as Record<string, unknown>) : {}
+    const next = {
+      ...data,
+      rotationStrategy: strategy,
+      settings: {
+        ...settings,
+        rotationStrategy: strategy,
+      },
+    }
+    writeFileSync(store, JSON.stringify(next, null, 2))
+    clearCodexMultiAuthStatusCache()
+    return { ok: true, action, strategy, status: readCodexMultiAuthFastAccountStatus() }
+  }
+  return { ok: false, error: `Unsupported Codex account action: ${action}`, supported: ["set-active", "set-rotation"] }
 }
 
 function readCodexMultiAuthLoginAttempt() {
@@ -1077,14 +1248,27 @@ function redactCodexAuthOutput(value: string | undefined) {
 }
 
 async function buildCodexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> {
-  const loginAttempt = normalizeCodexMultiAuthLoginAttempt(readCodexMultiAuthLoginAttempt())
+  const rawLoginAttempt = normalizeCodexMultiAuthLoginAttempt(readCodexMultiAuthLoginAttempt())
+  const fast = readCodexMultiAuthFastAccountStatus()
+  const loginAttempt =
+    fast?.accountsConfigured === true &&
+    typeof rawLoginAttempt?.phase === "string" &&
+    rawLoginAttempt.phase.startsWith("failed")
+      ? {
+          ok: true,
+          configured: true,
+          background: false,
+          phase: "account_written",
+          note: "A Codex multi-auth account is already configured. Older failed login attempts are hidden from the live Accounts panel.",
+          updatedAt: new Date().toISOString(),
+        }
+      : rawLoginAttempt
   const base = {
     commands: ["login", "login-headless", "list", "status", "limits", "health", "run"],
     loginRoute: "/experimental/codex-multi-auth/login",
     authFlow: "opencode-multi-auth add <alias>",
     loginAttempt,
   }
-  const fast = readCodexMultiAuthFastAccountStatus()
   if (fast?.accountsConfigured === true) {
     return {
       ...fast,
@@ -1092,12 +1276,14 @@ async function buildCodexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> 
       ok: true,
       configured: true,
       runtimeReady: codexMultiAuthRuntimeReady(),
-      sendBlocked: true,
-      sendBlockReason: codexMultiAuthSendBlockReason(),
+      sendBlocked: codexMultiAuthSendBlocked(true),
+      sendBlockReason: codexMultiAuthSendBlockReason(true),
       runtimeProof: readCodexMultiAuthRuntimeProof(),
       statusPhase: "account_written",
-      warning:
-        "Codex multi-auth accounts are configured from the isolated local profile. Normal prompt execution stays blocked until the session prompt adapter is wired.",
+      sendRouting: codexMultiAuthSendRouting(true),
+      warning: codexMultiAuthRuntimeReady()
+        ? "Codex multi-auth accounts are configured from the isolated local profile. Prompts route through the sidecar prompt adapter."
+        : "Codex multi-auth accounts are configured from the isolated local profile. Runtime proof is still required before prompts can route through multi-auth.",
       listOutput: `Accounts: ${fast.accountCount}`,
       limitsOutput: "Usage and weekly limits are not reported by this multi-auth wrapper yet.",
       healthOutput: "Codex multi-auth account store is reachable.",
@@ -1113,7 +1299,7 @@ async function buildCodexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> 
       accountsConfigured: false,
       runtimeReady: codexMultiAuthRuntimeReady(),
       sendBlocked: true,
-      sendBlockReason: "No isolated Codex multi-auth account is configured.",
+      sendBlockReason: CODEX_MULTI_AUTH_NO_ACCOUNT_BLOCK_REASON,
       sendRouting: "blocked-no-isolated-account",
       runtimeProof: readCodexMultiAuthRuntimeProof(),
       warning: status.error ?? "Codex multi-auth status is unavailable.",
@@ -1155,23 +1341,20 @@ async function buildCodexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> 
     ...base,
     providerID: "codex-multi-auth",
     baseProviderID: "openai",
+    baseProviderVisibility: codexMultiAuthBaseProviderVisibility(accountsConfigured),
     runtimeReady: codexMultiAuthRuntimeReady(),
-    sendBlocked: true,
-    sendBlockReason: accountsConfigured
-      ? codexMultiAuthSendBlockReason()
-      : "No isolated Codex multi-auth account is configured.",
+    sendBlocked: codexMultiAuthSendBlocked(accountsConfigured),
+    sendBlockReason: codexMultiAuthSendBlockReason(accountsConfigured),
     runtimeProof: readCodexMultiAuthRuntimeProof(),
     accountCount,
     accountsConfigured,
     activeAccount,
     rotationStrategy,
-    sendRouting: accountsConfigured
-      ? codexMultiAuthRuntimeReady()
-        ? "multi-auth-runtime-proofed-prompt-adapter-blocked"
-        : "multi-auth-profile-pending-runner-verification"
-      : "blocked-no-isolated-account",
+    sendRouting: codexMultiAuthSendRouting(accountsConfigured),
     warning: accountsConfigured
-      ? "Codex multi-auth accounts are configured. Verify backend send routing before relying on account rotation."
+      ? codexMultiAuthRuntimeReady()
+        ? "Codex multi-auth accounts are configured. Prompts route through the isolated sidecar prompt adapter."
+        : "Codex multi-auth accounts are configured. Runtime proof is still required before account rotation is available."
       : loginAttemptPhase === "account_written_or_already_authorized"
         ? "The last Codex login process exited successfully, but no multi-auth account is visible yet. Refresh status once; if accountCount remains 0, rerun Authenticate Codex account."
         : loginAttemptPhase === "failed_after_device_code"
@@ -1228,6 +1411,11 @@ function summarizeCodexMultiAuthWorkspaceStatus(status: CodexMultiAuthStatusResu
     sendBlockReason: typeof status.sendBlockReason === "string" ? status.sendBlockReason : null,
     accountCount: typeof status.accountCount === "number" ? status.accountCount : 0,
     accountsConfigured: status.accountsConfigured === true,
+    accounts: Array.isArray(status.accounts) ? status.accounts : [],
+    accountStore:
+      status.accountStore && typeof status.accountStore === "object" && !Array.isArray(status.accountStore)
+        ? status.accountStore
+        : null,
     activeAccount: typeof status.activeAccount === "string" ? status.activeAccount : null,
     rotationStrategy: typeof status.rotationStrategy === "string" ? status.rotationStrategy : null,
     sendRouting: typeof status.sendRouting === "string" ? status.sendRouting : null,
@@ -1259,7 +1447,7 @@ async function codexMultiAuthWorkspaceStatus() {
     configured: true,
     runtimeReady: codexMultiAuthRuntimeReady(),
     sendBlocked: true,
-    sendBlockReason: codexMultiAuthSendBlockReason(),
+    sendBlockReason: codexMultiAuthSendBlockReason(false),
     runtimeProof: readCodexMultiAuthRuntimeProof(),
     accountCount: 0,
     accountsConfigured: false,
@@ -1328,7 +1516,7 @@ async function codexMultiAuthRunProof(input: Record<string, unknown>) {
       fallbackUsed: false,
       runtimeReady: false,
       sendBlocked: true,
-      sendBlockReason: "No isolated Codex multi-auth account is configured.",
+      sendBlockReason: CODEX_MULTI_AUTH_NO_ACCOUNT_BLOCK_REASON,
       status: summarizeCodexMultiAuthWorkspaceStatus(status),
     }
   }
@@ -1829,6 +2017,61 @@ function cleanStatusOutput(value: string) {
     .slice(0, 2000)
 }
 
+const conversationStateExportScript = () =>
+  process.env.OPENCODE_CONVERSATION_EXPORT_SCRIPT ||
+  "/home/dev/repos/LLM-Experiments/experiments/OpenCode/25-conversation-terminal-state-json/scripts/export-opencode-conversations.mjs"
+
+const conversationStateExportLatestPath = () =>
+  path.join(
+    process.env.OPENCODE_STATE_EXPORT_DIR || "/home/dev/.local/share/opencode-workspace-state/conversations",
+    "latest.json",
+  )
+
+function readConversationStateLatest() {
+  const latest = readJsonObject(conversationStateExportLatestPath())
+  if (!latest) {
+    return {
+      ok: false,
+      error: "Conversation state export has not run yet.",
+      latestPath: conversationStateExportLatestPath(),
+      exportRoute: "/experimental/conversations/export",
+    }
+  }
+  return latest
+}
+
+async function runConversationStateExport() {
+  const script = conversationStateExportScript()
+  if (!existsSync(script)) {
+    return { ok: false, error: "Conversation export script not found", script }
+  }
+  return new Promise<Record<string, unknown>>((resolve) => {
+    execFile(
+      "bun",
+      [script],
+      {
+        cwd: path.dirname(path.dirname(script)),
+        timeout: 60_000,
+        maxBuffer: 1024 * 1024,
+        env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
+      },
+      (error, stdout, stderr) => {
+        const output = [stdout?.toString(), stderr?.toString()].filter(Boolean).join("\n").trim()
+        if (error) {
+          resolve({ ok: false, error: cleanStatusOutput(output || error.message), script })
+          return
+        }
+        try {
+          const parsed = JSON.parse(stdout.toString()) as Record<string, unknown>
+          resolve({ ...parsed, script })
+        } catch {
+          resolve({ ok: true, output: cleanStatusOutput(output), script, latest: readConversationStateLatest() })
+        }
+      },
+    )
+  })
+}
+
 function summarizeCodexAuthEvent(result: any) {
   return {
     ok: result?.ok === true,
@@ -1918,6 +2161,26 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
       }),
     )
 
+    yield* router.add("POST", "/experimental/codex-multi-auth/account", (request) =>
+      Effect.gen(function* () {
+        const raw = yield* Effect.orDie(request.text)
+        let body: Record<string, unknown>
+        try {
+          body = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
+        } catch {
+          return HttpServerResponse.text("Invalid JSON body", { status: 400 })
+        }
+        const result = codexMultiAuthAccountAction(body)
+        publishAppleBridgeEvent("codex_auth", "codex.auth.account.updated", {
+          ok: result.ok === true,
+          action: typeof body.action === "string" ? body.action : null,
+          alias: typeof body.alias === "string" ? body.alias : null,
+          error: typeof result.error === "string" ? result.error.slice(0, 500) : null,
+        })
+        return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : 400 })
+      }),
+    )
+
     yield* router.add("POST", "/experimental/codex-multi-auth/run-proof", (request) =>
       Effect.gen(function* () {
         const raw = yield* Effect.orDie(request.text)
@@ -1986,6 +2249,12 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
             macHost: process.env.OPENCODE_MAC_RESOURCE_HOST || "alfonso-mac",
           },
           codexAccounts: summarizeCodexMultiAuthWorkspaceStatus(codexAccounts),
+          conversationState: readConversationStateLatest(),
+          terminalState: readConversationStateLatest().terminalState ?? {
+            currentBehavior: "workspace-scoped terminal tab metadata plus in-memory PTY processes",
+            processPersistence: false,
+            restartSafeShells: false,
+          },
           artifactRootConfigured: !!process.env.OPENCODE_BROWSER_HOME,
           agentChrome: liveBrowserGateStatus(),
           workspaceIndex,
@@ -1995,6 +2264,26 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
 
     yield* router.add("GET", "/experimental/workspace-suite/environments", () =>
       Effect.promise(async () => HttpServerResponse.jsonUnsafe(await liveOnlyEnvironmentStatus())),
+    )
+
+    yield* router.add("GET", "/experimental/conversations/state", () =>
+      Effect.promise(async () =>
+        HttpServerResponse.setHeader(
+          HttpServerResponse.jsonUnsafe(readConversationStateLatest()),
+          "cache-control",
+          "private, no-store",
+        ),
+      ),
+    )
+
+    yield* router.add("POST", "/experimental/conversations/export", () =>
+      Effect.promise(async () =>
+        HttpServerResponse.setHeader(
+          HttpServerResponse.jsonUnsafe(await runConversationStateExport()),
+          "cache-control",
+          "private, no-store",
+        ),
+      ),
     )
 
     yield* router.add("GET", "/experimental/workspace-env", () =>
@@ -2009,8 +2298,11 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
       }),
     )
 
-    yield* router.add("GET", "/experimental/workspace-tabs/status", () =>
-      Effect.promise(async () => HttpServerResponse.jsonUnsafe(workspaceTabsStatus())),
+    yield* router.add("GET", "/experimental/workspace-tabs/status", (request) =>
+      Effect.promise(async () => {
+        const url = new URL(request.url, "http://localhost")
+        return HttpServerResponse.jsonUnsafe(workspaceTabsStatus(url.searchParams.get("sessionID") || undefined))
+      }),
     )
 
     yield* router.add("POST", "/experimental/workspace-tabs/action", (request) =>
@@ -2035,7 +2327,10 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
       Effect.promise(async () => {
         const url = new URL(request.url, "http://localhost")
         return HttpServerResponse.jsonUnsafe(
-          workspaceTabsPendingActions(url.searchParams.get("sessionID") || undefined),
+          workspaceTabsPendingActions(
+            url.searchParams.get("sessionID") || undefined,
+            url.searchParams.get("clientID") || undefined,
+          ),
         )
       }),
     )

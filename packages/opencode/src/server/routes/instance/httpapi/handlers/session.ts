@@ -301,7 +301,6 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof PromptPayload.Type
     }) {
       yield* requireSession(ctx.params.sessionID)
-      if (ctx.payload.model?.providerID === CODEX_MULTI_AUTH_PROVIDER_ID) return yield* rejectCodexMultiAuthRuntime()
       const message = yield* promptSvc
         .prompt({
           ...ctx.payload,
@@ -318,7 +317,6 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof PromptPayload.Type
     }) {
       yield* requireSession(ctx.params.sessionID)
-      if (ctx.payload.model?.providerID === CODEX_MULTI_AUTH_PROVIDER_ID) return yield* rejectCodexMultiAuthRuntime()
       yield* promptSvc.prompt({ ...ctx.payload, sessionID: ctx.params.sessionID }).pipe(
         Effect.catchCause((cause) =>
           Effect.gen(function* () {

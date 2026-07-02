@@ -1,1 +1,10 @@
-Show non-secret OpenCode account, provider, MCP, and workspace tool status. Use this when the user asks what tools, MCPs, providers, or local surfaces are available.
+Show non-secret OpenCode account, provider, MCP, workspace tool, Codex multi-auth, conversation export, and terminal state status.
+
+Use this when the user asks what tools, MCPs, providers, account lanes, chat-state exports, or local surfaces are available.
+
+Actions:
+- `status` returns redacted environment and Codex multi-auth state.
+- `set-active` switches the active Codex multi-auth account by alias in the isolated account store.
+- `set-rotation` changes the Codex multi-auth rotation strategy.
+
+Never expose tokens, raw OAuth files, cookies, or private env values. Account changes only affect the isolated multi-auth metadata store; normal OpenCode OpenAI auth remains separate.
