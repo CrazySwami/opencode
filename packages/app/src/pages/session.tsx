@@ -666,7 +666,7 @@ export default function Page() {
     const detail = readSessionTabSelectedDetail(event)
     if (!detail) return
     if (detail.sessionID !== params.id) return
-    const currentServer = requireServerKey(params.server)
+    const currentServer = requireServerKey(params.serverKey)
     if (detail.server !== currentServer) return
     if (isDesktop()) return
     setStore("mobileTab", "session")

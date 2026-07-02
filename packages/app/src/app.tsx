@@ -45,7 +45,7 @@ import { PromptProvider } from "@/context/prompt"
 import { ServerConnection, ServerProvider, serverName, useServer } from "@/context/server"
 import { SettingsProvider, useSettings } from "@/context/settings"
 import { TerminalProvider } from "@/context/terminal"
-import { tabHref, TabsProvider, useTabs, type DraftTab } from "@/context/tabs"
+import { draftPromotionStorageKey, tabHref, TabsProvider, useTabs, type DraftTab } from "@/context/tabs"
 import { SDKProvider, useSDK } from "@/context/sdk"
 import { WslServersProvider } from "@/wsl/context"
 import DirectoryLayout, { DirectoryDataProvider } from "@/pages/directory-layout"
@@ -156,7 +156,7 @@ function ResolvedTargetSessionRoute() {
   return (
     <TargetServerScopedProviders directory={directory} sessionID={() => params.id}>
       <Show when={!!current() || resolved.state !== "errored"} fallback={<ErrorPage error={resolved.error} />}>
-        <Show when={directory()}>
+        <Show when={directory()} fallback={<RouteLoadingFallback />}>
           <Show
             when={settings.general.newLayoutDesigns()}
             fallback={<Navigate href={legacySessionHref(directory()!, params.id)} />}
@@ -210,6 +210,10 @@ function DraftRoute() {
   const [search] = useSearchParams<{ draftId?: string }>()
   const tabs = useTabs()
   const fallbackHref = createMemo(() => {
+    if (search.draftId) {
+      const promoted = window.sessionStorage.getItem(draftPromotionStorageKey(search.draftId))
+      if (promoted) return promoted
+    }
     const sessionTabs = tabs.store.filter((tab) => tab.type === "session")
     const latest = sessionTabs[sessionTabs.length - 1]
     return latest ? tabHref(latest) : "/"

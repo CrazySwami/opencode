@@ -33,6 +33,8 @@ type RecentTab = {
 
 export const draftHref = (draftID: string) => `/new-session?draftId=${encodeURIComponent(draftID)}`
 
+export const draftPromotionStorageKey = (draftID: string) => `opencode:draft-promotion:${draftID}`
+
 export const tabHref = (tab: Tab) =>
   tab.type === "draft" ? draftHref(tab.draftID) : sessionHref(tab.server, tab.sessionId)
 
@@ -187,6 +189,8 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
         // after its backing draft tab has been removed from the store.
         const active = location.pathname === "/new-session" && location.query.draftId === draftID
         const next = { type: "session" as const, ...session }
+        const href = tabHref(next)
+        window.sessionStorage.setItem(draftPromotionStorageKey(draftID), href)
         void startTransition(() => {
           setStore(
             produce((tabs) => {
@@ -195,7 +199,7 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
             }),
           )
           if (recent.key === `draft:${draftID}`) setRecentKey(tabKey(next))
-          if (active) navigateTab(next)
+          if (active) navigate(href, { replace: true })
         })
         memory.remove(`draft:${draftID}`)
         removeDraftPersisted(draftID)
