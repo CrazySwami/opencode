@@ -113,7 +113,12 @@ function readFileBrowserState() {
   }
 }
 
-function writeFileBrowserState(state: { currentPath?: string; mode: "list" | "icons"; query: string; selectedPath?: string }) {
+function writeFileBrowserState(state: {
+  currentPath?: string
+  mode: "list" | "icons"
+  query: string
+  selectedPath?: string
+}) {
   if (typeof window === "undefined") return
   window.localStorage.setItem(FILE_BROWSER_STATE_KEY, JSON.stringify(state))
 }
@@ -134,14 +139,17 @@ function panelTabIcon(tab: string) {
   if (artifact?.kind === "video" || artifact?.kind === "audio") return <Icon name="photo" size="small" />
   if (artifact) return <Icon name="code" size="small" />
   const definition = WORKSPACE_PANEL_TAB_BY_ID[canonicalPanelTab(tab) as WorkspacePanelTabID]
-  if (definition?.badge) return <span class="text-[9px] leading-none font-semibold tracking-[0]">{definition.badge}</span>
+  if (definition?.badge)
+    return <span class="text-[9px] leading-none font-semibold tracking-[0]">{definition.badge}</span>
   if (definition?.icon) return <Icon name={definition.icon as any} size="small" />
   if (tab === PANEL_QUEUE_TAB) return <Icon name="checklist" size="small" />
 }
 
 function PanelGlyph(props: { tab: string }) {
   return (
-    <span class="size-4 shrink-0 inline-flex items-center justify-center text-[#f97316]">{panelTabIcon(props.tab)}</span>
+    <span class="size-4 shrink-0 inline-flex items-center justify-center text-[#f97316]">
+      {panelTabIcon(props.tab)}
+    </span>
   )
 }
 
@@ -293,7 +301,11 @@ function SessionTerminalTab() {
   }
 
   return (
-    <TabChrome title="Terminal" iconTab={PANEL_TERMINAL_TAB} bodyClass="flex min-h-0 flex-1 flex-col overflow-hidden p-0">
+    <TabChrome
+      title="Terminal"
+      iconTab={PANEL_TERMINAL_TAB}
+      bodyClass="flex min-h-0 flex-1 flex-col overflow-hidden p-0"
+    >
       <Show
         when={terminal.ready()}
         fallback={
@@ -309,7 +321,12 @@ function SessionTerminalTab() {
           <DragDropSensors />
           <ConstrainDragYAxis />
           <div class="flex min-h-0 flex-1 flex-col">
-            <Tabs variant="alt" value={terminal.active()} onChange={(id) => terminal.open(id)} class="!h-auto !flex-none">
+            <Tabs
+              variant="alt"
+              value={terminal.active()}
+              onChange={(id) => terminal.open(id)}
+              class="!h-auto !flex-none"
+            >
               <Tabs.List class="h-10 border-b border-border-weaker-base">
                 <SortableProvider ids={ids()}>
                   <For each={all()}>{(pty) => <SortableTerminalTab terminal={pty} />}</For>
@@ -479,7 +496,14 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
       fast: { qualityLevel: 4, compressionLevel: 0, scaleViewport: true, resizeSession: false },
       balanced: { qualityLevel: 6, compressionLevel: 1, scaleViewport: true, resizeSession: false },
       sharp: { qualityLevel: 8, compressionLevel: 2, scaleViewport: true, resizeSession: false },
-      mobile: { qualityLevel: 4, compressionLevel: 0, scaleViewport: false, resizeSession: false, clipViewport: true, dragViewport: true },
+      mobile: {
+        qualityLevel: 4,
+        compressionLevel: 0,
+        scaleViewport: false,
+        resizeSession: false,
+        clipViewport: true,
+        dragViewport: true,
+      },
     }[vncPerformance()]
     return status().noVNC?.modes?.[vncPerformance()] ?? fallback
   })
@@ -492,7 +516,10 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
     parsed.searchParams.set("resizeSession", String(preset.resizeSession ?? false))
     parsed.searchParams.set("clipViewport", String(preset.clipViewport ?? false))
     parsed.searchParams.set("dragViewport", String(preset.dragViewport ?? false))
-    parsed.searchParams.set("showDotCursor", String(("showDotCursor" in preset ? preset.showDotCursor : undefined) ?? true))
+    parsed.searchParams.set(
+      "showDotCursor",
+      String(("showDotCursor" in preset ? preset.showDotCursor : undefined) ?? true),
+    )
     parsed.searchParams.set("performance", vncPerformance())
     return parsed.toString()
   }
@@ -662,7 +689,17 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
       return
     }
 
-    const allowed = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Backspace", "Delete", "Enter", "Escape", "Tab"])
+    const allowed = new Set([
+      "ArrowLeft",
+      "ArrowRight",
+      "ArrowUp",
+      "ArrowDown",
+      "Backspace",
+      "Delete",
+      "Enter",
+      "Escape",
+      "Tab",
+    ])
     if (!allowed.has(event.key)) return
     event.preventDefault()
     void runLiveInput({ action: "key", key: browserKey(event.key) })
@@ -753,16 +790,18 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
       if (!response.ok || body?.ok === false) throw new Error(body?.error ?? "Screenshot failed")
       setLastArtifact({ url: body.url, name: body.name })
       if (attach) {
-        const dataUrl = annotationDataURL || await captureAnnotatedDataURL()
+        const dataUrl = annotationDataURL || (await captureAnnotatedDataURL())
         if (dataUrl) {
-          window.dispatchEvent(new CustomEvent("opencode:add-image-attachment", {
-            detail: {
-              dataUrl,
-              filename: body.name || "browser-screenshot.png",
-              mime: "image/png",
-              sourcePath: body.path,
-            },
-          }))
+          window.dispatchEvent(
+            new CustomEvent("opencode:add-image-attachment", {
+              detail: {
+                dataUrl,
+                filename: body.name || "browser-screenshot.png",
+                mime: "image/png",
+                sourcePath: body.path,
+              },
+            }),
+          )
         }
       }
     } catch (error) {
@@ -827,9 +866,30 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
       bodyClass="relative min-h-0 flex-1 overflow-hidden bg-background-base p-0"
       toolbar={
         <div class="flex h-full min-w-0 items-center gap-1 rounded-md border border-border-weaker-base bg-background-base px-1.5">
-          <IconButton icon="arrow-left" variant="ghost" class="h-7 w-7 shrink-0" disabled={controlsDisabled()} onClick={() => void runLiveInput({ action: "back" })} aria-label="Back" />
-          <IconButton icon="arrow-right" variant="ghost" class="h-7 w-7 shrink-0" disabled={controlsDisabled()} onClick={() => void runLiveInput({ action: "forward" })} aria-label="Forward" />
-          <IconButton icon="reset" variant="ghost" class="h-7 w-7 shrink-0" disabled={controlsDisabled()} onClick={() => void runLiveInput({ action: "reload" })} aria-label="Reload page" />
+          <IconButton
+            icon="arrow-left"
+            variant="ghost"
+            class="h-7 w-7 shrink-0"
+            disabled={controlsDisabled()}
+            onClick={() => void runLiveInput({ action: "back" })}
+            aria-label="Back"
+          />
+          <IconButton
+            icon="arrow-right"
+            variant="ghost"
+            class="h-7 w-7 shrink-0"
+            disabled={controlsDisabled()}
+            onClick={() => void runLiveInput({ action: "forward" })}
+            aria-label="Forward"
+          />
+          <IconButton
+            icon="reset"
+            variant="ghost"
+            class="h-7 w-7 shrink-0"
+            disabled={controlsDisabled()}
+            onClick={() => void runLiveInput({ action: "reload" })}
+            aria-label="Reload page"
+          />
           <form
             class="flex min-w-0 flex-1 items-center"
             onSubmit={(event) => {
@@ -843,22 +903,68 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
               class="h-8 min-w-0 flex-1 bg-transparent px-2 text-13-regular text-text-strong outline-none"
               placeholder="Search or enter URL"
             />
-            <IconButton icon="enter" variant="ghost" class="h-7 w-7 shrink-0" disabled={controlsDisabled()} onClick={submitBrowserUrl} aria-label="Open URL" />
+            <IconButton
+              icon="enter"
+              variant="ghost"
+              class="h-7 w-7 shrink-0"
+              disabled={controlsDisabled()}
+              onClick={submitBrowserUrl}
+              aria-label="Open URL"
+            />
           </form>
           <div class="hidden min-w-0 items-center gap-1 md:flex">
-            <span class="max-w-40 truncate px-1 text-11-regular text-text-weak">{browserExposureBlocked() ? "blocked" : browserBusy() ? "working" : useNoVNC() && vncConnected() && !annotating() ? "interactive VNC" : vncFailed() ? "stream fallback" : previewReady() ? "screenshot stream" : "connecting"}</span>
+            <span class="max-w-40 truncate px-1 text-11-regular text-text-weak">
+              {browserExposureBlocked()
+                ? "blocked"
+                : browserBusy()
+                  ? "working"
+                  : useNoVNC() && vncConnected() && !annotating()
+                    ? "interactive VNC"
+                    : vncFailed()
+                      ? "stream fallback"
+                      : previewReady()
+                        ? "screenshot stream"
+                        : "connecting"}
+            </span>
             <span
               class="h-2 w-2 shrink-0 rounded-full"
               classList={{
                 "bg-[#f97316]": !!status().browserUse?.ok && !browserExposureBlocked(),
                 "bg-text-disabled": !status().browserUse?.ok || browserExposureBlocked(),
               }}
-              title={browserExposureBlocked() ? "Browser exposure blocked" : status().browserUse?.ok ? "Browser Use ready" : "Browser Use unavailable"}
+              title={
+                browserExposureBlocked()
+                  ? "Browser exposure blocked"
+                  : status().browserUse?.ok
+                    ? "Browser Use ready"
+                    : "Browser Use unavailable"
+              }
             />
           </div>
-          <IconButton icon="photo" variant="ghost" class="h-7 w-7 shrink-0" disabled={controlsDisabled()} onClick={() => void saveScreenshot(false)} aria-label="Save screenshot" />
-          <IconButton icon="pencil-line" variant="ghost" class="h-7 w-7 shrink-0" disabled={controlsDisabled()} onClick={() => setAnnotating(!annotating())} aria-label={annotating() ? "Stop annotating" : "Annotate screenshot"} />
-          <IconButton icon="share" variant="ghost" class="h-7 w-7 shrink-0" disabled={controlsDisabled()} onClick={() => void saveScreenshot(true)} aria-label="Send screenshot to chat" />
+          <IconButton
+            icon="photo"
+            variant="ghost"
+            class="h-7 w-7 shrink-0"
+            disabled={controlsDisabled()}
+            onClick={() => void saveScreenshot(false)}
+            aria-label="Save screenshot"
+          />
+          <IconButton
+            icon="pencil-line"
+            variant="ghost"
+            class="h-7 w-7 shrink-0"
+            disabled={controlsDisabled()}
+            onClick={() => setAnnotating(!annotating())}
+            aria-label={annotating() ? "Stop annotating" : "Annotate screenshot"}
+          />
+          <IconButton
+            icon="share"
+            variant="ghost"
+            class="h-7 w-7 shrink-0"
+            disabled={controlsDisabled()}
+            onClick={() => void saveScreenshot(true)}
+            aria-label="Send screenshot to chat"
+          />
           <details class="group relative shrink-0" data-prevent-autofocus>
             <summary class="flex h-7 w-7 cursor-pointer list-none items-center justify-center rounded text-text-weak hover:bg-surface-raised-base-hover hover:text-text-strong [&::-webkit-details-marker]:hidden">
               <Icon name="sliders" size="small" />
@@ -878,7 +984,14 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
                   class="h-8 min-w-0 flex-1 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
                   placeholder="Type into focused page"
                 />
-                <IconButton icon="enter" variant="ghost" class="h-8 w-8" disabled={controlsDisabled() || !browserText()} onClick={sendBrowserText} aria-label="Type into page" />
+                <IconButton
+                  icon="enter"
+                  variant="ghost"
+                  class="h-8 w-8"
+                  disabled={controlsDisabled() || !browserText()}
+                  onClick={sendBrowserText}
+                  aria-label="Type into page"
+                />
               </form>
               <form
                 class="flex items-center gap-2"
@@ -894,7 +1007,14 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
                   class="h-8 min-w-0 flex-1 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
                   placeholder="CSS selector to highlight"
                 />
-                <IconButton icon="enter" variant="ghost" class="h-8 w-8" disabled={controlsDisabled() || !selector()} onClick={highlightSelector} aria-label="Highlight selector" />
+                <IconButton
+                  icon="enter"
+                  variant="ghost"
+                  class="h-8 w-8"
+                  disabled={controlsDisabled() || !selector()}
+                  onClick={highlightSelector}
+                  aria-label="Highlight selector"
+                />
               </form>
               <input
                 value={note()}
@@ -905,9 +1025,13 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
               <div class="flex flex-wrap items-center gap-2 text-12-regular text-text-weak">
                 <span class="text-text-strong">Browser Use</span>
                 <span>{status().browserUse?.ok ? "ready" : "unavailable"}</span>
-                <Show when={status().browserUse?.health?.browserUseVersion}>{(version) => <span>v{version()}</span>}</Show>
+                <Show when={status().browserUse?.health?.browserUseVersion}>
+                  {(version) => <span>v{version()}</span>}
+                </Show>
                 <Show when={status().browserUse?.health?.model}>{(model) => <span>{model()}</span>}</Show>
-                <Show when={status().browserUse?.activeSessions !== undefined}><span>{status().browserUse?.activeSessions} sessions</span></Show>
+                <Show when={status().browserUse?.activeSessions !== undefined}>
+                  <span>{status().browserUse?.activeSessions} sessions</span>
+                </Show>
                 <Show when={status().proxiedLiveURL || status().browserUse?.liveURL}>
                   <button
                     class="ml-auto rounded px-2 py-0.5 text-text-strong hover:bg-surface-raised-base-hover disabled:text-text-disabled"
@@ -924,16 +1048,31 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
                     {useNoVNC() ? "Use screenshot stream" : "Use interactive VNC"}
                   </button>
                 </Show>
-                <Show when={status().browserUse?.liveURL}>{(url) => <button class="rounded px-2 py-0.5 text-text-strong hover:bg-surface-raised-base-hover disabled:text-text-disabled" type="button" disabled={browserExposureBlocked()} onClick={() => window.open(url(), "_blank", "noopener,noreferrer")}>Open VNC viewer</button>}</Show>
+                <Show when={status().browserUse?.liveURL}>
+                  {(url) => (
+                    <button
+                      class="rounded px-2 py-0.5 text-text-strong hover:bg-surface-raised-base-hover disabled:text-text-disabled"
+                      type="button"
+                      disabled={browserExposureBlocked()}
+                      onClick={() => window.open(url(), "_blank", "noopener,noreferrer")}
+                    >
+                      Open VNC viewer
+                    </button>
+                  )}
+                </Show>
               </div>
               <div class="flex flex-wrap items-center gap-2 text-12-regular text-text-weak">
                 <span class="text-text-strong">VNC performance</span>
-                <For each={[
-                  { id: "fast", label: "Fast" },
-                  { id: "balanced", label: "Balanced" },
-                  { id: "sharp", label: "Sharp" },
-                  { id: "mobile", label: "Mobile" },
-                ] as const}>
+                <For
+                  each={
+                    [
+                      { id: "fast", label: "Fast" },
+                      { id: "balanced", label: "Balanced" },
+                      { id: "sharp", label: "Sharp" },
+                      { id: "mobile", label: "Mobile" },
+                    ] as const
+                  }
+                >
                   {(mode) => (
                     <button
                       class="rounded px-2 py-0.5 hover:bg-surface-raised-base-hover"
@@ -955,22 +1094,45 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
                     </button>
                   )}
                 </For>
-                <span class="ml-auto">{vncPreset().qualityLevel ?? 4}q / {vncPreset().compressionLevel ?? 0}c</span>
+                <span class="ml-auto">
+                  {vncPreset().qualityLevel ?? 4}q / {vncPreset().compressionLevel ?? 0}c
+                </span>
               </div>
               <div class="grid grid-cols-1 gap-2 text-12-regular text-text-weak md:grid-cols-3">
-                <StatusPill label="Profile" value={profilePolicy()?.persistentAuth?.status ?? "unknown"} active={!!profilePolicy()?.persistentAuth?.enabled} />
-                <StatusPill label="Extensions" value={profilePolicy()?.extensions?.status ?? "unknown"} active={!!profilePolicy()?.extensions?.enabled} />
-                <StatusPill label="LastPass" value={profilePolicy()?.lastPass?.status ?? "unknown"} active={!!profilePolicy()?.lastPass?.enabled} />
+                <StatusPill
+                  label="Profile"
+                  value={profilePolicy()?.persistentAuth?.status ?? "unknown"}
+                  active={!!profilePolicy()?.persistentAuth?.enabled}
+                />
+                <StatusPill
+                  label="Extensions"
+                  value={profilePolicy()?.extensions?.status ?? "unknown"}
+                  active={!!profilePolicy()?.extensions?.enabled}
+                />
+                <StatusPill
+                  label="LastPass"
+                  value={profilePolicy()?.lastPass?.status ?? "unknown"}
+                  active={!!profilePolicy()?.lastPass?.enabled}
+                />
               </div>
-              <Show when={browserError()}>{(error) => <div class="text-12-regular text-text-weak break-all">{error()}</div>}</Show>
+              <Show when={browserError()}>
+                {(error) => <div class="text-12-regular text-text-weak break-all">{error()}</div>}
+              </Show>
               <Show when={(status().access?.warnings ?? []).length > 0}>
                 <div class="rounded border border-[#f97316]/30 bg-[#f97316]/10 p-2 text-12-regular text-[#f97316]">
-                  <For each={status().access?.warnings ?? []}>
-                    {(warning) => <div>{warning}</div>}
-                  </For>
+                  <For each={status().access?.warnings ?? []}>{(warning) => <div>{warning}</div>}</For>
                 </div>
               </Show>
-              <Show when={lastArtifact()}>{(artifact) => <div class="text-12-regular text-text-weak">Saved <a class="text-text-strong underline" href={artifact().url} target="_blank" rel="noreferrer">{artifact().name}</a></div>}</Show>
+              <Show when={lastArtifact()}>
+                {(artifact) => (
+                  <div class="text-12-regular text-text-weak">
+                    Saved{" "}
+                    <a class="text-text-strong underline" href={artifact().url} target="_blank" rel="noreferrer">
+                      {artifact().name}
+                    </a>
+                  </div>
+                )}
+              </Show>
             </div>
           </details>
           <IconButton
@@ -996,18 +1158,33 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
           fallback={
             <div class="flex size-full items-center justify-center p-6 text-center">
               <div class="max-w-md rounded-md border border-border-weaker-base bg-background-stronger p-4">
-                <div class="mx-auto mb-3 flex h-9 w-9 items-center justify-center rounded-full bg-[#f97316]/15 text-11-medium text-[#f97316]">LOCK</div>
+                <div class="mx-auto mb-3 flex h-9 w-9 items-center justify-center rounded-full bg-[#f97316]/15 text-11-medium text-[#f97316]">
+                  LOCK
+                </div>
                 <div class="text-14-medium text-text-strong">Browser exposure is blocked</div>
                 <div class="mt-2 text-13-regular text-text-weak">
-                  {status().error ?? "Live browser viewing and control are disabled until code.hustletogether.com is protected by Cloudflare Access."}
+                  {status().error ??
+                    "Live browser viewing and control are disabled until code.hustletogether.com is protected by Cloudflare Access."}
                 </div>
                 <div class="mt-3 text-12-regular text-text-weak">
                   {status().requiredAccessBoundary ?? "Cloudflare Access GitHub login for code.hustletogether.com"}
                 </div>
                 <div class="mt-4 grid grid-cols-1 gap-2 text-left">
-                  <StatusPill label="Profile" value={profilePolicy()?.persistentAuth?.status ?? "blocked"} active={!!profilePolicy()?.persistentAuth?.enabled} />
-                  <StatusPill label="Extensions" value={profilePolicy()?.extensions?.status ?? "blocked"} active={!!profilePolicy()?.extensions?.enabled} />
-                  <StatusPill label="LastPass" value={profilePolicy()?.lastPass?.status ?? "blocked"} active={!!profilePolicy()?.lastPass?.enabled} />
+                  <StatusPill
+                    label="Profile"
+                    value={profilePolicy()?.persistentAuth?.status ?? "blocked"}
+                    active={!!profilePolicy()?.persistentAuth?.enabled}
+                  />
+                  <StatusPill
+                    label="Extensions"
+                    value={profilePolicy()?.extensions?.status ?? "blocked"}
+                    active={!!profilePolicy()?.extensions?.enabled}
+                  />
+                  <StatusPill
+                    label="LastPass"
+                    value={profilePolicy()?.lastPass?.status ?? "blocked"}
+                    active={!!profilePolicy()?.lastPass?.enabled}
+                  />
                 </div>
                 <Show when={profilePolicy()?.profileRoot}>
                   {(profileRoot) => <div class="mt-3 break-all text-11-regular text-text-weak">{profileRoot()}</div>}
@@ -1106,7 +1283,13 @@ function previewURLKind(value: string) {
   try {
     const parsed = new URL(value, window.location.origin)
     if (parsed.origin === window.location.origin) return "same-origin"
-    if (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname.startsWith("100.") || parsed.hostname.endsWith(".tailf704e2.ts.net")) return "local"
+    if (
+      parsed.hostname === "localhost" ||
+      parsed.hostname === "127.0.0.1" ||
+      parsed.hostname.startsWith("100.") ||
+      parsed.hostname.endsWith(".tailf704e2.ts.net")
+    )
+      return "local"
     return "external"
   } catch {
     return "invalid"
@@ -1226,7 +1409,12 @@ function PreviewTabContent(props: { sessionID?: string }) {
       })
       return
     }
-    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Backspace", "Delete", "Enter", "Escape", "Tab"].includes(event.key)) return
+    if (
+      !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Backspace", "Delete", "Enter", "Escape", "Tab"].includes(
+        event.key,
+      )
+    )
+      return
     event.preventDefault()
     void runExternalInput({ action: "key", key: event.key }).catch((error) => {
       setExternalError(error instanceof Error ? error.message : String(error))
@@ -1294,9 +1482,23 @@ function PreviewTabContent(props: { sessionID?: string }) {
               class="h-8 min-w-0 flex-1 bg-transparent px-2 text-13-regular text-text-strong outline-none"
               placeholder="Preview URL, route, or local app"
             />
-            <IconButton icon="enter" variant="ghost" class="h-7 w-7 shrink-0" disabled={!address().trim()} onClick={openAddress} aria-label="Open preview URL" />
+            <IconButton
+              icon="enter"
+              variant="ghost"
+              class="h-7 w-7 shrink-0"
+              disabled={!address().trim()}
+              onClick={openAddress}
+              aria-label="Open preview URL"
+            />
           </form>
-          <IconButton icon="reset" variant="ghost" class="h-7 w-7 shrink-0" disabled={!currentURL()} onClick={refreshPreview} aria-label="Refresh preview" />
+          <IconButton
+            icon="reset"
+            variant="ghost"
+            class="h-7 w-7 shrink-0"
+            disabled={!currentURL()}
+            onClick={refreshPreview}
+            aria-label="Refresh preview"
+          />
           <IconButton
             icon="square-arrow-top-right"
             variant="ghost"
@@ -1335,7 +1537,11 @@ function PreviewTabContent(props: { sessionID?: string }) {
                         <div class="mb-2 text-14-medium text-text-strong">External preview failed</div>
                         <div>{externalError() ?? "The Chromium preview renderer could not open this URL."}</div>
                         <div class="mt-4 flex justify-center gap-2">
-                          <button type="button" class="rounded-md border border-border-weaker-base px-3 py-1.5 text-12-regular text-text-strong hover:bg-surface-raised-base-hover" onClick={() => window.open(url(), "_blank", "noopener,noreferrer")}>
+                          <button
+                            type="button"
+                            class="rounded-md border border-border-weaker-base px-3 py-1.5 text-12-regular text-text-strong hover:bg-surface-raised-base-hover"
+                            onClick={() => window.open(url(), "_blank", "noopener,noreferrer")}
+                          >
                             Open external
                           </button>
                         </div>
@@ -1399,7 +1605,13 @@ function createPolledJson<T>(url: () => string | undefined, intervalMs = 10000, 
       setData(() => body as T)
       setError(undefined)
     } catch (err) {
-      setError(err instanceof DOMException && err.name === "AbortError" ? `Timed out loading ${current}` : err instanceof Error ? err.message : String(err))
+      setError(
+        err instanceof DOMException && err.name === "AbortError"
+          ? `Timed out loading ${current}`
+          : err instanceof Error
+            ? err.message
+            : String(err),
+      )
     } finally {
       window.clearTimeout(timer)
       setPending(false)
@@ -1433,11 +1645,12 @@ function StatusPill(props: { label: string; value?: string | number | boolean | 
         />
         <span class="shrink-0 text-11-medium text-text-strong">{props.label}</span>
       </div>
-      <div class="mt-1 truncate text-11-regular text-text-weak">{String(props.value ?? "unknown").replaceAll("_", " ")}</div>
+      <div class="mt-1 truncate text-11-regular text-text-weak">
+        {String(props.value ?? "unknown").replaceAll("_", " ")}
+      </div>
     </div>
   )
 }
-
 
 function TabChrome(props: {
   title?: string
@@ -1450,7 +1663,9 @@ function TabChrome(props: {
   children: JSX.Element
 }) {
   const [toolsOpen, setToolsOpen] = createSignal(false)
-  const definition = createMemo(() => WORKSPACE_PANEL_TAB_BY_ID[canonicalPanelTab(props.iconTab) as WorkspacePanelTabID])
+  const definition = createMemo(
+    () => WORKSPACE_PANEL_TAB_BY_ID[canonicalPanelTab(props.iconTab) as WorkspacePanelTabID],
+  )
   const hasHeader = createMemo(() => !!props.title || !!props.toolbar || !!props.onRefresh || !!props.actions)
   const copyTabState = async () => {
     const tab = definition()
@@ -1477,9 +1692,7 @@ function TabChrome(props: {
         {props.label}
       </MenuV2.Trigger>
       <MenuV2.Portal>
-        <MenuV2.Content class="min-w-[220px] max-w-[min(320px,calc(100vw-1rem))]">
-          {props.children}
-        </MenuV2.Content>
+        <MenuV2.Content class="min-w-[220px] max-w-[min(320px,calc(100vw-1rem))]">{props.children}</MenuV2.Content>
       </MenuV2.Portal>
     </MenuV2>
   )
@@ -1514,7 +1727,11 @@ function TabChrome(props: {
                   <div class="mb-2 text-13-medium text-text-strong">LLM Tools</div>
                   <div class="flex flex-wrap gap-1.5">
                     <For each={tab().toolIDs}>
-                      {(tool) => <span class="rounded bg-background-stronger px-2 py-1 text-11-regular text-text-strong">@{tool}</span>}
+                      {(tool) => (
+                        <span class="rounded bg-background-stronger px-2 py-1 text-11-regular text-text-strong">
+                          @{tool}
+                        </span>
+                      )}
                     </For>
                   </div>
                 </div>
@@ -1522,7 +1739,11 @@ function TabChrome(props: {
                   <div class="mb-2 text-13-medium text-text-strong">Mentions</div>
                   <div class="flex flex-wrap gap-1.5">
                     <For each={tab().mentionIDs}>
-                      {(mention) => <span class="rounded bg-background-stronger px-2 py-1 text-11-regular text-text-strong">@{mention}</span>}
+                      {(mention) => (
+                        <span class="rounded bg-background-stronger px-2 py-1 text-11-regular text-text-strong">
+                          @{mention}
+                        </span>
+                      )}
                     </For>
                   </div>
                 </div>
@@ -1530,28 +1751,34 @@ function TabChrome(props: {
                   <div class="mb-2 text-13-medium text-text-strong">Registry Actions</div>
                   <div class="flex flex-wrap gap-1.5">
                     <For each={tab().actions}>
-                      {(action) => <span class="rounded bg-background-stronger px-2 py-1 text-11-regular text-text-weak">{action.replaceAll("_", " ")}</span>}
+                      {(action) => (
+                        <span class="rounded bg-background-stronger px-2 py-1 text-11-regular text-text-weak">
+                          {action.replaceAll("_", " ")}
+                        </span>
+                      )}
                     </For>
                   </div>
                 </div>
                 <div class="rounded-md border border-border-weaker-base bg-background-base p-3 md:col-span-2">
                   <div class="mb-2 text-13-medium text-text-strong">Tool Contract</div>
-                  <pre class="max-h-56 overflow-auto whitespace-pre-wrap rounded bg-background-stronger p-3 text-11-regular text-text-weak">{JSON.stringify(
-                    {
-                      tool: "workspace_tabs",
-                      examples: [
-                        { action: "open", tab: tab().id },
-                        { action: "focus", tab: tab().id },
-                        { action: "run_action", tab: tab().id, tabAction: tab().actions[0] },
-                        { action: "attach_to_chat", tab: tab().id },
-                      ],
-                      canSnapshot: tab().canSnapshot,
-                      canAttachToChat: tab().canAttachToChat,
-                      safetyPolicy: tab().safetyPolicy,
-                    },
-                    null,
-                    2,
-                  )}</pre>
+                  <pre class="max-h-56 overflow-auto whitespace-pre-wrap rounded bg-background-stronger p-3 text-11-regular text-text-weak">
+                    {JSON.stringify(
+                      {
+                        tool: "workspace_tabs",
+                        examples: [
+                          { action: "open", tab: tab().id },
+                          { action: "focus", tab: tab().id },
+                          { action: "run_action", tab: tab().id, tabAction: tab().actions[0] },
+                          { action: "attach_to_chat", tab: tab().id },
+                        ],
+                        canSnapshot: tab().canSnapshot,
+                        canAttachToChat: tab().canAttachToChat,
+                        safetyPolicy: tab().safetyPolicy,
+                      },
+                      null,
+                      2,
+                    )}
+                  </pre>
                 </div>
               </div>
             </div>
@@ -1607,7 +1834,9 @@ function TabChrome(props: {
               <MenuV2.GroupLabel>View</MenuV2.GroupLabel>
               <MenuV2.Item disabled>{tab().description}</MenuV2.Item>
               <MenuV2.Separator />
-              <MenuV2.Item disabled={!props.onRefresh} onSelect={() => props.onRefresh?.()}>Refresh</MenuV2.Item>
+              <MenuV2.Item disabled={!props.onRefresh} onSelect={() => props.onRefresh?.()}>
+                Refresh
+              </MenuV2.Item>
               <MenuV2.Item disabled={!tab().canSnapshot}>Snapshot available</MenuV2.Item>
             </MenuV2.Group>
           </MenuButton>
@@ -1639,7 +1868,12 @@ function TabChrome(props: {
   return (
     <div class="flex h-full min-h-0 flex-col bg-background-base">
       <Show when={hasHeader()}>
-        <div class={props.headerClass ?? "flex min-h-10 shrink-0 items-center justify-between gap-2 border-b border-border-weaker-base px-3 py-1"}>
+        <div
+          class={
+            props.headerClass ??
+            "flex min-h-10 shrink-0 items-center justify-between gap-2 border-b border-border-weaker-base px-3 py-1"
+          }
+        >
           <Show
             when={props.toolbar}
             fallback={
@@ -1658,7 +1892,13 @@ function TabChrome(props: {
                 <div class="hidden shrink-0 items-center gap-1 xl:flex">
                   {props.actions}
                   <Show when={!!props.onRefresh}>
-                    <IconButton icon="reset" variant="ghost" class="h-7 w-7" onClick={() => props.onRefresh?.()} aria-label="Refresh" />
+                    <IconButton
+                      icon="reset"
+                      variant="ghost"
+                      class="h-7 w-7"
+                      onClick={() => props.onRefresh?.()}
+                      aria-label="Refresh"
+                    />
                   </Show>
                 </div>
               </>
@@ -1678,10 +1918,12 @@ function TabChrome(props: {
   )
 }
 
-function OpenDesignTabContent(props: {
-  bridgeState?: () => any
-  onBridgeState?: (state: any) => void
-} = {}) {
+function OpenDesignTabContent(
+  props: {
+    bridgeState?: () => any
+    onBridgeState?: (state: any) => void
+  } = {},
+) {
   const status = createPolledJson<any>(() => "/experimental/open-design/status")
   const [frameKey, setFrameKey] = createSignal(Date.now())
   const [localBridgeState, setLocalBridgeState] = createSignal<any>({ mode: "dashboard", active: false })
@@ -1758,19 +2000,28 @@ function OpenDesignTabContent(props: {
               Design Mode
             </span>
           </Show>
-          <span class="hidden max-w-56 shrink truncate px-1 text-11-regular text-text-weak lg:block">{bridgeSummary()}</span>
+          <span class="hidden max-w-56 shrink truncate px-1 text-11-regular text-text-weak lg:block">
+            {bridgeSummary()}
+          </span>
           <span class="hidden shrink-0 items-center gap-1 px-1 text-11-regular text-text-weak md:flex">
             <span
               class="h-2 w-2 rounded-full"
               classList={{
                 "bg-blue-400": stateLabel() === "design mode",
                 "bg-[#f97316]": stateLabel() === "interactive" || stateLabel() === "dashboard",
-                "bg-text-disabled": stateLabel() !== "design mode" && stateLabel() !== "interactive" && stateLabel() !== "dashboard",
+                "bg-text-disabled":
+                  stateLabel() !== "design mode" && stateLabel() !== "interactive" && stateLabel() !== "dashboard",
               }}
             />
             {stateLabel()}
           </span>
-          <IconButton icon="reset" variant="ghost" class="h-7 w-7 shrink-0" onClick={refresh} aria-label="Refresh Open Design" />
+          <IconButton
+            icon="reset"
+            variant="ghost"
+            class="h-7 w-7 shrink-0"
+            onClick={refresh}
+            aria-label="Refresh Open Design"
+          />
           <IconButton
             icon="square-arrow-top-right"
             variant="ghost"
@@ -1784,7 +2035,10 @@ function OpenDesignTabContent(props: {
             </summary>
             <div class="absolute right-0 top-9 z-20 grid w-[min(420px,calc(100vw-2rem))] grid-cols-1 gap-2 rounded-md border border-border-weaker-base bg-background-stronger p-2 shadow-lg md:grid-cols-2">
               <StatusRow label="Daemon" value={status.data()?.daemonURL} />
-              <StatusRow label="Frame mode" value={status.data()?.frameMode ?? (status.data()?.proxyReady === false ? "external blocked" : "proxy")} />
+              <StatusRow
+                label="Frame mode"
+                value={status.data()?.frameMode ?? (status.data()?.proxyReady === false ? "external blocked" : "proxy")}
+              />
               <StatusRow label="Proxy" value={status.data()?.proxyReady ? "enabled" : "disabled"} />
               <StatusRow label="API token" value={status.data()?.tokenConfigured ? "configured" : "not configured"} />
               <StatusRow label="Health" value={status.data()?.health?.ok ? "healthy" : "not ready"} />
@@ -1797,7 +2051,11 @@ function OpenDesignTabContent(props: {
       }
     >
       <Show when={status.error()}>
-        {(error) => <div class="m-3 rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">{error()}</div>}
+        {(error) => (
+          <div class="m-3 rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">
+            {error()}
+          </div>
+        )}
       </Show>
       <div class="relative size-full min-h-0 overflow-hidden bg-background-base">
         <div class="size-full overflow-hidden bg-background-stronger">
@@ -1806,7 +2064,9 @@ function OpenDesignTabContent(props: {
             fallback={
               <div class="flex h-full min-h-[360px] items-center justify-center p-5 text-center">
                 <div class="max-w-md">
-                <div class="mx-auto mb-3 flex h-9 w-9 items-center justify-center rounded-full bg-[#f97316]/15 text-11-medium text-[#f97316]">OD</div>
+                  <div class="mx-auto mb-3 flex h-9 w-9 items-center justify-center rounded-full bg-[#f97316]/15 text-11-medium text-[#f97316]">
+                    OD
+                  </div>
                   <div class="text-14-medium text-text-strong">Open Design is not available</div>
                   <div class="mt-2 text-13-regular text-text-weak">
                     The embedded Open Design proxy is disabled or unavailable. Direct public embedding is blocked by
@@ -1882,7 +2142,15 @@ function MacViewTabContent() {
     if (next === "webrtc" || next === "video" || next === "mjpeg") setTransport(next)
   })
 
-  const saveSettings = async (patch: Partial<{ fps: number; width: number; quality: number; bitrate: number; transport: "webrtc" | "video" | "mjpeg" }>) => {
+  const saveSettings = async (
+    patch: Partial<{
+      fps: number
+      width: number
+      quality: number
+      bitrate: number
+      transport: "webrtc" | "video" | "mjpeg"
+    }>,
+  ) => {
     const next = {
       fps: fps(),
       width: width(),
@@ -1911,7 +2179,8 @@ function MacViewTabContent() {
       setWidth(Number(settings.width) || next.width)
       setQuality(Number(settings.quality) || next.quality)
       setBitrate(Number(settings.bitrate) || next.bitrate)
-      if (settings.transport === "webrtc" || settings.transport === "video" || settings.transport === "mjpeg") setTransport(settings.transport)
+      if (settings.transport === "webrtc" || settings.transport === "video" || settings.transport === "mjpeg")
+        setTransport(settings.transport)
       void status.refresh()
     } catch {
       void status.refresh()
@@ -1931,7 +2200,11 @@ function MacViewTabContent() {
     status.data()?.nativeCapture?.available ? "SCK ready" : "SCK unavailable",
   )
   const webRTCLabel = createMemo(() =>
-      status.data()?.webrtc?.status === "enabled" ? "WebRTC live" : status.data()?.webrtc?.status === "ready" ? "WebRTC ready" : "WebRTC held",
+    status.data()?.webrtc?.status === "enabled"
+      ? "WebRTC live"
+      : status.data()?.webrtc?.status === "ready"
+        ? "WebRTC ready"
+        : "WebRTC held",
   )
 
   return (
@@ -2005,7 +2278,11 @@ function MacViewTabContent() {
               aria-label="Mac View transport"
             >
               <For each={status.data()?.transportOptions ?? ["webrtc", "video"]}>
-                {(option: string) => <option value={option}>{option === "webrtc" ? "WebRTC" : option === "video" ? "Video" : "MJPEG"}</option>}
+                {(option: string) => (
+                  <option value={option}>
+                    {option === "webrtc" ? "WebRTC" : option === "video" ? "Video" : "MJPEG"}
+                  </option>
+                )}
               </For>
             </select>
             <select
@@ -2018,8 +2295,27 @@ function MacViewTabContent() {
                 {(option: number) => <option value={option}>{option}k</option>}
               </For>
             </select>
-            <IconButton icon="reset" variant="ghost" class="h-7 w-7" onClick={() => { void status.refresh(); setStreamKey(Date.now()) }} aria-label="Refresh Mac View" />
-            <Show when={status.data()?.feedURL}>{(feedURL) => <IconButton icon="square-arrow-top-right" variant="ghost" class="h-7 w-7" onClick={() => window.open(feedURL(), "_blank", "noopener,noreferrer")} aria-label="Open feed externally" />}</Show>
+            <IconButton
+              icon="reset"
+              variant="ghost"
+              class="h-7 w-7"
+              onClick={() => {
+                void status.refresh()
+                setStreamKey(Date.now())
+              }}
+              aria-label="Refresh Mac View"
+            />
+            <Show when={status.data()?.feedURL}>
+              {(feedURL) => (
+                <IconButton
+                  icon="square-arrow-top-right"
+                  variant="ghost"
+                  class="h-7 w-7"
+                  onClick={() => window.open(feedURL(), "_blank", "noopener,noreferrer")}
+                  aria-label="Open feed externally"
+                />
+              )}
+            </Show>
           </div>
         </>
       }
@@ -2100,7 +2396,8 @@ function AccountsTabContent() {
     if (!accounts?.ok) return "status error"
     if (codexAccountCount() > 0) return "ready"
     if (accounts.statusPhase === "account_written_or_already_authorized") return "verify account"
-    if (accounts.statusPhase === "failed_before_device_code" || accounts.statusPhase === "failed_after_device_code") return "auth failed"
+    if (accounts.statusPhase === "failed_before_device_code" || accounts.statusPhase === "failed_after_device_code")
+      return "auth failed"
     return "needs account"
   })
   const codexStatusStrong = createMemo(() => !!codexAccounts()?.ok && codexAccountCount() > 0)
@@ -2128,7 +2425,8 @@ function AccountsTabContent() {
         body: JSON.stringify({ action: "goto", url }),
       })
       const body = await response.json().catch(() => ({}))
-      if (!response.ok || body?.ok === false) throw new Error(body?.error ?? "Could not open auth link in Agent Browser")
+      if (!response.ok || body?.ok === false)
+        throw new Error(body?.error ?? "Could not open auth link in Agent Browser")
       window.dispatchEvent(
         new CustomEvent("opencode:workspace-tab-action", {
           detail: {
@@ -2140,7 +2438,11 @@ function AccountsTabContent() {
           },
         }),
       )
-      setLoginResult((current: any) => ({ ...(current ?? {}), browserOpenPending: false, browserOpenedAt: new Date().toISOString() }))
+      setLoginResult((current: any) => ({
+        ...(current ?? {}),
+        browserOpenPending: false,
+        browserOpenedAt: new Date().toISOString(),
+      }))
     } catch (error) {
       setLoginResult((current: any) => ({
         ...(current ?? {}),
@@ -2167,7 +2469,10 @@ function AccountsTabContent() {
     >
       <div class="flex flex-col gap-3">
         <StatusRow label="Hostname" value={status.data()?.hostname} />
-        <StatusRow label="Open Design token" value={status.data()?.openDesign?.configured ? "configured" : "not configured"} />
+        <StatusRow
+          label="Open Design token"
+          value={status.data()?.openDesign?.configured ? "configured" : "not configured"}
+        />
         <StatusRow label="Mac View" value={status.data()?.macView?.configured ? "configured" : "not configured"} />
         <StatusRow label="Workspace projects" value={workspace.data()?.projects?.length} />
         <StatusRow label="Recent sessions" value={workspace.data()?.sessions?.length} />
@@ -2175,9 +2480,14 @@ function AccountsTabContent() {
           <div class="mb-2 flex items-center justify-between gap-3">
             <div>
               <div class="text-12-regular text-text-weak">Codex accounts</div>
-              <div class="mt-0.5 text-11-regular text-text-weak">Authorize each Codex account into the isolated multi-auth profile.</div>
+              <div class="mt-0.5 text-11-regular text-text-weak">
+                Authorize each Codex account into the isolated multi-auth profile.
+              </div>
             </div>
-            <span class="rounded bg-background-base px-2 py-1 text-11-regular" classList={{ "text-text-strong": codexStatusStrong(), "text-text-weak": !codexStatusStrong() }}>
+            <span
+              class="rounded bg-background-base px-2 py-1 text-11-regular"
+              classList={{ "text-text-strong": codexStatusStrong(), "text-text-weak": !codexStatusStrong() }}
+            >
               {codexStatusLabel()}
             </span>
           </div>
@@ -2276,14 +2586,20 @@ function AccountsTabContent() {
                   </div>
                 </Show>
                 <Show when={result().browserOpenError}>
-                  {(error) => <div class="mt-2 rounded border border-orange-500/20 bg-orange-500/10 px-2 py-1.5 text-11-regular text-orange-100">{error()}</div>}
+                  {(error) => (
+                    <div class="mt-2 rounded border border-orange-500/20 bg-orange-500/10 px-2 py-1.5 text-11-regular text-orange-100">
+                      {error()}
+                    </div>
+                  )}
                 </Show>
                 <Show when={result().userCode}>
                   {(code) => (
                     <div class="mt-3">
                       <div class="mb-1 text-11-medium text-text-weak">Code</div>
                       <div class="flex flex-wrap items-center gap-2">
-                        <span class="rounded bg-background-stronger px-2 py-1.5 font-mono text-14-medium text-text-strong">{code()}</span>
+                        <span class="rounded bg-background-stronger px-2 py-1.5 font-mono text-14-medium text-text-strong">
+                          {code()}
+                        </span>
                         <button
                           type="button"
                           class="rounded px-2 py-1 text-11-regular text-text-weak hover:bg-surface-raised-base-hover hover:text-text-strong"
@@ -2295,33 +2611,45 @@ function AccountsTabContent() {
                     </div>
                   )}
                 </Show>
-                <div class="mt-3 text-12-regular text-text-weak">{result().note ?? "Run this once per Codex account."}</div>
+                <div class="mt-3 text-12-regular text-text-weak">
+                  {result().note ?? "Run this once per Codex account."}
+                </div>
                 <Show when={result().ok && result().phase === "waiting_for_device_approval"}>
                   <div class="mt-2 text-12-regular text-text-weak">
-                    After the browser says the account is approved, press Refresh status. The count below should increase from {codexAccountCount()}.
+                    After the browser says the account is approved, press Refresh status. The count below should
+                    increase from {codexAccountCount()}.
                   </div>
                 </Show>
                 <Show when={result().ok && result().phase === "waiting_for_browser_approval"}>
                   <div class="mt-2 text-12-regular text-text-weak">
-                    Open this link in the server Agent Browser, not your Mac browser, so the localhost callback returns to CT100. After approval,
-                    press Refresh status.
+                    Open this link in the server Agent Browser, not your Mac browser, so the localhost callback returns
+                    to CT100. After approval, press Refresh status.
                   </div>
                 </Show>
                 <Show when={result().output ?? result().error}>
-                  {(output) => <pre class="mt-3 max-h-52 overflow-auto whitespace-pre-wrap break-words rounded bg-background-stronger p-2 text-11-regular text-text-weak">{output()}</pre>}
+                  {(output) => (
+                    <pre class="mt-3 max-h-52 overflow-auto whitespace-pre-wrap break-words rounded bg-background-stronger p-2 text-11-regular text-text-weak">
+                      {output()}
+                    </pre>
+                  )}
                 </Show>
               </div>
             )}
           </Show>
           <div class="whitespace-pre-wrap break-words text-12-regular text-text-weak">
-            {codexAccounts()?.output ?? codexAccounts()?.error ?? codexAccounts()?.warning ?? "No Codex account status reported yet."}
+            {codexAccounts()?.output ??
+              codexAccounts()?.error ??
+              codexAccounts()?.warning ??
+              "No Codex account status reported yet."}
           </div>
         </div>
         <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
           <div class="text-12-regular text-text-weak mb-2">Native tools</div>
           <div class="flex flex-wrap gap-2">
             <For each={status.data()?.tools ?? []}>
-              {(tool: string) => <span class="rounded bg-background-base px-2 py-1 text-12-regular text-text-strong">@{tool}</span>}
+              {(tool: string) => (
+                <span class="rounded bg-background-base px-2 py-1 text-12-regular text-text-strong">@{tool}</span>
+              )}
             </For>
           </div>
         </div>
@@ -2352,7 +2680,7 @@ function RoutinesTabContent() {
   const routines = () => jobs.data()?.routines ?? []
   const selected = createMemo(() => routines().find((routine: any) => routine.id === selectedID()) ?? routines()[0])
   const logs = createPolledJson<any>(
-    () => selected()?.id ? `/experimental/routines/jobs/${encodeURIComponent(selected().id)}/logs` : undefined,
+    () => (selected()?.id ? `/experimental/routines/jobs/${encodeURIComponent(selected().id)}/logs` : undefined),
     10000,
   )
 
@@ -2395,7 +2723,11 @@ function RoutinesTabContent() {
           <EnvironmentSummaryCard
             label="Editing"
             value={jobs.data()?.status?.mutationsEnabled ? "enabled" : "held"}
-            detail={jobs.data()?.status?.mutationsEnabled ? "Disabled draft writes are enabled. Manual runs stay separate." : "Disabled draft writes are off on this server."}
+            detail={
+              jobs.data()?.status?.mutationsEnabled
+                ? "Disabled draft writes are enabled. Manual runs stay separate."
+                : "Disabled draft writes are off on this server."
+            }
             tone={jobs.data()?.status?.mutationsEnabled ? "ready" : "warn"}
           />
         </div>
@@ -2437,7 +2769,10 @@ function RoutinesTabContent() {
                       <div class="truncate text-14-medium text-text-strong">{routine().name}</div>
                       <div class="mt-1 text-12-regular text-text-weak">{routine().description ?? "No description"}</div>
                     </div>
-                    <EnvironmentPill tone={routine().enabled ? "ready" : "warn"} label={routine().enabled ? "enabled" : "off"} />
+                    <EnvironmentPill
+                      tone={routine().enabled ? "ready" : "warn"}
+                      label={routine().enabled ? "enabled" : "off"}
+                    />
                   </div>
 
                   <div class="grid gap-2 sm:grid-cols-2">
@@ -2452,12 +2787,15 @@ function RoutinesTabContent() {
                   <Show when={routine().command}>
                     <div class="rounded bg-background-base p-2">
                       <div class="mb-1 text-11-regular text-text-weak">Command</div>
-                      <code class="whitespace-pre-wrap break-words text-12-regular text-text-strong">{routine().command}</code>
+                      <code class="whitespace-pre-wrap break-words text-12-regular text-text-strong">
+                        {routine().command}
+                      </code>
                     </div>
                   </Show>
 
                   <div class="rounded border border-border-weaker-base bg-background-base p-2 text-12-regular text-text-weak">
-                    Disabled routine drafts can be created from the home Routines page. Enabling schedules and manual runs remain separate server-side controls.
+                    Disabled routine drafts can be created from the home Routines page. Enabling schedules and manual
+                    runs remain separate server-side controls.
                   </div>
 
                   <div>
@@ -2468,7 +2806,10 @@ function RoutinesTabContent() {
                           <div class="grid gap-1 border-b border-border-weaker-base pb-2 last:border-b-0 text-12-regular">
                             <div class="flex items-center justify-between gap-2">
                               <span class="text-text-weak">{formatShortDate(log.time)}</span>
-                              <EnvironmentPill tone={log.level === "error" ? "blocked" : log.level === "warn" ? "warn" : "ready"} label={log.level} />
+                              <EnvironmentPill
+                                tone={log.level === "error" ? "blocked" : log.level === "warn" ? "warn" : "ready"}
+                                label={log.level}
+                              />
                             </div>
                             <div class="text-text-strong">{log.message}</div>
                           </div>
@@ -2524,7 +2865,9 @@ function EnvironmentTabContent() {
             label="GitHub"
             value={data()?.gates?.find((gate: any) => gate.label === "GitHub push")?.status ?? "checking"}
             detail={data()?.gates?.find((gate: any) => gate.label === "GitHub push")?.detail}
-            tone={data()?.gates?.find((gate: any) => gate.label === "GitHub push")?.status === "ready" ? "ready" : "blocked"}
+            tone={
+              data()?.gates?.find((gate: any) => gate.label === "GitHub push")?.status === "ready" ? "ready" : "blocked"
+            }
           />
         </div>
 
@@ -2567,6 +2910,30 @@ function EnvironmentTabContent() {
           </div>
         </div>
 
+        <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+          <div class="mb-2 flex items-center justify-between gap-3">
+            <div class="text-13-medium text-text-strong">Workspace Environment</div>
+            <EnvironmentPill
+              tone={(data()?.workspaceEnv?.enabledCount ?? 0) > 0 ? "ready" : "warn"}
+              label={`${data()?.workspaceEnv?.enabledCount ?? 0} enabled`}
+            />
+          </div>
+          <div class="grid gap-2 sm:grid-cols-2">
+            <EnvironmentInfoRow label="Registry route" value={data()?.workspaceEnv?.route} />
+            <EnvironmentInfoRow label="Registry path" value={data()?.workspaceEnv?.path} />
+            <EnvironmentInfoRow label="Variables" value={data()?.workspaceEnv?.count} />
+            <EnvironmentInfoRow label="Secrets" value={data()?.workspaceEnv?.secretCount} />
+            <EnvironmentInfoRow
+              label="Prompt summary"
+              value={data()?.workspaceEnv?.promptSummaryConfigured ? "names/scopes only" : "not configured"}
+            />
+            <EnvironmentInfoRow
+              label="Secret values exposed"
+              value={data()?.workspaceEnv?.secretValuesExposed ? "yes" : "no"}
+            />
+          </div>
+        </div>
+
         <div class="grid gap-3 xl:grid-cols-2">
           <GitEnvironmentCard title="OpenCode" repo={data()?.git?.opencode} />
           <GitEnvironmentCard title="LLM-Experiments" repo={data()?.git?.experiments} />
@@ -2581,7 +2948,13 @@ function EnvironmentTabContent() {
                   <div class="mb-1 flex items-center justify-between gap-2">
                     <span class="text-12-regular text-text-strong">{gate.label}</span>
                     <EnvironmentPill
-                      tone={gate.status === "ready" || gate.status === "available" ? "ready" : gate.status === "blocked" ? "blocked" : "warn"}
+                      tone={
+                        gate.status === "ready" || gate.status === "available"
+                          ? "ready"
+                          : gate.status === "blocked"
+                            ? "blocked"
+                            : "warn"
+                      }
                       label={gate.status}
                     />
                   </div>
@@ -2598,7 +2971,12 @@ function EnvironmentTabContent() {
   )
 }
 
-function EnvironmentSummaryCard(props: { label: string; value?: string; detail?: string; tone: "ready" | "warn" | "blocked" }) {
+function EnvironmentSummaryCard(props: {
+  label: string
+  value?: string
+  detail?: string
+  tone: "ready" | "warn" | "blocked"
+}) {
   return (
     <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
       <div class="mb-2 flex items-center justify-between gap-2">
@@ -2616,7 +2994,10 @@ function GitEnvironmentCard(props: { title: string; repo?: any }) {
     <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
       <div class="mb-2 flex items-center justify-between gap-3">
         <div class="text-13-medium text-text-strong">{props.title}</div>
-        <EnvironmentPill tone={repo()?.pushReady ? "ready" : "blocked"} label={repo()?.pushReady ? "push visible" : "blocked"} />
+        <EnvironmentPill
+          tone={repo()?.pushReady ? "ready" : "blocked"}
+          label={repo()?.pushReady ? "push visible" : "blocked"}
+        />
       </div>
       <div class="grid gap-2 sm:grid-cols-2">
         <EnvironmentInfoRow label="Branch" value={repo()?.branch} />
@@ -2634,7 +3015,9 @@ function GitEnvironmentCard(props: { title: string; repo?: any }) {
           <div class="mb-1 text-12-regular text-text-weak">Dirty preview</div>
           <div class="flex flex-col gap-1">
             <For each={repo()?.dirtyPreview ?? []}>
-              {(line: string) => <code class="rounded bg-background-base px-2 py-1 text-11-regular text-text-strong">{line}</code>}
+              {(line: string) => (
+                <code class="rounded bg-background-base px-2 py-1 text-11-regular text-text-strong">{line}</code>
+              )}
             </For>
           </div>
         </div>
@@ -2692,7 +3075,8 @@ function ResourcesTabContent() {
           <ResourceHostCard title="MacBook" status={resources.data()?.mac} />
         </div>
         <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">
-          Server metrics are local to CT100. Mac metrics require SSH from CT100 to the Mac; Mac View can still be live through the separate ScreenCaptureKit/Tailscale feed.
+          Server metrics are local to CT100. Mac metrics require SSH from CT100 to the Mac; Mac View can still be live
+          through the separate ScreenCaptureKit/Tailscale feed.
         </div>
         <StatusRow label="Last checked" value={resources.data()?.checkedAt} />
       </div>
@@ -2720,7 +3104,10 @@ function ResourceHostCard(props: { title: string; status?: any }) {
         </span>
       </div>
       <div class="flex flex-col gap-2">
-        <StatusRow label={status()?.online ? "Hostname" : "Status"} value={status()?.hostname ?? status()?.error ?? "checking"} />
+        <StatusRow
+          label={status()?.online ? "Hostname" : "Status"}
+          value={status()?.hostname ?? status()?.error ?? "checking"}
+        />
         <StatusRow label="Last checked" value={status()?.checkedAt} />
         <StatusRow label="Uptime" value={formatDuration(status()?.uptimeSeconds)} />
         <StatusRow label="CPU" value={formatCpu(status()?.cpu)} />
@@ -2728,7 +3115,9 @@ function ResourceHostCard(props: { title: string; status?: any }) {
         <ResourceMeter label="RAM" used={status()?.memory?.usedBytes} total={status()?.memory?.totalBytes} />
         <ResourceMeter label="Swap" used={status()?.swap?.usedBytes} total={status()?.swap?.totalBytes} />
         <For each={status()?.storage ?? []}>
-          {(disk: any) => <ResourceMeter label={`Storage ${disk.path}`} used={disk.usedBytes} total={disk.totalBytes} />}
+          {(disk: any) => (
+            <ResourceMeter label={`Storage ${disk.path}`} used={disk.usedBytes} total={disk.totalBytes} />
+          )}
         </For>
       </div>
     </div>
@@ -2738,7 +3127,7 @@ function ResourceHostCard(props: { title: string; status?: any }) {
 function ResourceMeter(props: { label: string; used?: number; total?: number }) {
   const pct = createMemo(() => {
     if (!props.total) return 0
-    return Math.min(100, Math.max(0, Math.round((props.used ?? 0) / props.total * 100)))
+    return Math.min(100, Math.max(0, Math.round(((props.used ?? 0) / props.total) * 100)))
   })
 
   return (
@@ -2776,7 +3165,15 @@ function formatDuration(seconds?: number) {
   return days > 0 ? `${days}d ${hours}h` : `${hours}h ${minutes}m`
 }
 
-function formatCpu(cpu?: { cores?: number; load1?: number; load5?: number; load15?: number; loadPercent1?: number; loadPercent5?: number; loadPercent15?: number }) {
+function formatCpu(cpu?: {
+  cores?: number
+  load1?: number
+  load5?: number
+  load15?: number
+  loadPercent1?: number
+  loadPercent5?: number
+  loadPercent15?: number
+}) {
   if (!cpu) return "n/a"
   return `${cpu.cores ?? 0} cores, load ${formatLoad(cpu.load1)} / ${formatLoad(cpu.load5)} / ${formatLoad(cpu.load15)}`
 }
@@ -2873,14 +3270,14 @@ function FileBrowserTabContent() {
   const [selectedPath, setSelectedPath] = createSignal<string | undefined>(initialState.selectedPath)
   const [selected, setSelected] = createSignal<any>()
   const browser = createPolledJson<any>(
-    () =>
-      `/experimental/files/browse${currentPath() ? `?path=${encodeURIComponent(currentPath()!)}` : ""}`,
+    () => `/experimental/files/browse${currentPath() ? `?path=${encodeURIComponent(currentPath()!)}` : ""}`,
     12000,
   )
-  createEffect(() => writeFileBrowserState({ currentPath: currentPath(), mode: mode(), query: query(), selectedPath: selectedPath() }))
+  createEffect(() =>
+    writeFileBrowserState({ currentPath: currentPath(), mode: mode(), query: query(), selectedPath: selectedPath() }),
+  )
 
-  const opensInViewer = (entry: any) =>
-    ["image", "video", "audio", "pdf", "html", "json", "text"].includes(entry.kind)
+  const opensInViewer = (entry: any) => ["image", "video", "audio", "pdf", "html", "json", "text"].includes(entry.kind)
   const openCodeFile = (entry: any) => {
     const tab = fileContext.tab(entry.path)
     tabs().open(tab)
@@ -2979,7 +3376,11 @@ function FileBrowserTabContent() {
     >
       <div class="flex h-full min-h-0 flex-col gap-3">
         <Show when={browser.error()}>
-          {(error) => <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">{error()}</div>}
+          {(error) => (
+            <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">
+              {error()}
+            </div>
+          )}
         </Show>
         <div class="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(280px,40%)]">
           <div class="min-h-0 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger">
@@ -2995,7 +3396,10 @@ function FileBrowserTabContent() {
                         onDblClick={() => openEntry(entry)}
                       >
                         <div class="mb-2 flex justify-center text-[#f97316]">
-                          <Icon name={entry.kind === "directory" ? "folder" : entry.kind === "image" ? "photo" : "code"} size="large" />
+                          <Icon
+                            name={entry.kind === "directory" ? "folder" : entry.kind === "image" ? "photo" : "code"}
+                            size="large"
+                          />
                         </div>
                         <div class="break-words text-center text-12-regular text-text-strong">{entry.name}</div>
                       </button>
@@ -3014,7 +3418,10 @@ function FileBrowserTabContent() {
                         onDblClick={() => openEntry(entry)}
                       >
                         <span class="text-[#f97316]">
-                          <Icon name={entry.kind === "directory" ? "folder" : entry.kind === "image" ? "photo" : "code"} size="small" />
+                          <Icon
+                            name={entry.kind === "directory" ? "folder" : entry.kind === "image" ? "photo" : "code"}
+                            size="small"
+                          />
                         </span>
                         <span class="min-w-0 flex-1 truncate text-13-regular text-text-strong">{entry.name}</span>
                         <span class="shrink-0 text-12-regular text-text-weak">
@@ -3041,9 +3448,7 @@ function FileBrowserTabContent() {
                 </div>
               }
             >
-              {(file) => (
-                <FileDetails file={file()} onOpen={() => openEntry(file())} />
-              )}
+              {(file) => <FileDetails file={file()} onOpen={() => openEntry(file())} />}
             </Show>
           </div>
         </div>
@@ -3128,7 +3533,12 @@ function FileViewerBar(props: { file: any; url?: string }) {
       </div>
       <Show when={props.url}>
         {(href) => (
-          <a class="shrink-0 rounded-md px-2 py-1 text-12-regular text-text-weak hover:bg-surface-base-hover hover:text-text-strong" href={href()} target="_blank" rel="noreferrer">
+          <a
+            class="shrink-0 rounded-md px-2 py-1 text-12-regular text-text-weak hover:bg-surface-base-hover hover:text-text-strong"
+            href={href()}
+            target="_blank"
+            rel="noreferrer"
+          >
             Open raw
           </a>
         )}
@@ -3139,7 +3549,8 @@ function FileViewerBar(props: { file: any; url?: string }) {
 
 function FilePreview(props: { file: any; showHeader?: boolean }) {
   const file = () => props.file
-  const url = () => file().url ?? (file().path ? `/experimental/files/view?path=${encodeURIComponent(file().path)}` : undefined)
+  const url = () =>
+    file().url ?? (file().path ? `/experimental/files/view?path=${encodeURIComponent(file().path)}` : undefined)
   const showHeader = () => props.showHeader !== false
   return (
     <div class="flex h-full min-h-0 flex-col">
@@ -3170,7 +3581,12 @@ function FilePreview(props: { file: any; showHeader?: boolean }) {
             <iframe src={url()} title={file().name} class="h-full min-h-96 w-full border-0" />
           </Match>
           <Match when={file().kind === "html"}>
-            <iframe src={url()} title={file().name} class="h-full min-h-96 w-full border-0 bg-white" sandbox="allow-scripts allow-forms allow-same-origin" />
+            <iframe
+              src={url()}
+              title={file().name}
+              class="h-full min-h-96 w-full border-0 bg-white"
+              sandbox="allow-scripts allow-forms allow-same-origin"
+            />
           </Match>
           <Match when={file().kind === "json" || file().kind === "text"}>
             <FileTextPreview url={url() ?? ""} />
@@ -3217,10 +3633,7 @@ function FileTextPreview(props: { url: string }) {
   })
 
   return (
-    <Show
-      when={!error()}
-      fallback={<div class="p-4 text-12-regular text-text-weak">{error()}</div>}
-    >
+    <Show when={!error()} fallback={<div class="p-4 text-12-regular text-text-weak">{error()}</div>}>
       <pre class="min-h-full whitespace-pre-wrap break-words bg-background-base p-4 font-mono text-12-regular leading-5 text-text-strong">
         {content()}
       </pre>
@@ -3232,16 +3645,16 @@ function ArtifactViewerTabContent(props: { tab: string }) {
   const file = createMemo(() => artifactFromTab(props.tab))
   const url = createMemo(() => {
     const current = file()
-    return current?.url ?? (current?.path ? `/experimental/files/view?path=${encodeURIComponent(current.path)}` : undefined)
+    return (
+      current?.url ?? (current?.path ? `/experimental/files/view?path=${encodeURIComponent(current.path)}` : undefined)
+    )
   })
   return (
     <TabChrome
       iconTab={props.tab}
       headerClass="h-10 shrink-0 flex items-center justify-between gap-3 px-3 border-b border-border-weaker-base bg-background-base"
       bodyClass="flex-1 min-h-0 overflow-hidden"
-      toolbar={
-        <FileViewerBar file={file()} url={url()} />
-      }
+      toolbar={<FileViewerBar file={file()} url={url()} />}
     >
       <Show
         when={file()}
@@ -3315,9 +3728,27 @@ function QueueTabContent(props: { sessionID?: string }) {
             <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 flex gap-3">
               <div class="flex-1 min-w-0 text-13-regular text-text-strong whitespace-pre-wrap">{item.text}</div>
               <div class="flex flex-col gap-1">
-                <IconButton icon="arrow-up" variant="ghost" class="h-6 w-6" onClick={() => move(item.id, -1)} aria-label="Move up" />
-                <IconButton icon="arrow-down-to-line" variant="ghost" class="h-6 w-6" onClick={() => move(item.id, 1)} aria-label="Move down" />
-                <IconButton icon="copy" variant="ghost" class="h-6 w-6" onClick={() => copy(item.text)} aria-label="Copy" />
+                <IconButton
+                  icon="arrow-up"
+                  variant="ghost"
+                  class="h-6 w-6"
+                  onClick={() => move(item.id, -1)}
+                  aria-label="Move up"
+                />
+                <IconButton
+                  icon="arrow-down-to-line"
+                  variant="ghost"
+                  class="h-6 w-6"
+                  onClick={() => move(item.id, 1)}
+                  aria-label="Move down"
+                />
+                <IconButton
+                  icon="copy"
+                  variant="ghost"
+                  class="h-6 w-6"
+                  onClick={() => copy(item.text)}
+                  aria-label="Copy"
+                />
                 <IconButton
                   icon="trash"
                   variant="ghost"
@@ -3330,7 +3761,8 @@ function QueueTabContent(props: { sessionID?: string }) {
           )}
         </For>
         <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">
-          MVP: queue and reorder steering messages per session. Direct injection into the composer/run loop is the next wiring step.
+          MVP: queue and reorder steering messages per session. Direct injection into the composer/run loop is the next
+          wiring step.
         </div>
       </div>
     </TabChrome>
@@ -3485,7 +3917,6 @@ export function SessionSidePanel(props: {
     if (!active?.startsWith(ARTIFACT_VIEWER_TAB_PREFIX)) return
     return active
   })
-
 
   createEffect(() => {
     const active = activeTab()
@@ -3768,7 +4199,8 @@ export function SessionSidePanel(props: {
     const handleWorkspaceTabAction = (event: Event) => {
       const detail = (event as CustomEvent<any>).detail ?? {}
       const action = typeof detail.action === "string" ? detail.action : undefined
-      const tab = typeof detail.tab === "string" ? detail.tab : typeof detail.target === "string" ? detail.target : undefined
+      const tab =
+        typeof detail.tab === "string" ? detail.tab : typeof detail.target === "string" ? detail.target : undefined
       if (!tab) return
 
       if (action === "close") {
@@ -3780,14 +4212,16 @@ export function SessionSidePanel(props: {
         }
       }
 
-      window.dispatchEvent(new CustomEvent("opencode:workspace-tab-action-applied", {
-        detail: {
-          ok: true,
-          action,
-          tab,
-          activeTab: activeTab(),
-        },
-      }))
+      window.dispatchEvent(
+        new CustomEvent("opencode:workspace-tab-action-applied", {
+          detail: {
+            ok: true,
+            action,
+            tab,
+            activeTab: activeTab(),
+          },
+        }),
+      )
     }
 
     window.addEventListener("opencode:workspace-tab-action", handleWorkspaceTabAction)
@@ -3841,402 +4275,438 @@ export function SessionSidePanel(props: {
 
   return (
     <>
-    <Show when={openDesignBridgeState()?.active ? openDesignBridgeState() : undefined}>
-      {(bridge) => (
-        <Portal>
-          <div class="pointer-events-none fixed bottom-24 left-1/2 z-[900] max-w-[min(560px,calc(100vw-2rem))] -translate-x-1/2 rounded-full border border-blue-400/35 bg-blue-500/12 px-3 py-1.5 text-12-medium text-blue-200 shadow-[0_0_24px_rgba(59,130,246,0.22)] backdrop-blur">
-            <span class="text-blue-100">Design Mode</span>
-            <span class="mx-2 text-blue-300/70">/</span>
-            <span class="text-blue-200/90">{bridge().projectName ?? bridge().projectId ?? "OpenDesign"}</span>
-            <Show when={bridge().chatName ?? bridge().chatId}>
-              {(chat) => (
-                <>
-                  <span class="mx-2 text-blue-300/70">/</span>
-                  <span class="text-blue-200/75">{chat()}</span>
-                </>
-              )}
-            </Show>
-          </div>
-        </Portal>
-      )}
-    </Show>
-    <Show when={(mobile() && !!params.id) || (isDesktop() && !(settings.general.newLayoutDesigns() && !params.id))}>
-      <aside
-        id="review-panel"
-        aria-label={language.t("session.panel.reviewAndFiles")}
-        aria-hidden={!open()}
-        inert={!open()}
-        class="relative min-w-0 h-full flex shrink-0 overflow-hidden bg-background-base"
-        classList={{
-          "pointer-events-none": !open(),
-          "transition-[width] duration-[240ms] ease-[cubic-bezier(0.22,1,0.36,1)] will-change-[width] motion-reduce:transition-none":
-            !mobile() && !props.size.active() && !props.reviewSnap,
-          "rounded-[10px] shadow-[var(--v2-elevation-raised)] overflow-hidden": !mobile() && settings.general.newLayoutDesigns(),
-          "flex-1": reviewOpen() || mobile(),
-        }}
-        style={{ width: panelWidth() }}
-      >
-        <Show when={open()}>
-          <div
-            class="size-full flex"
-            classList={{
-              "border-l border-border-weaker-base": !settings.general.newLayoutDesigns(),
-            }}
-          >
+      <Show when={openDesignBridgeState()?.active ? openDesignBridgeState() : undefined}>
+        {(bridge) => (
+          <Portal>
+            <div class="pointer-events-none fixed bottom-24 left-1/2 z-[900] max-w-[min(560px,calc(100vw-2rem))] -translate-x-1/2 rounded-full border border-blue-400/35 bg-blue-500/12 px-3 py-1.5 text-12-medium text-blue-200 shadow-[0_0_24px_rgba(59,130,246,0.22)] backdrop-blur">
+              <span class="text-blue-100">Design Mode</span>
+              <span class="mx-2 text-blue-300/70">/</span>
+              <span class="text-blue-200/90">{bridge().projectName ?? bridge().projectId ?? "OpenDesign"}</span>
+              <Show when={bridge().chatName ?? bridge().chatId}>
+                {(chat) => (
+                  <>
+                    <span class="mx-2 text-blue-300/70">/</span>
+                    <span class="text-blue-200/75">{chat()}</span>
+                  </>
+                )}
+              </Show>
+            </div>
+          </Portal>
+        )}
+      </Show>
+      <Show when={(mobile() && !!params.id) || (isDesktop() && !(settings.general.newLayoutDesigns() && !params.id))}>
+        <aside
+          id="review-panel"
+          aria-label={language.t("session.panel.reviewAndFiles")}
+          aria-hidden={!open()}
+          inert={!open()}
+          class="relative min-w-0 h-full flex shrink-0 overflow-hidden bg-background-base"
+          classList={{
+            "pointer-events-none": !open(),
+            "transition-[width] duration-[240ms] ease-[cubic-bezier(0.22,1,0.36,1)] will-change-[width] motion-reduce:transition-none":
+              !mobile() && !props.size.active() && !props.reviewSnap,
+            "rounded-[10px] shadow-[var(--v2-elevation-raised)] overflow-hidden":
+              !mobile() && settings.general.newLayoutDesigns(),
+            "flex-1": reviewOpen() || mobile(),
+          }}
+          style={{ width: panelWidth() }}
+        >
+          <Show when={open()}>
             <div
-              aria-hidden={!reviewOpen()}
-              inert={!reviewOpen()}
-              class="relative min-w-0 h-full flex-1 overflow-hidden bg-background-base"
+              class="size-full flex"
               classList={{
-                "pointer-events-none": !reviewOpen(),
+                "border-l border-border-weaker-base": !settings.general.newLayoutDesigns(),
               }}
             >
-              <div class="size-full min-w-0 h-full bg-background-base">
-                <DragDropProvider
-                  onDragStart={handleDragStart}
-                  onDragEnd={handleDragEnd}
-                  onDragOver={handleDragOver}
-                  collisionDetector={closestCenter}
-                >
-                  <DragDropSensors />
-                  <ConstrainDragYAxis />
-                  <Tabs value={activeTab()} onChange={changeActiveTab}>
-                    <div class="sticky top-0 z-40 flex min-w-0 shrink-0 overflow-visible">
-                      <Tabs.List
-                        class="min-w-0 flex-1 overflow-x-auto overflow-y-visible pr-12 [scrollbar-width:none]"
-                        ref={(el: HTMLDivElement) => {
-                          const stop = createFileTabListSync({ el, contextOpen })
-                          onCleanup(stop)
-                        }}
-                      >
-                        <Show when={reviewTab() && props.canReview()}>
-                          <Tabs.Trigger value="review">
-                            <div class="flex items-center gap-1.5">
-                              <div>{language.t("session.tab.review")}</div>
-                              <Show when={props.hasReview()}>
-                                <div>{props.reviewCount()}</div>
-                              </Show>
-                            </div>
-                          </Tabs.Trigger>
-                        </Show>
-                        <Show when={contextOpen()}>
-                          <Tabs.Trigger
-                            value="context"
-                            closeButton={
-                              <TooltipKeybind
-                                title={language.t("common.closeTab")}
-                                keybind={command.keybind("tab.close")}
-                                placement="bottom"
-                                gutter={10}
-                              >
-                                <IconButton
-                                  icon="close-small"
-                                  variant="ghost"
-                                  class="h-5 w-5"
-                                  onPointerDown={(event) => event.stopPropagation()}
-                                  onClick={(event) => {
-                                    event.stopPropagation()
-                                    tabs().close("context")
-                                  }}
-                                  aria-label={language.t("common.closeTab")}
-                                />
-                              </TooltipKeybind>
-                            }
-                            hideCloseButton
-                            onMiddleClick={() => tabs().close("context")}
-                          >
-                            <div class="flex items-center gap-2">
-                              <SessionContextUsage variant="indicator" />
-                              <div>{language.t("session.tab.context")}</div>
-                            </div>
-                          </Tabs.Trigger>
-                        </Show>
-                        <For each={openedPanelTabs()}>{(tab) => <PanelTab tab={tab} onClose={closePanelTab} onActivate={changeActiveTab} />}</For>
-                        <SortableProvider ids={openedFileTabs()}>
-                          <For each={openedFileTabs()}>
-                            {(tab) => <SortableTab tab={tab} onTabClose={tabs().close} />}
-                          </For>
-                        </SortableProvider>
-                      </Tabs.List>
-                      <div data-panel-menu-trigger data-action="workspace-add-tab" class="bg-background-stronger h-full shrink-0 z-50 flex items-center justify-center border-l border-border-weaker-base px-2 max-sm:w-14 max-sm:px-0 relative">
-                        <IconButton
-                          icon="plus-small"
-                          variant="ghost"
-                          iconSize="large"
-                          class="!rounded-md max-sm:size-10"
-                          aria-label="Add workspace tab"
-                          title="Add workspace tab"
-                          aria-expanded={panelMenuOpen()}
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            if (!panelMenuOpen()) setPanelMenuAnchor(event.currentTarget)
-                            setPanelMenuOpen((open) => !open)
-                          }}
-                        />
-                      </div>
-                    </div>
-
-                    <Show when={panelMenuOpen()}>
-                      <Portal>
-                        <div
-                          data-panel-menu-root
-                          class="fixed z-[1000] w-48 overflow-auto rounded-lg border border-border-base bg-background-stronger p-1 shadow-lg"
-                          style={{
-                            left: panelMenuPosition().left + "px",
-                            top: panelMenuPosition().top + "px",
-                            "max-height": "min(320px, calc(100vh - " + (panelMenuPosition().top + 8) + "px))",
-                          }}
-                          onPointerDown={(event) => event.stopPropagation()}
-                          onClick={(event) => event.stopPropagation()}
-                        >
-                          <button
-                            type="button"
-                            class="flex h-8 w-full items-center rounded-md px-3 text-left text-13-regular text-text-base hover:bg-surface-base-hover"
-                            onClick={showFilePicker}
-                          >
-                            Files
-                          </button>
-                          <For each={WORKSPACE_PANEL_TABS.filter((tab) => !tab.hidden)}>
-                            {(tab) => (
-                              <PanelMenuButton
-                                tab={tab.id}
-                                onSelect={() => (tab.id === PANEL_OPEN_DESIGN_TAB ? launchOpenDesign() : openPanelTab(tab.id))}
-                              />
-                            )}
-                          </For>
-                        </div>
-                      </Portal>
-                    </Show>
-
-                    <Show when={reviewTab() && props.canReview()}>
-                      <Tabs.Content value="review" class="flex flex-col h-full overflow-hidden contain-strict">
-                        <Show when={reviewOpen() && activeTab() === "review"}>{props.reviewPanel()}</Show>
-                      </Tabs.Content>
-                    </Show>
-
-                    <Tabs.Content value="empty" class="flex flex-col h-full overflow-hidden contain-strict">
-                      <Show when={activeTab() === "empty"}>
-                        <div class="relative pt-2 flex-1 min-h-0 overflow-hidden">
-                          <div class="h-full px-6 pb-42 -mt-4 flex flex-col items-center justify-center text-center gap-6">
-                            <Mark class="w-14 opacity-10" />
-                            <div class="text-14-regular text-text-weak max-w-56">
-                              {language.t("session.files.selectToOpen")}
-                            </div>
-                          </div>
-                        </div>
-                      </Show>
-                    </Tabs.Content>
-
-                    <Show when={contextOpen()}>
-                      <Tabs.Content value="context" class="flex flex-col h-full overflow-hidden contain-strict">
-                        <Show when={activeTab() === "context"}>
-                          <div class="relative pt-2 flex-1 min-h-0 overflow-hidden">
-                            <SessionContextTab />
-                          </div>
-                        </Show>
-                      </Tabs.Content>
-                    </Show>
-
-                    <Tabs.Content
-                      value={PANEL_TERMINAL_TAB}
-                      class="flex flex-col h-full overflow-hidden contain-strict"
-                    >
-                      <Show when={activePanelTab() === PANEL_TERMINAL_TAB}>
-                        <SessionTerminalTab />
-                      </Show>
-                    </Tabs.Content>
-
-                    <Tabs.Content value={PANEL_BROWSER_TAB} class="flex flex-col h-full overflow-hidden contain-layout">
-                      <Show when={activePanelTab() === PANEL_BROWSER_TAB}>
-                        <BrowserTabContent sessionID={params.id} launch={browserLaunch()} />
-                      </Show>
-                    </Tabs.Content>
-
-                    <Tabs.Content value={PANEL_PREVIEW_TAB} class="flex flex-col h-full overflow-hidden contain-layout">
-                      <Show when={activePanelTab() === PANEL_PREVIEW_TAB}>
-                        <PreviewTabContent sessionID={params.id} />
-                      </Show>
-                    </Tabs.Content>
-
-                    <Tabs.Content
-                      value={PANEL_OPEN_DESIGN_TAB}
-                      class="flex flex-col h-full overflow-hidden contain-layout"
-                    >
-                      <Show when={activePanelTab() === PANEL_OPEN_DESIGN_TAB}>
-                        <OpenDesignTabContent bridgeState={openDesignBridgeState} onBridgeState={setOpenDesignBridgeState} />
-                      </Show>
-                    </Tabs.Content>
-
-                    <Tabs.Content value={PANEL_MAC_VIEW_TAB} class="flex flex-col h-full overflow-hidden contain-layout">
-                      <Show when={activePanelTab() === PANEL_MAC_VIEW_TAB}>
-                        <MacViewTabContent />
-                      </Show>
-                    </Tabs.Content>
-
-                    <Tabs.Content value={PANEL_ACCOUNTS_TAB} class="flex flex-col h-full overflow-hidden contain-strict">
-                      <Show when={activePanelTab() === PANEL_ACCOUNTS_TAB}>
-                        <AccountsTabContent />
-                      </Show>
-                    </Tabs.Content>
-
-                    <Tabs.Content value={PANEL_ROUTINES_TAB} class="flex flex-col h-full overflow-hidden contain-strict">
-                      <Show when={activePanelTab() === PANEL_ROUTINES_TAB}>
-                        <RoutinesTabContent />
-                      </Show>
-                    </Tabs.Content>
-
-                    <Tabs.Content value={PANEL_ENVIRONMENT_TAB} class="flex flex-col h-full overflow-hidden contain-strict">
-                      <Show when={activePanelTab() === PANEL_ENVIRONMENT_TAB}>
-                        <EnvironmentTabContent />
-                      </Show>
-                    </Tabs.Content>
-
-                    <Tabs.Content value={PANEL_RESOURCES_TAB} class="flex flex-col h-full overflow-hidden contain-strict">
-                      <Show when={activePanelTab() === PANEL_RESOURCES_TAB}>
-                        <ResourcesTabContent />
-                      </Show>
-                    </Tabs.Content>
-
-                    <Tabs.Content value={PANEL_ARTIFACTS_TAB} class="flex flex-col h-full overflow-hidden contain-layout">
-                      <Show when={activePanelTab() === PANEL_ARTIFACTS_TAB}>
-                        <ArtifactsTabContent sessionID={params.id} />
-                      </Show>
-                    </Tabs.Content>
-
-                    <Tabs.Content
-                      value={PANEL_FILE_BROWSER_TAB}
-                      class="flex flex-col h-full overflow-hidden contain-strict"
-                    >
-                      <Show when={activePanelTab() === PANEL_FILE_BROWSER_TAB}>
-                        <FileBrowserTabContent />
-                      </Show>
-                    </Tabs.Content>
-
-                    <Show when={activeArtifactTab()} keyed>
-                      {(tab) => (
-                        <Tabs.Content value={tab} class="flex flex-col h-full overflow-hidden contain-layout">
-                          <ArtifactViewerTabContent tab={tab} />
-                        </Tabs.Content>
-                      )}
-                    </Show>
-
-                    <Show when={activeFileTab()} keyed>
-                      {(tab) => <FileTabContent tab={tab} />}
-                    </Show>
-                  </Tabs>
-                  <DragOverlay>
-                    <Show when={store.activeDraggable} keyed>
-                      {(tab) => {
-                        const path = file.pathFromTab(tab)
-                        return (
-                          <div data-component="tabs-drag-preview">
-                            <Show when={path}>{(p) => <FileVisual active path={p()} />}</Show>
-                          </div>
-                        )
-                      }}
-                    </Show>
-                  </DragOverlay>
-                </DragDropProvider>
-              </div>
-            </div>
-
-            <Show when={shown()}>
               <div
-                id="file-tree-panel"
-                aria-hidden={!fileOpen()}
-                inert={!fileOpen()}
-                class="relative min-w-0 h-full shrink-0 overflow-hidden"
+                aria-hidden={!reviewOpen()}
+                inert={!reviewOpen()}
+                class="relative min-w-0 h-full flex-1 overflow-hidden bg-background-base"
                 classList={{
-                  "pointer-events-none": !fileOpen(),
-                  "transition-[width] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-[width] motion-reduce:transition-none":
-                    !props.size.active(),
+                  "pointer-events-none": !reviewOpen(),
                 }}
-                style={{ width: treeWidth() }}
               >
-                <div
-                  class="h-full flex flex-col overflow-hidden group/filetree"
-                  classList={{ "border-l border-border-weaker-base": reviewOpen() }}
-                >
-                  <Tabs
-                    variant="pill"
-                    value={fileTreeTab()}
-                    onChange={setFileTreeTabValue}
-                    class="h-full"
-                    data-scope="filetree"
+                <div class="size-full min-w-0 h-full bg-background-base">
+                  <DragDropProvider
+                    onDragStart={handleDragStart}
+                    onDragEnd={handleDragEnd}
+                    onDragOver={handleDragOver}
+                    collisionDetector={closestCenter}
                   >
-                    <Tabs.List>
-                      <Tabs.Trigger value="changes" class="flex-1" classes={{ button: "w-full" }}>
-                        {props.reviewCount()}{" "}
-                        {language.t(
-                          props.reviewCount() === 1 ? "session.review.change.one" : "session.review.change.other",
-                        )}
-                      </Tabs.Trigger>
-                      <Tabs.Trigger value="all" class="flex-1" classes={{ button: "w-full" }}>
-                        {language.t("session.files.all")}
-                      </Tabs.Trigger>
-                    </Tabs.List>
-                    <Tabs.Content value="changes" class="bg-background-stronger px-3 py-0">
-                      <Switch>
-                        <Match when={props.hasReview() || !props.diffsReady()}>
-                          <Show
-                            when={props.diffsReady()}
-                            fallback={
-                              <div class="px-2 py-2 text-12-regular text-text-weak">
-                                {language.t("common.loading")}
-                                {language.t("common.loading.ellipsis")}
+                    <DragDropSensors />
+                    <ConstrainDragYAxis />
+                    <Tabs value={activeTab()} onChange={changeActiveTab}>
+                      <div class="sticky top-0 z-40 flex min-w-0 shrink-0 overflow-visible">
+                        <Tabs.List
+                          class="min-w-0 flex-1 overflow-x-auto overflow-y-visible pr-12 [scrollbar-width:none]"
+                          ref={(el: HTMLDivElement) => {
+                            const stop = createFileTabListSync({ el, contextOpen })
+                            onCleanup(stop)
+                          }}
+                        >
+                          <Show when={reviewTab() && props.canReview()}>
+                            <Tabs.Trigger value="review">
+                              <div class="flex items-center gap-1.5">
+                                <div>{language.t("session.tab.review")}</div>
+                                <Show when={props.hasReview()}>
+                                  <div>{props.reviewCount()}</div>
+                                </Show>
                               </div>
-                            }
+                            </Tabs.Trigger>
+                          </Show>
+                          <Show when={contextOpen()}>
+                            <Tabs.Trigger
+                              value="context"
+                              closeButton={
+                                <TooltipKeybind
+                                  title={language.t("common.closeTab")}
+                                  keybind={command.keybind("tab.close")}
+                                  placement="bottom"
+                                  gutter={10}
+                                >
+                                  <IconButton
+                                    icon="close-small"
+                                    variant="ghost"
+                                    class="h-5 w-5"
+                                    onPointerDown={(event) => event.stopPropagation()}
+                                    onClick={(event) => {
+                                      event.stopPropagation()
+                                      tabs().close("context")
+                                    }}
+                                    aria-label={language.t("common.closeTab")}
+                                  />
+                                </TooltipKeybind>
+                              }
+                              hideCloseButton
+                              onMiddleClick={() => tabs().close("context")}
+                            >
+                              <div class="flex items-center gap-2">
+                                <SessionContextUsage variant="indicator" />
+                                <div>{language.t("session.tab.context")}</div>
+                              </div>
+                            </Tabs.Trigger>
+                          </Show>
+                          <For each={openedPanelTabs()}>
+                            {(tab) => <PanelTab tab={tab} onClose={closePanelTab} onActivate={changeActiveTab} />}
+                          </For>
+                          <SortableProvider ids={openedFileTabs()}>
+                            <For each={openedFileTabs()}>
+                              {(tab) => <SortableTab tab={tab} onTabClose={tabs().close} />}
+                            </For>
+                          </SortableProvider>
+                        </Tabs.List>
+                        <div
+                          data-panel-menu-trigger
+                          data-action="workspace-add-tab"
+                          class="bg-background-stronger h-full shrink-0 z-50 flex items-center justify-center border-l border-border-weaker-base px-2 max-sm:w-14 max-sm:px-0 relative"
+                        >
+                          <IconButton
+                            icon="plus-small"
+                            variant="ghost"
+                            iconSize="large"
+                            class="!rounded-md max-sm:size-10"
+                            aria-label="Add workspace tab"
+                            title="Add workspace tab"
+                            aria-expanded={panelMenuOpen()}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              if (!panelMenuOpen()) setPanelMenuAnchor(event.currentTarget)
+                              setPanelMenuOpen((open) => !open)
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      <Show when={panelMenuOpen()}>
+                        <Portal>
+                          <div
+                            data-panel-menu-root
+                            class="fixed z-[1000] w-48 overflow-auto rounded-lg border border-border-base bg-background-stronger p-1 shadow-lg"
+                            style={{
+                              left: panelMenuPosition().left + "px",
+                              top: panelMenuPosition().top + "px",
+                              "max-height": "min(320px, calc(100vh - " + (panelMenuPosition().top + 8) + "px))",
+                            }}
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={(event) => event.stopPropagation()}
                           >
+                            <button
+                              type="button"
+                              class="flex h-8 w-full items-center rounded-md px-3 text-left text-13-regular text-text-base hover:bg-surface-base-hover"
+                              onClick={showFilePicker}
+                            >
+                              Files
+                            </button>
+                            <For each={WORKSPACE_PANEL_TABS.filter((tab) => !tab.hidden)}>
+                              {(tab) => (
+                                <PanelMenuButton
+                                  tab={tab.id}
+                                  onSelect={() =>
+                                    tab.id === PANEL_OPEN_DESIGN_TAB ? launchOpenDesign() : openPanelTab(tab.id)
+                                  }
+                                />
+                              )}
+                            </For>
+                          </div>
+                        </Portal>
+                      </Show>
+
+                      <Show when={reviewTab() && props.canReview()}>
+                        <Tabs.Content value="review" class="flex flex-col h-full overflow-hidden contain-strict">
+                          <Show when={reviewOpen() && activeTab() === "review"}>{props.reviewPanel()}</Show>
+                        </Tabs.Content>
+                      </Show>
+
+                      <Tabs.Content value="empty" class="flex flex-col h-full overflow-hidden contain-strict">
+                        <Show when={activeTab() === "empty"}>
+                          <div class="relative pt-2 flex-1 min-h-0 overflow-hidden">
+                            <div class="h-full px-6 pb-42 -mt-4 flex flex-col items-center justify-center text-center gap-6">
+                              <Mark class="w-14 opacity-10" />
+                              <div class="text-14-regular text-text-weak max-w-56">
+                                {language.t("session.files.selectToOpen")}
+                              </div>
+                            </div>
+                          </div>
+                        </Show>
+                      </Tabs.Content>
+
+                      <Show when={contextOpen()}>
+                        <Tabs.Content value="context" class="flex flex-col h-full overflow-hidden contain-strict">
+                          <Show when={activeTab() === "context"}>
+                            <div class="relative pt-2 flex-1 min-h-0 overflow-hidden">
+                              <SessionContextTab />
+                            </div>
+                          </Show>
+                        </Tabs.Content>
+                      </Show>
+
+                      <Tabs.Content
+                        value={PANEL_TERMINAL_TAB}
+                        class="flex flex-col h-full overflow-hidden contain-strict"
+                      >
+                        <Show when={activePanelTab() === PANEL_TERMINAL_TAB}>
+                          <SessionTerminalTab />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_BROWSER_TAB}
+                        class="flex flex-col h-full overflow-hidden contain-layout"
+                      >
+                        <Show when={activePanelTab() === PANEL_BROWSER_TAB}>
+                          <BrowserTabContent sessionID={params.id} launch={browserLaunch()} />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_PREVIEW_TAB}
+                        class="flex flex-col h-full overflow-hidden contain-layout"
+                      >
+                        <Show when={activePanelTab() === PANEL_PREVIEW_TAB}>
+                          <PreviewTabContent sessionID={params.id} />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_OPEN_DESIGN_TAB}
+                        class="flex flex-col h-full overflow-hidden contain-layout"
+                      >
+                        <Show when={activePanelTab() === PANEL_OPEN_DESIGN_TAB}>
+                          <OpenDesignTabContent
+                            bridgeState={openDesignBridgeState}
+                            onBridgeState={setOpenDesignBridgeState}
+                          />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_MAC_VIEW_TAB}
+                        class="flex flex-col h-full overflow-hidden contain-layout"
+                      >
+                        <Show when={activePanelTab() === PANEL_MAC_VIEW_TAB}>
+                          <MacViewTabContent />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_ACCOUNTS_TAB}
+                        class="flex flex-col h-full overflow-hidden contain-strict"
+                      >
+                        <Show when={activePanelTab() === PANEL_ACCOUNTS_TAB}>
+                          <AccountsTabContent />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_ROUTINES_TAB}
+                        class="flex flex-col h-full overflow-hidden contain-strict"
+                      >
+                        <Show when={activePanelTab() === PANEL_ROUTINES_TAB}>
+                          <RoutinesTabContent />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_ENVIRONMENT_TAB}
+                        class="flex flex-col h-full overflow-hidden contain-strict"
+                      >
+                        <Show when={activePanelTab() === PANEL_ENVIRONMENT_TAB}>
+                          <EnvironmentTabContent />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_RESOURCES_TAB}
+                        class="flex flex-col h-full overflow-hidden contain-strict"
+                      >
+                        <Show when={activePanelTab() === PANEL_RESOURCES_TAB}>
+                          <ResourcesTabContent />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_ARTIFACTS_TAB}
+                        class="flex flex-col h-full overflow-hidden contain-layout"
+                      >
+                        <Show when={activePanelTab() === PANEL_ARTIFACTS_TAB}>
+                          <ArtifactsTabContent sessionID={params.id} />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_FILE_BROWSER_TAB}
+                        class="flex flex-col h-full overflow-hidden contain-strict"
+                      >
+                        <Show when={activePanelTab() === PANEL_FILE_BROWSER_TAB}>
+                          <FileBrowserTabContent />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Show when={activeArtifactTab()} keyed>
+                        {(tab) => (
+                          <Tabs.Content value={tab} class="flex flex-col h-full overflow-hidden contain-layout">
+                            <ArtifactViewerTabContent tab={tab} />
+                          </Tabs.Content>
+                        )}
+                      </Show>
+
+                      <Show when={activeFileTab()} keyed>
+                        {(tab) => <FileTabContent tab={tab} />}
+                      </Show>
+                    </Tabs>
+                    <DragOverlay>
+                      <Show when={store.activeDraggable} keyed>
+                        {(tab) => {
+                          const path = file.pathFromTab(tab)
+                          return (
+                            <div data-component="tabs-drag-preview">
+                              <Show when={path}>{(p) => <FileVisual active path={p()} />}</Show>
+                            </div>
+                          )
+                        }}
+                      </Show>
+                    </DragOverlay>
+                  </DragDropProvider>
+                </div>
+              </div>
+
+              <Show when={shown()}>
+                <div
+                  id="file-tree-panel"
+                  aria-hidden={!fileOpen()}
+                  inert={!fileOpen()}
+                  class="relative min-w-0 h-full shrink-0 overflow-hidden"
+                  classList={{
+                    "pointer-events-none": !fileOpen(),
+                    "transition-[width] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-[width] motion-reduce:transition-none":
+                      !props.size.active(),
+                  }}
+                  style={{ width: treeWidth() }}
+                >
+                  <div
+                    class="h-full flex flex-col overflow-hidden group/filetree"
+                    classList={{ "border-l border-border-weaker-base": reviewOpen() }}
+                  >
+                    <Tabs
+                      variant="pill"
+                      value={fileTreeTab()}
+                      onChange={setFileTreeTabValue}
+                      class="h-full"
+                      data-scope="filetree"
+                    >
+                      <Tabs.List>
+                        <Tabs.Trigger value="changes" class="flex-1" classes={{ button: "w-full" }}>
+                          {props.reviewCount()}{" "}
+                          {language.t(
+                            props.reviewCount() === 1 ? "session.review.change.one" : "session.review.change.other",
+                          )}
+                        </Tabs.Trigger>
+                        <Tabs.Trigger value="all" class="flex-1" classes={{ button: "w-full" }}>
+                          {language.t("session.files.all")}
+                        </Tabs.Trigger>
+                      </Tabs.List>
+                      <Tabs.Content value="changes" class="bg-background-stronger px-3 py-0">
+                        <Switch>
+                          <Match when={props.hasReview() || !props.diffsReady()}>
+                            <Show
+                              when={props.diffsReady()}
+                              fallback={
+                                <div class="px-2 py-2 text-12-regular text-text-weak">
+                                  {language.t("common.loading")}
+                                  {language.t("common.loading.ellipsis")}
+                                </div>
+                              }
+                            >
+                              <FileTree
+                                path=""
+                                class="pt-3"
+                                allowed={diffFiles()}
+                                kinds={kinds()}
+                                draggable={false}
+                                active={props.activeDiff}
+                                onFileClick={(node) => props.focusReviewDiff(node.path)}
+                              />
+                            </Show>
+                          </Match>
+                        </Switch>
+                      </Tabs.Content>
+                      <Tabs.Content value="all" class="bg-background-stronger px-3 py-0">
+                        <Switch>
+                          <Match when={nofiles()}>{empty(language.t("session.files.empty"))}</Match>
+                          <Match when={true}>
                             <FileTree
                               path=""
                               class="pt-3"
-                              allowed={diffFiles()}
+                              modified={diffFiles()}
                               kinds={kinds()}
-                              draggable={false}
-                              active={props.activeDiff}
-                              onFileClick={(node) => props.focusReviewDiff(node.path)}
+                              onFileClick={(node) => openTab(file.tab(node.path))}
                             />
-                          </Show>
-                        </Match>
-                      </Switch>
-                    </Tabs.Content>
-                    <Tabs.Content value="all" class="bg-background-stronger px-3 py-0">
-                      <Switch>
-                        <Match when={nofiles()}>{empty(language.t("session.files.empty"))}</Match>
-                        <Match when={true}>
-                          <FileTree
-                            path=""
-                            class="pt-3"
-                            modified={diffFiles()}
-                            kinds={kinds()}
-                            onFileClick={(node) => openTab(file.tab(node.path))}
-                          />
-                        </Match>
-                      </Switch>
-                    </Tabs.Content>
-                  </Tabs>
-                </div>
-                <Show when={fileOpen()}>
-                  <div onPointerDown={() => props.size.start()}>
-                    <ResizeHandle
-                      direction="horizontal"
-                      edge="start"
-                      size={layout.fileTree.width()}
-                      min={200}
-                      max={480}
-                      onResize={(width) => {
-                        props.size.touch()
-                        layout.fileTree.resize(width)
-                      }}
-                    />
+                          </Match>
+                        </Switch>
+                      </Tabs.Content>
+                    </Tabs>
                   </div>
-                </Show>
-              </div>
-            </Show>
-          </div>
-        </Show>
-      </aside>
-    </Show>
+                  <Show when={fileOpen()}>
+                    <div onPointerDown={() => props.size.start()}>
+                      <ResizeHandle
+                        direction="horizontal"
+                        edge="start"
+                        size={layout.fileTree.width()}
+                        min={200}
+                        max={480}
+                        onResize={(width) => {
+                          props.size.touch()
+                          layout.fileTree.resize(width)
+                        }}
+                      />
+                    </div>
+                  </Show>
+                </div>
+              </Show>
+            </div>
+          </Show>
+        </aside>
+      </Show>
     </>
   )
 }

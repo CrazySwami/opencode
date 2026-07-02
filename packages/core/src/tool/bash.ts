@@ -10,6 +10,7 @@ import { LocationMutation } from "../location-mutation"
 import { AppProcess } from "../process"
 import { PermissionV2 } from "../permission"
 import { PositiveInt } from "../schema"
+import { workspaceEnvForProcess } from "../workspace-env"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
 
@@ -149,9 +150,15 @@ export const layer = Layer.effectDiscard(
               const shell =
                 Object.assign({}, ...entries.flatMap((entry) => (entry.type === "document" ? [entry.info] : [])))
                   .shell ?? defaultShell()
+              const workspaceEnv = workspaceEnvForProcess({
+                directory: target.canonical,
+                cwd: target.canonical,
+                surface: "bash",
+              })
               const command = ChildProcess.make(input.command, [], {
                 cwd: target.canonical,
                 shell,
+                env: { ...process.env, ...workspaceEnv },
                 stdin: "ignore",
                 detached: process.platform !== "win32",
                 forceKillAfter: Duration.seconds(3),

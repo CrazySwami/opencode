@@ -91,7 +91,7 @@ type HomeSessionGroup = {
   sessions: HomeSessionRecord[]
 }
 
-type HomeDashboardMode = "projects" | "routines"
+type HomeDashboardMode = "projects" | "routines" | "environment"
 
 const HOME_SESSION_SEARCH_RESULTS_ID = "home-session-search-results"
 const HOME_SEARCH_RESULT_ROW =
@@ -445,11 +445,20 @@ export function NewHome() {
 
         <section
           class="min-h-0 min-w-0 flex-1 flex flex-col pt-6 lg:pt-12"
-          aria-label={state.mode === "projects" ? language.t("sidebar.project.recentSessions") : "Routines"}
+          aria-label={
+            state.mode === "projects"
+              ? language.t("sidebar.project.recentSessions")
+              : state.mode === "environment"
+                ? "Environment variables"
+                : "Routines"
+          }
         >
           <Switch>
             <Match when={state.mode === "routines"}>
               <HomeRoutinesDashboard />
+            </Match>
+            <Match when={state.mode === "environment"}>
+              <HomeEnvironmentDashboard />
             </Match>
             <Match when={true}>
               <HomeSessionSearch
@@ -742,7 +751,9 @@ function HomeRoutinesDashboard() {
                       {routine.enabled ? "enabled" : "off"}
                     </span>
                   </div>
-                  <span class="min-w-0 truncate text-left text-[12px] text-v2-text-text-muted">{routine.schedule ?? "No schedule"}</span>
+                  <span class="min-w-0 truncate text-left text-[12px] text-v2-text-text-muted">
+                    {routine.schedule ?? "No schedule"}
+                  </span>
                 </button>
               )}
             </For>
@@ -771,7 +782,9 @@ function HomeRoutinesDashboard() {
                   <div class="flex min-w-0 items-center justify-between gap-3">
                     <div class="min-w-0">
                       <div class="truncate text-[14px] text-v2-text-text-base [font-weight:600]">{routine().name}</div>
-                      <div class="mt-1 text-[12px] text-v2-text-text-muted">{routine().description ?? "No description"}</div>
+                      <div class="mt-1 text-[12px] text-v2-text-text-muted">
+                        {routine().description ?? "No description"}
+                      </div>
                     </div>
                     <span class="shrink-0 rounded-[5px] bg-v2-background-bg-layer-02 px-2 py-1 text-[12px] text-v2-text-text-muted">
                       {routine().enabled ? "enabled" : "off"}
@@ -784,10 +797,14 @@ function HomeRoutinesDashboard() {
                     <HomeRoutineInfo label="Next run" value={formatHomeRoutineDate(routine().nextRunAt)} />
                     <HomeRoutineInfo label="Last run" value={formatHomeRoutineDate(routine().lastRunAt)} />
                     <HomeRoutineInfo label="Last status" value={routine().lastStatus ?? "never"} />
-                    <HomeRoutineInfo label="Source folder" value={routine().sourceFolder ?? routines.data.value?.status?.routinesDir ?? "Not available"} />
+                    <HomeRoutineInfo
+                      label="Source folder"
+                      value={routine().sourceFolder ?? routines.data.value?.status?.routinesDir ?? "Not available"}
+                    />
                     <HomeRoutineInfo label="Store" value={routines.data.value?.status?.jobsFile} />
                     <div class="rounded-[8px] bg-v2-background-bg-base p-3 text-[12px] leading-5 text-v2-text-text-muted">
-                      Disabled draft creation is enabled on this live route. Manual runs, deletes, and enabling schedules stay separately gated.
+                      Disabled draft creation is enabled on this live route. Manual runs, deletes, and enabling
+                      schedules stay separately gated.
                     </div>
                   </div>
                 </ScrollView>
@@ -798,14 +815,21 @@ function HomeRoutinesDashboard() {
       </div>
       <Show when={draftOpen()}>
         <Portal>
-          <div class="fixed inset-0 z-[1000] flex items-center justify-center bg-v2-background-bg-deep/60 p-4 backdrop-blur-sm" onPointerDown={() => setDraftOpen(false)}>
-            <div class="w-[min(480px,calc(100vw-2rem))] rounded-[12px] border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-floating)]" onPointerDown={(event) => event.stopPropagation()}>
+          <div
+            class="fixed inset-0 z-[1000] flex items-center justify-center bg-v2-background-bg-deep/60 p-4 backdrop-blur-sm"
+            onPointerDown={() => setDraftOpen(false)}
+          >
+            <div
+              class="w-[min(480px,calc(100vw-2rem))] rounded-[12px] border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-floating)]"
+              onPointerDown={(event) => event.stopPropagation()}
+            >
               <div class="text-[14px] text-v2-text-text-base [font-weight:600]">Schedule new routine</div>
               <Show
                 when={mutationsEnabled()}
                 fallback={
                   <div class="mt-2 text-[13px] leading-5 text-v2-text-text-muted">
-                    Disabled draft creation is off on this server. Set <code>OPENCODE_ROUTINES_MUTATIONS=1</code> to allow writing disabled routine drafts.
+                    Disabled draft creation is off on this server. Set <code>OPENCODE_ROUTINES_MUTATIONS=1</code> to
+                    allow writing disabled routine drafts.
                   </div>
                 }
               >
@@ -852,12 +876,23 @@ function HomeRoutinesDashboard() {
                 </div>
               </Show>
               <Show when={draftError()}>
-                {(error) => <div class="mt-3 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-layer-01 p-3 text-[12px] text-v2-state-fg-danger">{error()}</div>}
+                {(error) => (
+                  <div class="mt-3 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-layer-01 p-3 text-[12px] text-v2-state-fg-danger">
+                    {error()}
+                  </div>
+                )}
               </Show>
               <div class="mt-4 flex justify-end gap-2">
-                <ButtonV2 variant="neutral" size="normal" onClick={() => setDraftOpen(false)}>Close</ButtonV2>
+                <ButtonV2 variant="neutral" size="normal" onClick={() => setDraftOpen(false)}>
+                  Close
+                </ButtonV2>
                 <Show when={mutationsEnabled()}>
-                  <ButtonV2 variant="contrast" size="normal" disabled={draftSaving() || !draftName().trim()} onClick={submitDraftRoutine}>
+                  <ButtonV2
+                    variant="contrast"
+                    size="normal"
+                    disabled={draftSaving() || !draftName().trim()}
+                    onClick={submitDraftRoutine}
+                  >
                     {draftSaving() ? "Saving" : "Create draft"}
                   </ButtonV2>
                 </Show>
@@ -866,6 +901,287 @@ function HomeRoutinesDashboard() {
           </div>
         </Portal>
       </Show>
+    </div>
+  )
+}
+
+function HomeEnvironmentDashboard() {
+  const environment = createHomePolledJson<any>("/experimental/workspace-env", 10000)
+  const [selectedID, setSelectedID] = createSignal<string | undefined>()
+  const [draftName, setDraftName] = createSignal("")
+  const [draftValue, setDraftValue] = createSignal("")
+  const [draftScope, setDraftScope] = createSignal("repos")
+  const [draftTarget, setDraftTarget] = createSignal("")
+  const [draftDescription, setDraftDescription] = createSignal("")
+  const [draftSecret, setDraftSecret] = createSignal(false)
+  const [draftEnabled, setDraftEnabled] = createSignal(true)
+  const [saving, setSaving] = createSignal(false)
+  const [error, setError] = createSignal<string | undefined>()
+  const entries = createMemo(() => environment.data.value?.registry?.entries ?? [])
+  const selected = createMemo(() => entries().find((entry: any) => entry.id === selectedID()))
+
+  createEffect(() => {
+    if (!selectedID() && entries()[0]?.id) selectEntry(entries()[0])
+  })
+
+  const selectEntry = (entry: any) => {
+    setSelectedID(entry.id)
+    setDraftName(entry.name ?? "")
+    setDraftValue(entry.secret ? "" : (entry.valuePreview ?? ""))
+    setDraftScope(entry.scope ?? "repos")
+    setDraftTarget(entry.target ?? "")
+    setDraftDescription(entry.description ?? "")
+    setDraftSecret(entry.secret === true)
+    setDraftEnabled(entry.enabled !== false)
+    setError(undefined)
+  }
+
+  const startNew = () => {
+    setSelectedID(undefined)
+    setDraftName("")
+    setDraftValue("")
+    setDraftScope("repos")
+    setDraftTarget("")
+    setDraftDescription("")
+    setDraftSecret(false)
+    setDraftEnabled(true)
+    setError(undefined)
+  }
+
+  const saveEntry = async () => {
+    if (saving()) return
+    setSaving(true)
+    setError(undefined)
+    try {
+      const active = selected()
+      const payload: Record<string, unknown> = {
+        action: "upsert",
+        id: active?.id,
+        name: draftName(),
+        scope: draftScope(),
+        target: draftTarget(),
+        description: draftDescription(),
+        secret: draftSecret(),
+        enabled: draftEnabled(),
+      }
+      if (!active || draftValue().length > 0 || !draftSecret()) payload.value = draftValue()
+      const response = await fetch("/experimental/workspace-env", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok || body?.ok === false) throw new Error(body?.error ?? `Request failed: ${response.status}`)
+      setSelectedID(body.entry?.id)
+      showToast({ title: "Environment variable saved", variant: "success" })
+      await environment.refresh()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const deleteEntry = async () => {
+    const active = selected()
+    if (!active || saving()) return
+    setSaving(true)
+    setError(undefined)
+    try {
+      const response = await fetch("/experimental/workspace-env", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "delete", id: active.id }),
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok || body?.ok === false) throw new Error(body?.error ?? `Request failed: ${response.status}`)
+      startNew()
+      showToast({ title: "Environment variable deleted", variant: "success" })
+      await environment.refresh()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div class="flex min-h-0 flex-1 flex-col">
+      <div class="flex h-9 min-w-0 items-center justify-between pl-3 pr-1">
+        <div class={HOME_SECTION_LABEL}>Environment variables</div>
+        <ButtonV2
+          data-action="home-env-new"
+          variant="ghost-muted"
+          size="normal"
+          icon="plus"
+          class="h-7 px-2 [font-weight:530]"
+          onClick={startNew}
+        >
+          New variable
+        </ButtonV2>
+      </div>
+      <Show when={environment.data.error}>
+        {(message) => (
+          <div class="mt-3 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-layer-01 p-3 text-[13px] leading-5 text-v2-text-text-muted">
+            {message()}
+          </div>
+        )}
+      </Show>
+      <div class="mt-3 grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(220px,0.85fr)_minmax(0,1.15fr)]">
+        <ScrollView class="-mr-3 min-h-0">
+          <div class="flex min-w-0 flex-col gap-px pr-3">
+            <For each={entries()}>
+              {(entry: any) => (
+                <button
+                  type="button"
+                  class={`${HOME_ROW} min-h-12 flex-col items-stretch gap-1 px-3 py-2`}
+                  data-selected={selected()?.id === entry.id ? "" : undefined}
+                  onClick={() => selectEntry(entry)}
+                >
+                  <div class="flex min-w-0 items-center justify-between gap-3">
+                    <span class="min-w-0 truncate font-mono text-v2-text-text-base [font-weight:530]">
+                      {entry.name}
+                    </span>
+                    <span class="shrink-0 rounded-[4px] bg-v2-background-bg-layer-02 px-1.5 py-0.5 text-[11px] text-v2-text-text-muted">
+                      {entry.enabled ? entry.scope : "off"}
+                    </span>
+                  </div>
+                  <span class="min-w-0 truncate text-left text-[12px] text-v2-text-text-muted">
+                    {entry.secret ? "secret value hidden" : entry.valuePreview || "empty value"}
+                  </span>
+                </button>
+              )}
+            </For>
+            <Show when={!environment.data.loading && entries().length === 0}>
+              <div class="flex min-h-40 items-center justify-center rounded-[8px] border border-v2-border-border-base p-6 text-center text-[13px] text-v2-text-text-muted">
+                No workspace environment variables configured yet.
+              </div>
+            </Show>
+            <Show when={environment.data.loading && entries().length === 0}>
+              <HomeSessionSkeleton label="Loading environment" />
+            </Show>
+          </div>
+        </ScrollView>
+        <div class="min-h-0 overflow-hidden rounded-[10px] border border-v2-border-border-base bg-v2-background-bg-layer-01">
+          <ScrollView class="h-full">
+            <div class="grid gap-3 p-4">
+              <div>
+                <div class="text-[14px] text-v2-text-text-base [font-weight:600]">
+                  {selected() ? "Edit variable" : "New variable"}
+                </div>
+                <div class="mt-1 text-[12px] leading-5 text-v2-text-text-muted">
+                  Values are stored server-side. Secret values are masked in OpenCode and only inherited by approved
+                  process scopes.
+                </div>
+              </div>
+              <label class="grid gap-1 text-[12px] text-v2-text-text-muted">
+                Name
+                <input
+                  class="h-9 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-base px-3 font-mono text-[13px] text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+                  value={draftName()}
+                  onInput={(event) => setDraftName(event.currentTarget.value)}
+                  placeholder="OPEN_DESIGN_DAEMON_URL"
+                />
+              </label>
+              <label class="grid gap-1 text-[12px] text-v2-text-text-muted">
+                Value
+                <input
+                  class="h-9 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-base px-3 font-mono text-[13px] text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+                  value={draftValue()}
+                  type={draftSecret() ? "password" : "text"}
+                  onInput={(event) => setDraftValue(event.currentTarget.value)}
+                  placeholder={selected()?.secret ? "Leave blank to keep current secret" : "value"}
+                />
+              </label>
+              <div class="grid gap-3 sm:grid-cols-2">
+                <label class="grid gap-1 text-[12px] text-v2-text-text-muted">
+                  Scope
+                  <select
+                    class="h-9 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-base px-3 text-[13px] text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+                    value={draftScope()}
+                    onChange={(event) => setDraftScope(event.currentTarget.value)}
+                  >
+                    <option value="global">global</option>
+                    <option value="repos">repos</option>
+                    <option value="project">project</option>
+                    <option value="terminal">terminal</option>
+                    <option value="bash">bash</option>
+                    <option value="routines">routines</option>
+                    <option value="browser">browser</option>
+                    <option value="preview">preview</option>
+                    <option value="open_design">open_design</option>
+                  </select>
+                </label>
+                <label class="grid gap-1 text-[12px] text-v2-text-text-muted">
+                  Target path
+                  <input
+                    class="h-9 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-base px-3 font-mono text-[12px] text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+                    value={draftTarget()}
+                    onInput={(event) => setDraftTarget(event.currentTarget.value)}
+                    placeholder="/home/dev/repos/brand-studio"
+                  />
+                </label>
+              </div>
+              <label class="grid gap-1 text-[12px] text-v2-text-text-muted">
+                Description
+                <textarea
+                  class="min-h-16 resize-y rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-base px-3 py-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+                  value={draftDescription()}
+                  onInput={(event) => setDraftDescription(event.currentTarget.value)}
+                  placeholder="What uses this variable and whether a restart is needed."
+                />
+              </label>
+              <div class="flex flex-wrap gap-4 text-[12px] text-v2-text-text-muted">
+                <label class="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={draftSecret()}
+                    onChange={(event) => setDraftSecret(event.currentTarget.checked)}
+                  />
+                  Secret
+                </label>
+                <label class="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={draftEnabled()}
+                    onChange={(event) => setDraftEnabled(event.currentTarget.checked)}
+                  />
+                  Enabled
+                </label>
+              </div>
+              <Show when={error()}>
+                {(message) => (
+                  <div class="rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-base p-3 text-[12px] text-v2-state-fg-danger">
+                    {message()}
+                  </div>
+                )}
+              </Show>
+              <div class="rounded-[8px] bg-v2-background-bg-base p-3 text-[12px] leading-5 text-v2-text-text-muted">
+                Store: <code>{environment.data.value?.registry?.path ?? "checking"}</code>
+                <br />
+                Inherited now by: {(environment.data.value?.effective?.inheritedBy ?? ["terminal", "bash"]).join(", ")}.
+                Planned scoped launchers:{" "}
+                {(environment.data.value?.effective?.plannedScopes ?? []).join(", ") || "none"}.
+              </div>
+              <div class="flex flex-wrap justify-end gap-2">
+                <Show when={selected()}>
+                  <ButtonV2 variant="neutral" size="normal" disabled={saving()} onClick={deleteEntry}>
+                    Delete
+                  </ButtonV2>
+                </Show>
+                <ButtonV2
+                  variant="contrast"
+                  size="normal"
+                  disabled={saving() || !draftName().trim()}
+                  onClick={saveEntry}
+                >
+                  {saving() ? "Saving" : "Save variable"}
+                </ButtonV2>
+              </div>
+            </div>
+          </ScrollView>
+        </div>
+      </div>
     </div>
   )
 }
@@ -905,6 +1221,17 @@ function HomeUtilityNav(props: {
           R
         </span>
         <span class={HOME_PROJECT_NAV_LABEL}>Routines</span>
+      </button>
+      <button
+        type="button"
+        class={`${HOME_PROJECT_NAV_ROW} text-v2-text-text-faint`}
+        data-selected={props.mode === "environment" ? "" : undefined}
+        onClick={() => props.setMode("environment")}
+      >
+        <span class="flex size-4 shrink-0 items-center justify-center rounded-[4px] bg-[#f97316]/15 text-[9px] leading-none text-[#f97316] [font-weight:650]">
+          ENV
+        </span>
+        <span class={HOME_PROJECT_NAV_LABEL}>Environment</span>
       </button>
       <button
         type="button"

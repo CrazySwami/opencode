@@ -19,6 +19,7 @@ import { Skill } from "@/skill"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { Location } from "@opencode-ai/core/location"
 import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/location-services"
+import { workspaceEnvPromptSummary } from "@opencode-ai/core/workspace-env"
 import { Reference } from "@opencode-ai/core/reference"
 import { MCP } from "@/mcp"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
@@ -72,6 +73,7 @@ export const layer = Layer.effect(
             `  Today's date: ${new Date().toDateString()}`,
             `</env>`,
           ].join("\n"),
+          workspaceEnvPromptSummary({ directory: ctx.directory, cwd: ctx.directory, surface: "bash" }),
           [
             "Alfonso OS / Swami workspace convention:",
             "- When the user tags @Swami or @Alfonso-OS, or asks about the operating setup, use Alfonso OS as the source of truth before acting.",

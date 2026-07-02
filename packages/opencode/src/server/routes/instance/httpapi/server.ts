@@ -1,6 +1,13 @@
 import { Config as EffectConfig, Context, Effect, Layer, Stream } from "effect"
 import { HttpApiBuilder, OpenApi } from "effect/unstable/httpapi"
-import { HttpClient, HttpMiddleware, HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import {
+  HttpClient,
+  HttpMiddleware,
+  HttpRouter,
+  HttpServer,
+  HttpServerRequest,
+  HttpServerResponse,
+} from "effect/unstable/http"
 import * as Socket from "effect/unstable/socket/Socket"
 import { execFile, spawn } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
@@ -68,6 +75,12 @@ import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionV2 } from "@opencode-ai/core/session"
 import * as SessionExecutionLocal from "@opencode-ai/core/session/execution/local"
+import {
+  deleteWorkspaceEnvEntry,
+  readWorkspaceEnvRegistryPublic,
+  upsertWorkspaceEnvEntry,
+  workspaceEnvPromptSummary,
+} from "@opencode-ai/core/workspace-env"
 import { lazy } from "@/util/lazy"
 import { CorsConfig, isAllowedCorsOrigin, type CorsOptions } from "@opencode-ai/server/cors"
 import { serveUIEffect } from "@/server/shared/ui"
@@ -123,7 +136,13 @@ import { readPreviewSurfaceState, runPreviewAction, writePreviewSurfaceState } f
 import { collectResourceStatus } from "@/tool/resource-status"
 import { createRoutineDraft, routineLogs, routinesAction, routinesStatus } from "@/tool/routines"
 import { publishAppleBridgeEvent } from "@/tool/ios-bridge-events"
-import { ackWorkspaceTabsAction, updateWorkspaceTabsClientState, workspaceTabsAction, workspaceTabsPendingActions, workspaceTabsStatus } from "@/tool/workspace-tabs"
+import {
+  ackWorkspaceTabsAction,
+  updateWorkspaceTabsClientState,
+  workspaceTabsAction,
+  workspaceTabsPendingActions,
+  workspaceTabsStatus,
+} from "@/tool/workspace-tabs"
 
 export const context = Context.makeUnsafe<unknown>(new Map())
 
@@ -232,7 +251,8 @@ function normalizePreviewAction(body: any) {
   return {
     action,
     url: typeof body.url === "string" ? body.url : undefined,
-    selector: typeof body.selector === "string" ? body.selector : typeof body.target === "string" ? body.target : undefined,
+    selector:
+      typeof body.selector === "string" ? body.selector : typeof body.target === "string" ? body.target : undefined,
     x: typeof body.x === "number" ? body.x : undefined,
     y: typeof body.y === "number" ? body.y : undefined,
     text: typeof body.text === "string" ? body.text : undefined,
@@ -293,7 +313,7 @@ const browserPreviewRoute = HttpRouter.use((router) =>
 
         const result = yield* Effect.tryPromise({
           try: () => runPreviewAction(sessionID, action, AbortSignal.timeout(30_000), "client"),
-          catch: (error) => error instanceof Error ? error.message : String(error),
+          catch: (error) => (error instanceof Error ? error.message : String(error)),
         }).pipe(
           Effect.match({
             onFailure: (error) => ({ ok: false, error }),
@@ -403,14 +423,14 @@ const browserPreviewRoute = HttpRouter.use((router) =>
         Effect.flatMap((access) =>
           access.ok
             ? Effect.succeed(
-            HttpServerResponse.setHeader(
-              HttpServerResponse.stream(liveBrowserStream(), {
-                contentType: `multipart/x-mixed-replace; boundary=${liveBrowserStreamBoundary}`,
-              }),
-              "cache-control",
-              "no-store",
-            ),
-          )
+                HttpServerResponse.setHeader(
+                  HttpServerResponse.stream(liveBrowserStream(), {
+                    contentType: `multipart/x-mixed-replace; boundary=${liveBrowserStreamBoundary}`,
+                  }),
+                  "cache-control",
+                  "no-store",
+                ),
+              )
             : Effect.succeed(liveBrowserExposureBlockedResponse("text", access)),
         ),
       ),
@@ -421,22 +441,22 @@ const browserPreviewRoute = HttpRouter.use((router) =>
         Effect.flatMap((access) =>
           access.ok
             ? Effect.promise(async () => {
-            await ensureLiveBrowser()
-            const image = await captureLiveBrowserImage()
-            return HttpServerResponse.setHeader(
-              HttpServerResponse.uint8Array(new Uint8Array(image), { contentType: "image/png" }),
-              "cache-control",
-              "no-store",
-            )
-          }).pipe(
-            Effect.catch((error: unknown) =>
-              Effect.succeed(
-                HttpServerResponse.text(error instanceof Error ? error.message : String(error), {
-                  status: 502,
-                }),
-              ),
-            ),
-          )
+                await ensureLiveBrowser()
+                const image = await captureLiveBrowserImage()
+                return HttpServerResponse.setHeader(
+                  HttpServerResponse.uint8Array(new Uint8Array(image), { contentType: "image/png" }),
+                  "cache-control",
+                  "no-store",
+                )
+              }).pipe(
+                Effect.catch((error: unknown) =>
+                  Effect.succeed(
+                    HttpServerResponse.text(error instanceof Error ? error.message : String(error), {
+                      status: 502,
+                    }),
+                  ),
+                ),
+              )
             : Effect.succeed(liveBrowserExposureBlockedResponse("text", access)),
         ),
       ),
@@ -676,7 +696,8 @@ const fileViewerRoute = HttpRouter.use((router) =>
 ).pipe(Layer.provide(authOnlyRouterLayer))
 
 const codexMultiAuthScript = () =>
-  process.env.OPENCODE_CODEX_MULTI_AUTH_SCRIPT || "/home/dev/repos/LLM-Experiments/scripts/opencode-codex-multi-auth-profile.mjs"
+  process.env.OPENCODE_CODEX_MULTI_AUTH_SCRIPT ||
+  "/home/dev/repos/LLM-Experiments/scripts/opencode-codex-multi-auth-profile.mjs"
 
 const CODEX_MULTI_AUTH_RUNTIME_READY = false
 const CODEX_MULTI_AUTH_SEND_BLOCK_REASON = "Server-side multi-auth runtime adapter is not verified."
@@ -692,12 +713,10 @@ type CodexMultiAuthCommandResult = {
 type CodexMultiAuthStatusResult = Record<string, unknown>
 
 let codexMultiAuthStatusInFlight: Promise<CodexMultiAuthStatusResult> | null = null
-let codexMultiAuthStatusCache:
-  | {
-      expiresAt: number
-      value: CodexMultiAuthStatusResult
-    }
-  | null = null
+let codexMultiAuthStatusCache: {
+  expiresAt: number
+  value: CodexMultiAuthStatusResult
+} | null = null
 
 function clearCodexMultiAuthStatusCache() {
   codexMultiAuthStatusCache = null
@@ -706,7 +725,12 @@ function clearCodexMultiAuthStatusCache() {
 async function runCodexMultiAuthCommand(command: string, timeout = 8000): Promise<CodexMultiAuthCommandResult> {
   const script = codexMultiAuthScript()
   if (!existsSync(script))
-    return { ok: false, configured: false, command: script + " " + command, error: "Codex multi-auth status script not found" }
+    return {
+      ok: false,
+      configured: false,
+      command: script + " " + command,
+      error: "Codex multi-auth status script not found",
+    }
   return new Promise<CodexMultiAuthCommandResult>((resolve) => {
     execFile(
       "node",
@@ -720,7 +744,12 @@ async function runCodexMultiAuthCommand(command: string, timeout = 8000): Promis
       (error, stdout, stderr) => {
         const output = [stdout?.toString(), stderr?.toString()].filter(Boolean).join("\n").trim()
         if (error) {
-          resolve({ ok: false, configured: true, command: script + " " + command, error: cleanStatusOutput(output || error.message) })
+          resolve({
+            ok: false,
+            configured: true,
+            command: script + " " + command,
+            error: cleanStatusOutput(output || error.message),
+          })
           return
         }
         resolve({ ok: true, configured: true, command: script + " " + command, output: cleanStatusOutput(output) })
@@ -778,7 +807,15 @@ function readJsonObject(file: string): Record<string, unknown> | null {
 function readCodexMultiAuthFastAccountStatus(): CodexMultiAuthStatusResult | null {
   const home = process.env.HOME || "/home/dev"
   const profileName = process.env.OPENCODE_MULTI_AUTH_PROFILE || "guard22-codex-multi-auth"
-  const guardStore = path.join(home, ".opencode-profiles", profileName, "home", ".config", "opencode-multi-auth", "accounts.json")
+  const guardStore = path.join(
+    home,
+    ".opencode-profiles",
+    profileName,
+    "home",
+    ".config",
+    "opencode-multi-auth",
+    "accounts.json",
+  )
   const legacyStore = path.join(
     home,
     ".opencode-profiles",
@@ -793,7 +830,9 @@ function readCodexMultiAuthFastAccountStatus(): CodexMultiAuthStatusResult | nul
   if (guardAccounts && typeof guardAccounts === "object" && !Array.isArray(guardAccounts)) {
     const aliases = Object.keys(guardAccounts)
     const activeAlias =
-      typeof guard.activeAlias === "string" && guard.activeAlias.trim() ? guard.activeAlias.trim() : aliases[0] ?? null
+      typeof guard.activeAlias === "string" && guard.activeAlias.trim()
+        ? guard.activeAlias.trim()
+        : (aliases[0] ?? null)
     const rotationStrategy =
       typeof guard.rotationStrategy === "string"
         ? guard.rotationStrategy
@@ -923,14 +962,15 @@ function normalizeCodexMultiAuthLoginAttempt(attempt: Record<string, unknown> | 
       background: false,
       authorizationURL: undefined,
       phase: "failed_before_device_code",
-      error: parseCodexAuthFailure([attempt.output, attempt.error, attempt.authorizationURL].filter(Boolean).join("\n")),
+      error: parseCodexAuthFailure(
+        [attempt.output, attempt.error, attempt.authorizationURL].filter(Boolean).join("\n"),
+      ),
       note: "Start a fresh Authenticate Codex account flow after the rate limit or challenge clears.",
     })
     writeCodexMultiAuthLoginAttempt(next)
     return next
   }
-  const waiting =
-    attempt?.phase === "waiting_for_device_approval" || attempt?.phase === "waiting_for_browser_approval"
+  const waiting = attempt?.phase === "waiting_for_device_approval" || attempt?.phase === "waiting_for_browser_approval"
   if (!waiting || processIsRunning(attempt.pid)) return attempt
   const next = sanitizeCodexMultiAuthLoginAttempt({
     ...attempt,
@@ -1047,7 +1087,7 @@ async function buildCodexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> 
         : loginAttemptPhase === "failed_after_device_code"
           ? failedAuthStartWarning
           : "No Codex multi-auth plugin accounts are configured yet. Normal OpenAI OAuth may exist, but Codex Multi-Auth model selections are blocked until an isolated account and runtime adapter are available.",
-    statusPhase: accountsConfigured ? "account_written" : loginAttemptPhase ?? "needs_plugin_account",
+    statusPhase: accountsConfigured ? "account_written" : (loginAttemptPhase ?? "needs_plugin_account"),
     usageSummary: parseCodexUsageSummary(limits.output),
     listOutput: list.ok ? list.output : status.output,
     limitsOutput: limits.output ?? limits.error,
@@ -1198,15 +1238,12 @@ function parseCodexAuthFailure(value: string | undefined) {
 async function codexMultiAuthLoginStart() {
   clearCodexMultiAuthStatusCache()
   const script = codexMultiAuthScript()
-  const command = "cd /home/dev/repos/LLM-Experiments && node scripts/opencode-codex-multi-auth-profile.mjs login-headless"
+  const command =
+    "cd /home/dev/repos/LLM-Experiments && node scripts/opencode-codex-multi-auth-profile.mjs login-headless"
   const existing = normalizeCodexMultiAuthLoginAttempt(readCodexMultiAuthLoginAttempt())
   const existingWaiting =
     existing?.phase === "waiting_for_device_approval" || existing?.phase === "waiting_for_browser_approval"
-  if (
-    existingWaiting &&
-    existing.authorizationURL &&
-    processIsRunning(existing.pid)
-  ) {
+  if (existingWaiting && existing.authorizationURL && processIsRunning(existing.pid)) {
     return {
       ...existing,
       ok: true,
@@ -1388,10 +1425,9 @@ async function codexMultiAuthLoginStart() {
       const cleaned = cleanStatusOutput(output)
       const authFailure = parseCodexAuthFailure(cleaned)
       const redacted = redactCodexAuthOutput(cleaned)
-      const phase =
-        authFailure
-          ? "failed_before_device_code"
-          : code === 0
+      const phase = authFailure
+        ? "failed_before_device_code"
+        : code === 0
           ? "account_written_or_already_authorized"
           : parsed.url || parsed.code
             ? "failed_after_device_code"
@@ -1480,7 +1516,8 @@ function summarizeLiveBrowserEvent(input: LiveBrowserInput, result: any) {
   return {
     action: input.action,
     ok: result?.ok !== false,
-    currentURL: typeof result?.currentURL === "string" ? result.currentURL : typeof result?.url === "string" ? result.url : null,
+    currentURL:
+      typeof result?.currentURL === "string" ? result.currentURL : typeof result?.url === "string" ? result.url : null,
     title: typeof result?.title === "string" ? result.title : null,
     selector: "selector" in input && typeof input.selector === "string" ? input.selector : null,
     hasText: "text" in input && typeof input.text === "string" && input.text.length > 0,
@@ -1532,21 +1569,25 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
     )
 
     yield* router.add("GET", "/experimental/workspace-suite/status", () =>
-      Effect.promise(async () =>
-        {
-          const [openDesign, macView, routines, codexAccounts, workspaceIndex] = await Promise.all([
-            statusWithTimeout<any>(
-              "Open Design status",
-              1000,
-              { configured: false, proxyReady: true, proxyURL: "/experimental/open-design/proxy/", publicURL: "https://design.hustletogether.com" },
-              openDesignStatus,
-            ),
-            statusWithTimeout<any>("Mac View status", 1500, { configured: false, mode: "read-only" }, macViewStatus),
-            statusWithTimeout<any>("Routines status", 1000, { ok: false, routines: [] }, routinesStatus),
-            codexMultiAuthWorkspaceStatus(),
-            buildWorkspaceIndexSummary(projects, sessions),
-          ])
-          return HttpServerResponse.jsonUnsafe({
+      Effect.promise(async () => {
+        const [openDesign, macView, routines, codexAccounts, workspaceIndex] = await Promise.all([
+          statusWithTimeout<any>(
+            "Open Design status",
+            1000,
+            {
+              configured: false,
+              proxyReady: true,
+              proxyURL: "/experimental/open-design/proxy/",
+              publicURL: "https://design.hustletogether.com",
+            },
+            openDesignStatus,
+          ),
+          statusWithTimeout<any>("Mac View status", 1500, { configured: false, mode: "read-only" }, macViewStatus),
+          statusWithTimeout<any>("Routines status", 1000, { ok: false, routines: [] }, routinesStatus),
+          codexMultiAuthWorkspaceStatus(),
+          buildWorkspaceIndexSummary(projects, sessions),
+        ])
+        return HttpServerResponse.jsonUnsafe({
           ok: true,
           generatedAt: new Date().toISOString(),
           hostname: process.env.OPENCODE_HOSTNAME ?? null,
@@ -1576,12 +1617,23 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
           agentChrome: liveBrowserGateStatus(),
           workspaceIndex,
         })
-        },
-      ),
+      }),
     )
 
     yield* router.add("GET", "/experimental/workspace-suite/environments", () =>
       Effect.promise(async () => HttpServerResponse.jsonUnsafe(await liveOnlyEnvironmentStatus())),
+    )
+
+    yield* router.add("GET", "/experimental/workspace-env", () =>
+      Effect.promise(async () => HttpServerResponse.jsonUnsafe(workspaceEnvStatus())),
+    )
+
+    yield* router.add("POST", "/experimental/workspace-env", (request) =>
+      Effect.gen(function* () {
+        const raw = yield* Effect.orDie(request.text)
+        const body = raw ? JSON.parse(raw) : {}
+        return yield* Effect.promise(async () => HttpServerResponse.jsonUnsafe(workspaceEnvAction(body as any)))
+      }),
     )
 
     yield* router.add("GET", "/experimental/workspace-tabs/status", () =>
@@ -1600,14 +1652,18 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
       Effect.gen(function* () {
         const raw = yield* Effect.orDie(request.text)
         const body = raw ? JSON.parse(raw) : {}
-        return yield* Effect.promise(async () => HttpServerResponse.jsonUnsafe(updateWorkspaceTabsClientState(body as any)))
+        return yield* Effect.promise(async () =>
+          HttpServerResponse.jsonUnsafe(updateWorkspaceTabsClientState(body as any)),
+        )
       }),
     )
 
     yield* router.add("GET", "/experimental/workspace-tabs/pending", (request) =>
       Effect.promise(async () => {
         const url = new URL(request.url, "http://localhost")
-        return HttpServerResponse.jsonUnsafe(workspaceTabsPendingActions(url.searchParams.get("sessionID") || undefined))
+        return HttpServerResponse.jsonUnsafe(
+          workspaceTabsPendingActions(url.searchParams.get("sessionID") || undefined),
+        )
       }),
     )
 
@@ -1639,16 +1695,32 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
     yield* router.add("POST", "/experimental/routines/jobs", (request) =>
       Effect.gen(function* () {
         const raw = yield* Effect.orDie(request.text)
-        let body: { name?: string; description?: string; schedule?: string; command?: string; tags?: string[]; notify?: string[] }
+        let body: {
+          name?: string
+          description?: string
+          schedule?: string
+          command?: string
+          tags?: string[]
+          notify?: string[]
+        }
         try {
-          body = JSON.parse(raw || "{}") as { name?: string; description?: string; schedule?: string; command?: string; tags?: string[]; notify?: string[] }
+          body = JSON.parse(raw || "{}") as {
+            name?: string
+            description?: string
+            schedule?: string
+            command?: string
+            tags?: string[]
+            notify?: string[]
+          }
         } catch {
           return HttpServerResponse.text("Invalid JSON body", { status: 400 })
         }
         const result = yield* Effect.promise(() => createRoutineDraft(body))
         publishAppleBridgeEvent("routines", "routine.created", summarizeRoutineEvent("create", result))
         const error = result.ok ? undefined : (result as { error?: string }).error
-        return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : error?.includes("not enabled") ? 403 : 400 })
+        return HttpServerResponse.jsonUnsafe(result, {
+          status: result.ok ? 200 : error?.includes("not enabled") ? 403 : 400,
+        })
       }),
     )
 
@@ -1674,7 +1746,9 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
         const result = yield* Effect.promise(() => routinesAction({ action: "update", id, ...body }))
         publishAppleBridgeEvent("routines", "routine.updated", summarizeRoutineEvent("update", result, id))
         const error = result.ok ? undefined : (result as { error?: string }).error
-        return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : error?.includes("not enabled") ? 403 : 400 })
+        return HttpServerResponse.jsonUnsafe(result, {
+          status: result.ok ? 200 : error?.includes("not enabled") ? 403 : 400,
+        })
       }),
     )
 
@@ -1693,7 +1767,9 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
         const result = await routinesAction({ action: "delete", id })
         publishAppleBridgeEvent("routines", "routine.deleted", summarizeRoutineEvent("delete", result, id))
         const error = result.ok ? undefined : (result as { error?: string }).error
-        return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : error?.includes("not enabled") ? 403 : 400 })
+        return HttpServerResponse.jsonUnsafe(result, {
+          status: result.ok ? 200 : error?.includes("not enabled") ? 403 : 400,
+        })
       }),
     )
 
@@ -1714,7 +1790,8 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
 
     const openDesignProxyHandler = (request: HttpServerRequest.HttpServerRequest) =>
       Effect.gen(function* () {
-        const raw = request.method === "GET" || request.method === "HEAD" ? undefined : yield* Effect.orDie(request.text)
+        const raw =
+          request.method === "GET" || request.method === "HEAD" ? undefined : yield* Effect.orDie(request.text)
         return yield* Effect.promise(async () =>
           openDesignProxyResponse(request.url, request.method, request.headers, raw),
         )
@@ -1752,7 +1829,11 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
           const result = {
             ok: true,
             settings,
-            restartRequired: body.transport === "webrtc" || body.bitrate !== undefined || body.width !== undefined || body.fps !== undefined,
+            restartRequired:
+              body.transport === "webrtc" ||
+              body.bitrate !== undefined ||
+              body.width !== undefined ||
+              body.fps !== undefined,
             note: "Settings are persisted for the OpenCode Mac View tab. The WebRTC publisher reads these values on the next stream restart; the UI reconnects immediately.",
           }
           publishAppleBridgeEvent("mac_view", "mac_view.settings.updated", {
@@ -1794,8 +1875,11 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
 
     const macViewWebRTCHandler = (request: HttpServerRequest.HttpServerRequest) =>
       Effect.gen(function* () {
-        const raw = request.method === "GET" || request.method === "HEAD" ? undefined : yield* Effect.orDie(request.text)
-        return yield* Effect.promise(async () => macViewWebRTCResponse(request.url, request.method, request.headers, raw))
+        const raw =
+          request.method === "GET" || request.method === "HEAD" ? undefined : yield* Effect.orDie(request.text)
+        return yield* Effect.promise(async () =>
+          macViewWebRTCResponse(request.url, request.method, request.headers, raw),
+        )
       })
 
     yield* router.add("GET", "/experimental/mac-view/webrtc/*", macViewWebRTCHandler)
@@ -1898,7 +1982,12 @@ function contentTypeForFile(name: string) {
   if (lower.endsWith(".pdf")) return "application/pdf"
   if (lower.endsWith(".html") || lower.endsWith(".htm")) return "text/html"
   if (lower.endsWith(".json")) return "application/json"
-  if (/\.(ts|tsx|js|jsx|mjs|cjs|css|scss|sass|py|rb|go|rs|java|c|cc|cpp|h|hpp|cs|php|swift|kt|kts|sh|bash|zsh|fish|sql|yaml|yml|toml|xml|vue|svelte)$/i.test(lower)) return "text/plain"
+  if (
+    /\.(ts|tsx|js|jsx|mjs|cjs|css|scss|sass|py|rb|go|rs|java|c|cc|cpp|h|hpp|cs|php|swift|kt|kts|sh|bash|zsh|fish|sql|yaml|yml|toml|xml|vue|svelte)$/i.test(
+      lower,
+    )
+  )
+    return "text/plain"
   if (lower.endsWith(".md") || lower.endsWith(".txt") || lower.endsWith(".log")) return "text/plain"
   return "application/octet-stream"
 }
@@ -1983,7 +2072,8 @@ const liveBrowserHome = () =>
 const liveBrowserProfile = () => path.join(liveBrowserHome(), "profile")
 const liveBrowserArtifacts = () => path.join(liveBrowserHome(), "artifacts")
 const liveBrowserDebugPort = () => Number(process.env.OPENCODE_LIVE_BROWSER_DEBUG_PORT || 9224)
-const liveBrowserNoVNCURL = () => (process.env.OPENCODE_LIVE_BROWSER_NOVNC_URL || "http://127.0.0.1:6080").replace(/\/+$/, "")
+const liveBrowserNoVNCURL = () =>
+  (process.env.OPENCODE_LIVE_BROWSER_NOVNC_URL || "http://127.0.0.1:6080").replace(/\/+$/, "")
 const liveBrowserExposureEnabled = () => process.env.OPENCODE_LIVE_BROWSER_EXPOSE !== "0"
 const liveBrowserStrictAccessRequired = () => process.env.OPENCODE_LIVE_BROWSER_REQUIRE_ACCESS === "1"
 const liveBrowserViewport = () => {
@@ -2150,7 +2240,8 @@ function liveBrowserProfilePolicy() {
         id: "browser",
         label: "Browser",
         tab: "Browser",
-        purpose: "Unified interactive Chromium surface for hosted routes, local project URLs, public websites, Open Design, and model browser tools.",
+        purpose:
+          "Unified interactive Chromium surface for hosted routes, local project URLs, public websites, Open Design, and model browser tools.",
         usesChromeProfile: true,
         toolControlled: true,
         aliases: ["Preview", "Agent Chrome", "Project Preview"],
@@ -2200,7 +2291,9 @@ function liveBrowserAccessToken(request: { headers: Record<string, string | unde
     ?.slice("CF_Authorization=".length)
 }
 
-async function liveBrowserExposureAccess(request: { headers: Record<string, string | undefined> }): Promise<LiveBrowserAccess> {
+async function liveBrowserExposureAccess(request: {
+  headers: Record<string, string | undefined>
+}): Promise<LiveBrowserAccess> {
   if (!liveBrowserExposureEnabled()) {
     return liveBrowserAccessBlocked(
       "disabled",
@@ -2264,7 +2357,10 @@ async function liveBrowserExposureAccess(request: { headers: Record<string, stri
           ? request.headers["cf-access-authenticated-user-email"].toLowerCase()
           : null
     if (config.allowedEmails.length > 0 && (!email || !config.allowedEmails.includes(email))) {
-      return liveBrowserAccessBlocked("invalid-cloudflare-token", "Cloudflare Access user is not allowlisted for Browser.")
+      return liveBrowserAccessBlocked(
+        "invalid-cloudflare-token",
+        "Cloudflare Access user is not allowlisted for Browser.",
+      )
     }
     return {
       ok: true,
@@ -2321,7 +2417,12 @@ function liveBrowserNoVNCLiteResponse(requestURL: string) {
   const pathValue = pathParam.startsWith("/") ? pathParam.slice(1) : pathParam
   const websocketPath = `/experimental/browser/novnc/${pathValue}`
   const qualityLevel = boundedInteger(params.get("quality") ?? process.env.OPENCODE_BROWSER_NOVNC_QUALITY, 4, 0, 9)
-  const compressionLevel = boundedInteger(params.get("compression") ?? process.env.OPENCODE_BROWSER_NOVNC_COMPRESSION, 0, 0, 9)
+  const compressionLevel = boundedInteger(
+    params.get("compression") ?? process.env.OPENCODE_BROWSER_NOVNC_COMPRESSION,
+    0,
+    0,
+    9,
+  )
   const scaleViewport = params.get("scaleViewport") !== "false"
   const resizeSession = params.get("resizeSession") === "true"
   const clipViewport = params.get("clipViewport") === "true"
@@ -2446,7 +2547,14 @@ async function liveBrowserStatus(access?: Extract<LiveBrowserAccess, { ok: true 
     fast: { qualityLevel: 4, compressionLevel: 0, scaleViewport: true, resizeSession: false },
     balanced: { qualityLevel: 6, compressionLevel: 1, scaleViewport: true, resizeSession: false },
     sharp: { qualityLevel: 8, compressionLevel: 2, scaleViewport: true, resizeSession: false },
-    mobile: { qualityLevel: 4, compressionLevel: 0, scaleViewport: false, resizeSession: false, clipViewport: true, dragViewport: true },
+    mobile: {
+      qualityLevel: 4,
+      compressionLevel: 0,
+      scaleViewport: false,
+      resizeSession: false,
+      clipViewport: true,
+      dragViewport: true,
+    },
   } as const
   const defaultNoVNC = noVNCModes[noVNCMode as keyof typeof noVNCModes] ?? noVNCModes.fast
   const defaultNoVNCParams = new URLSearchParams({
@@ -3093,7 +3201,9 @@ async function liveOnlyEnvironmentStatus() {
   const hostname = process.env.OPENCODE_HOSTNAME || "code.hustletogether.com"
   const releaseRoot = "/opt/opencode-workspace-suite/releases"
   const currentSymlink = "/opt/opencode-workspace-suite/current"
-  const currentRelease = await execText("readlink", ["-f", currentSymlink]).then((value) => value.trim()).catch(() => null)
+  const currentRelease = await execText("readlink", ["-f", currentSymlink])
+    .then((value) => value.trim())
+    .catch(() => null)
   const releases = latestWorkspaceSuiteReleases(releaseRoot)
   const [opencodeRepo, experimentsRepo] = await Promise.all([
     gitRepositoryStatus({
@@ -3109,6 +3219,7 @@ async function liveOnlyEnvironmentStatus() {
   ])
 
   const appPasswordConfigured = Boolean(process.env.OPENCODE_SERVER_PASSWORD)
+  const workspaceEnv = readWorkspaceEnvRegistryPublic()
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
@@ -3142,6 +3253,15 @@ async function liveOnlyEnvironmentStatus() {
       cloudflareAccess: liveBrowserAccessConfigSummary(),
       secretValuesExposed: false,
     },
+    workspaceEnv: {
+      route: "/experimental/workspace-env",
+      path: workspaceEnv.path,
+      count: workspaceEnv.entries.length,
+      enabledCount: workspaceEnv.entries.filter((entry) => entry.enabled).length,
+      secretCount: workspaceEnv.entries.filter((entry) => entry.secret).length,
+      promptSummaryConfigured: workspaceEnv.entries.some((entry) => entry.enabled),
+      secretValuesExposed: false,
+    },
     git: {
       opencode: opencodeRepo,
       experiments: experimentsRepo,
@@ -3163,6 +3283,53 @@ async function liveOnlyEnvironmentStatus() {
         detail: "Rollback candidates are previous release directories under /opt/opencode-workspace-suite/releases.",
       },
     ],
+  }
+}
+
+function workspaceEnvStatus() {
+  const registry = readWorkspaceEnvRegistryPublic()
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    registry,
+    effective: {
+      reposRoot: process.env.OPENCODE_WORKSPACE_ENV_REPOS_ROOT || "/home/dev/repos",
+      promptSummaryPreview:
+        workspaceEnvPromptSummary({ directory: "/home/dev/repos", cwd: "/home/dev/repos", surface: "bash" }) ?? null,
+      inheritedBy: ["terminal", "bash"],
+      plannedScopes: ["routines", "browser", "preview", "open_design"],
+    },
+  }
+}
+
+function workspaceEnvAction(body: any) {
+  try {
+    const action = typeof body?.action === "string" ? body.action : "upsert"
+    if (action === "delete") {
+      const id = typeof body?.id === "string" ? body.id : ""
+      if (!id) throw new Error("Missing env entry id")
+      return { ok: true, action, ...deleteWorkspaceEnvEntry(id), registry: readWorkspaceEnvRegistryPublic() }
+    }
+    if (action === "upsert") {
+      const entry = upsertWorkspaceEnvEntry({
+        id: typeof body?.id === "string" ? body.id : undefined,
+        name: String(body?.name ?? ""),
+        value: typeof body?.value === "string" ? body.value : undefined,
+        scope: typeof body?.scope === "string" ? body.scope : undefined,
+        target: typeof body?.target === "string" ? body.target : undefined,
+        enabled: typeof body?.enabled === "boolean" ? body.enabled : undefined,
+        secret: typeof body?.secret === "boolean" ? body.secret : undefined,
+        description: typeof body?.description === "string" ? body.description : undefined,
+      })
+      return { ok: true, action, entry, registry: readWorkspaceEnvRegistryPublic() }
+    }
+    throw new Error(`Unsupported workspace env action: ${action}`)
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      registry: readWorkspaceEnvRegistryPublic(),
+    }
   }
 }
 
@@ -3320,7 +3487,8 @@ async function openDesignStatus() {
       : "Direct design.hustletogether.com embedding is blocked by Cloudflare Access frame headers; open externally instead.",
     proxyReady,
     routeReady: true,
-    routeNote: "design.hustletogether.com routes to the Open Design daemon behind Cloudflare Access; the OpenCode tab uses the hosted route for the interactive app.",
+    routeNote:
+      "design.hustletogether.com routes to the Open Design daemon behind Cloudflare Access; the OpenCode tab uses the hosted route for the interactive app.",
     health,
     projects,
   }
@@ -3427,12 +3595,22 @@ async function openDesignProxyResponse(
 
   if (responseContentType.includes("text/html")) {
     const html = await response.text()
-    return withProxyHeaders(HttpServerResponse.text(rewriteOpenDesignText(html), { status: response.status, contentType: responseContentType }))
+    return withProxyHeaders(
+      HttpServerResponse.text(rewriteOpenDesignText(html), {
+        status: response.status,
+        contentType: responseContentType,
+      }),
+    )
   }
 
   if (responseContentType.includes("text/css")) {
     const css = await response.text()
-    return withProxyHeaders(HttpServerResponse.text(rewriteOpenDesignText(css), { status: response.status, contentType: responseContentType }))
+    return withProxyHeaders(
+      HttpServerResponse.text(rewriteOpenDesignText(css), {
+        status: response.status,
+        contentType: responseContentType,
+      }),
+    )
   }
 
   if (
@@ -3441,11 +3619,18 @@ async function openDesignProxyResponse(
     responseContentType.includes("text/plain")
   ) {
     const body = await response.text()
-    return withProxyHeaders(HttpServerResponse.text(rewriteOpenDesignText(body), { status: response.status, contentType: responseContentType }))
+    return withProxyHeaders(
+      HttpServerResponse.text(rewriteOpenDesignText(body), {
+        status: response.status,
+        contentType: responseContentType,
+      }),
+    )
   }
 
   const bytes = new Uint8Array(await response.arrayBuffer())
-  return withProxyHeaders(HttpServerResponse.uint8Array(bytes, { status: response.status, contentType: responseContentType }))
+  return withProxyHeaders(
+    HttpServerResponse.uint8Array(bytes, { status: response.status, contentType: responseContentType }),
+  )
 }
 
 function macViewFeedURL() {
@@ -3535,7 +3720,10 @@ async function macViewStreamResponse(requestURL: string) {
   const width = clampNumber(url.searchParams.get("width") || settings.width, 640, 2048, settings.width)
   const quality = clampNumber(url.searchParams.get("quality") || settings.quality, 4, 18, settings.quality)
   const controller = new AbortController()
-  const response = await fetch(`${feedURL}/stream?fps=${fps}&width=${Math.round(width)}&quality=${Math.round(quality)}`, { signal: controller.signal })
+  const response = await fetch(
+    `${feedURL}/stream?fps=${fps}&width=${Math.round(width)}&quality=${Math.round(quality)}`,
+    { signal: controller.signal },
+  )
   if (!response.ok || !response.body) {
     controller.abort()
     return HttpServerResponse.text(`Mac View stream unavailable: ${response.status}`, { status: 502 })
@@ -3574,7 +3762,10 @@ async function macViewVideoResponse(requestURL: string) {
   const width = clampNumber(url.searchParams.get("width") || settings.width, 640, 2048, settings.width)
   const bitrate = clampNumber(url.searchParams.get("bitrate") || settings.bitrate, 1000, 20000, settings.bitrate)
   const controller = new AbortController()
-  const response = await fetch(`${feedURL}/video?fps=${fps}&width=${Math.round(width)}&bitrate=${Math.round(bitrate)}`, { signal: controller.signal })
+  const response = await fetch(
+    `${feedURL}/video?fps=${fps}&width=${Math.round(width)}&bitrate=${Math.round(bitrate)}`,
+    { signal: controller.signal },
+  )
   if (!response.ok || !response.body) {
     controller.abort()
     return HttpServerResponse.text(`Mac View video unavailable: ${response.status}`, { status: 502 })
@@ -3620,7 +3811,12 @@ async function macViewSCKStatusResponse() {
   )
 }
 
-async function macViewWebRTCResponse(requestURL: string, method: string, headers: Record<string, string>, rawBody?: string) {
+async function macViewWebRTCResponse(
+  requestURL: string,
+  method: string,
+  headers: Record<string, string>,
+  rawBody?: string,
+) {
   const feedURL = macViewFeedURL()
   if (!feedURL) return HttpServerResponse.text("Mac View is not configured", { status: 404 })
   const url = new URL(requestURL, "http://localhost")
@@ -3657,7 +3853,6 @@ async function macViewWebRTCResponse(requestURL: string, method: string, headers
   }
   return output
 }
-
 
 async function macViewStatus() {
   const feedURL = macViewFeedURL()
