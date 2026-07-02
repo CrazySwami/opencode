@@ -1330,11 +1330,16 @@ async function codexMultiAuthRunProof(input: Record<string, unknown>) {
   if (modelID) args.push("--model", modelID)
   args.push(prompt)
 
-  const env = { ...process.env }
-  delete env.OPENAI_API_KEY
-  delete env.OPENAI_API_BASE
-  delete env.OPENAI_BASE_URL
-  delete env.OPENAI_ORG_ID
+  const env: NodeJS.ProcessEnv = {
+    HOME: process.env.HOME || "/home/dev",
+    USER: process.env.USER || "dev",
+    LOGNAME: process.env.LOGNAME || "dev",
+    SHELL: process.env.SHELL || "/bin/bash",
+    PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
+    XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME || "/home/dev/.config",
+    XDG_DATA_HOME: process.env.XDG_DATA_HOME || "/home/dev/.local/share",
+    XDG_CACHE_HOME: process.env.XDG_CACHE_HOME || "/home/dev/.cache",
+  }
   env.NPM_CONFIG_LOGLEVEL = "error"
   env.npm_config_loglevel = "error"
   env.NO_COLOR = "1"
@@ -1351,7 +1356,7 @@ async function codexMultiAuthRunProof(input: Record<string, unknown>) {
       args,
       {
         cwd: path.dirname(path.dirname(script)),
-        timeout: 120_000,
+        timeout: 180_000,
         maxBuffer: 1_000_000,
         env,
       },
