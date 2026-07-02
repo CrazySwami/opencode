@@ -172,7 +172,7 @@ export function DialogCodexMultiAuthProvider() {
         />
       }
     >
-      <div class="flex flex-col gap-6 px-2.5 pb-3">
+      <div class="flex max-h-[calc(100vh-8rem)] flex-col gap-6 overflow-y-auto no-scrollbar px-2.5 pb-3">
         <div class="px-2.5 flex gap-4 items-center">
           <ProviderIcon id="codex-multi-auth" class="size-5 shrink-0 icon-strong-base" />
           <div>
