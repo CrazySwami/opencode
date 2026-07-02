@@ -699,8 +699,9 @@ const codexMultiAuthScript = () =>
   process.env.OPENCODE_CODEX_MULTI_AUTH_SCRIPT ||
   "/home/dev/repos/LLM-Experiments/scripts/opencode-codex-multi-auth-profile.mjs"
 
-const CODEX_MULTI_AUTH_RUNTIME_READY = false
 const CODEX_MULTI_AUTH_SEND_BLOCK_REASON = "Server-side multi-auth runtime adapter is not verified."
+const CODEX_MULTI_AUTH_PROMPT_ADAPTER_BLOCK_REASON =
+  "Runtime proof may be available, but normal session prompt routing is still blocked until the multi-auth prompt adapter is wired."
 
 type CodexMultiAuthCommandResult = {
   ok: boolean
@@ -711,6 +712,24 @@ type CodexMultiAuthCommandResult = {
 }
 
 type CodexMultiAuthStatusResult = Record<string, unknown>
+
+type CodexMultiAuthRuntimeProof = {
+  ok: boolean
+  providerID: "codex-multi-auth"
+  fallbackUsed: false
+  accountAlias: string | null
+  modelID: string | null
+  cwd: string
+  promptPreview: string
+  outputPreview?: string
+  text?: string
+  error?: string
+  exitCode?: number | null
+  durationMs: number
+  verifiedAt: string
+  sessionID?: string | null
+  profileSource: "isolated-profile-plugin"
+}
 
 let codexMultiAuthStatusInFlight: Promise<CodexMultiAuthStatusResult> | null = null
 let codexMultiAuthStatusCache: {
@@ -794,6 +813,11 @@ function codexMultiAuthLoginAttemptPath() {
   return path.join(home, ".local", "share", "opencode-codex-multi-auth", "login-status.json")
 }
 
+function codexMultiAuthRuntimeProofPath() {
+  const home = process.env.HOME || "/home/dev"
+  return path.join(home, ".local", "share", "opencode-codex-multi-auth", "runtime-proof.json")
+}
+
 function readJsonObject(file: string): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(readFileSync(file, "utf8"))
@@ -802,6 +826,49 @@ function readJsonObject(file: string): Record<string, unknown> | null {
   } catch {
     return null
   }
+}
+
+function sanitizeCodexMultiAuthRuntimeProof(value: Record<string, unknown> | null): CodexMultiAuthRuntimeProof | null {
+  if (!value) return null
+  const ok = value.ok === true
+  const cwd = typeof value.cwd === "string" ? value.cwd : "/home/dev/repos/opencode"
+  const verifiedAt = typeof value.verifiedAt === "string" ? value.verifiedAt : null
+  if (!verifiedAt) return null
+  return {
+    ok,
+    providerID: "codex-multi-auth",
+    fallbackUsed: false,
+    accountAlias: typeof value.accountAlias === "string" ? value.accountAlias : null,
+    modelID: typeof value.modelID === "string" ? value.modelID : null,
+    cwd,
+    promptPreview: typeof value.promptPreview === "string" ? value.promptPreview.slice(0, 200) : "",
+    outputPreview: typeof value.outputPreview === "string" ? value.outputPreview.slice(0, 500) : undefined,
+    text: typeof value.text === "string" ? value.text.slice(0, 1000) : undefined,
+    error: typeof value.error === "string" ? cleanStatusOutput(value.error).slice(0, 1000) : undefined,
+    exitCode: typeof value.exitCode === "number" ? value.exitCode : null,
+    durationMs: typeof value.durationMs === "number" ? value.durationMs : 0,
+    verifiedAt,
+    sessionID: typeof value.sessionID === "string" ? value.sessionID : null,
+    profileSource: "isolated-profile-plugin",
+  }
+}
+
+function readCodexMultiAuthRuntimeProof() {
+  return sanitizeCodexMultiAuthRuntimeProof(readJsonObject(codexMultiAuthRuntimeProofPath()))
+}
+
+function writeCodexMultiAuthRuntimeProof(value: CodexMultiAuthRuntimeProof) {
+  const file = codexMultiAuthRuntimeProofPath()
+  mkdirSync(path.dirname(file), { recursive: true })
+  writeFileSync(file, JSON.stringify(sanitizeCodexMultiAuthRuntimeProof(value) ?? value, null, 2))
+}
+
+function codexMultiAuthRuntimeReady() {
+  return readCodexMultiAuthRuntimeProof()?.ok === true
+}
+
+function codexMultiAuthSendBlockReason() {
+  return codexMultiAuthRuntimeReady() ? CODEX_MULTI_AUTH_PROMPT_ADAPTER_BLOCK_REASON : CODEX_MULTI_AUTH_SEND_BLOCK_REASON
 }
 
 function readCodexMultiAuthFastAccountStatus(): CodexMultiAuthStatusResult | null {
@@ -844,14 +911,15 @@ function readCodexMultiAuthFastAccountStatus(): CodexMultiAuthStatusResult | nul
       configured: true,
       providerID: "codex-multi-auth",
       baseProviderID: "openai",
-      runtimeReady: CODEX_MULTI_AUTH_RUNTIME_READY,
+      runtimeReady: codexMultiAuthRuntimeReady(),
       sendBlocked: true,
-      sendBlockReason: CODEX_MULTI_AUTH_SEND_BLOCK_REASON,
+      sendBlockReason: codexMultiAuthSendBlockReason(),
+      runtimeProof: readCodexMultiAuthRuntimeProof(),
       accountCount: aliases.length,
       accountsConfigured: aliases.length > 0,
       activeAccount: activeAlias,
       rotationStrategy,
-      sendRouting: aliases.length > 0 ? "multi-auth-profile-pending-runner-verification" : "openai-fallback",
+      sendRouting: aliases.length > 0 ? "multi-auth-profile-pending-runner-verification" : "blocked-no-isolated-account",
       statusPhase: aliases.length > 0 ? "account_written" : "needs_plugin_account",
       usageSummary: null,
       warning:
@@ -872,14 +940,15 @@ function readCodexMultiAuthFastAccountStatus(): CodexMultiAuthStatusResult | nul
       configured: true,
       providerID: "codex-multi-auth",
       baseProviderID: "openai",
-      runtimeReady: CODEX_MULTI_AUTH_RUNTIME_READY,
+      runtimeReady: codexMultiAuthRuntimeReady(),
       sendBlocked: true,
-      sendBlockReason: CODEX_MULTI_AUTH_SEND_BLOCK_REASON,
+      sendBlockReason: codexMultiAuthSendBlockReason(),
+      runtimeProof: readCodexMultiAuthRuntimeProof(),
       accountCount,
       accountsConfigured: accountCount > 0,
       activeAccount: accountCount > 0 ? `account-${activeIndex + 1}` : null,
       rotationStrategy: "round-robin",
-      sendRouting: accountCount > 0 ? "multi-auth-profile-pending-runner-verification" : "openai-fallback",
+      sendRouting: accountCount > 0 ? "multi-auth-profile-pending-runner-verification" : "blocked-no-isolated-account",
       statusPhase: accountCount > 0 ? "account_written" : "needs_plugin_account",
       usageSummary: null,
       warning:
@@ -1008,12 +1077,13 @@ async function buildCodexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> 
       ...base,
       ok: true,
       configured: true,
-      runtimeReady: CODEX_MULTI_AUTH_RUNTIME_READY,
+      runtimeReady: codexMultiAuthRuntimeReady(),
       sendBlocked: true,
-      sendBlockReason: CODEX_MULTI_AUTH_SEND_BLOCK_REASON,
+      sendBlockReason: codexMultiAuthSendBlockReason(),
+      runtimeProof: readCodexMultiAuthRuntimeProof(),
       statusPhase: "account_written",
       warning:
-        "Codex multi-auth accounts are configured from the isolated local profile. Prompt execution is blocked until the server-side multi-auth runtime adapter is verified.",
+        "Codex multi-auth accounts are configured from the isolated local profile. Normal prompt execution stays blocked until the session prompt adapter is wired.",
       listOutput: `Accounts: ${fast.accountCount}`,
       limitsOutput: "Usage and weekly limits are not reported by this multi-auth wrapper yet.",
       healthOutput: "Codex multi-auth account store is reachable.",
@@ -1027,10 +1097,11 @@ async function buildCodexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> 
       ...base,
       accountCount: 0,
       accountsConfigured: false,
-      runtimeReady: CODEX_MULTI_AUTH_RUNTIME_READY,
+      runtimeReady: codexMultiAuthRuntimeReady(),
       sendBlocked: true,
       sendBlockReason: "No isolated Codex multi-auth account is configured.",
-      sendRouting: "unavailable",
+      sendRouting: "blocked-no-isolated-account",
+      runtimeProof: readCodexMultiAuthRuntimeProof(),
       warning: status.error ?? "Codex multi-auth status is unavailable.",
     }
   const statusAccountCount = parseCodexAccountCount(status.output)
@@ -1070,16 +1141,21 @@ async function buildCodexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> 
     ...base,
     providerID: "codex-multi-auth",
     baseProviderID: "openai",
-    runtimeReady: CODEX_MULTI_AUTH_RUNTIME_READY,
+    runtimeReady: codexMultiAuthRuntimeReady(),
     sendBlocked: true,
     sendBlockReason: accountsConfigured
-      ? CODEX_MULTI_AUTH_SEND_BLOCK_REASON
+      ? codexMultiAuthSendBlockReason()
       : "No isolated Codex multi-auth account is configured.",
+    runtimeProof: readCodexMultiAuthRuntimeProof(),
     accountCount,
     accountsConfigured,
     activeAccount,
     rotationStrategy,
-    sendRouting: accountsConfigured ? "multi-auth-profile-pending-runner-verification" : "openai-fallback",
+    sendRouting: accountsConfigured
+      ? codexMultiAuthRuntimeReady()
+        ? "multi-auth-runtime-proofed-prompt-adapter-blocked"
+        : "multi-auth-profile-pending-runner-verification"
+      : "blocked-no-isolated-account",
     warning: accountsConfigured
       ? "Codex multi-auth accounts are configured. Verify backend send routing before relying on account rotation."
       : loginAttemptPhase === "account_written_or_already_authorized"
@@ -1123,6 +1199,11 @@ async function codexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> {
 
 function summarizeCodexMultiAuthWorkspaceStatus(status: CodexMultiAuthStatusResult) {
   const loginAttempt = status.loginAttempt as Record<string, unknown> | null | undefined
+  const runtimeProof = sanitizeCodexMultiAuthRuntimeProof(
+    status.runtimeProof && typeof status.runtimeProof === "object" && !Array.isArray(status.runtimeProof)
+      ? (status.runtimeProof as Record<string, unknown>)
+      : null,
+  )
   return {
     ok: status.ok === true,
     configured: status.configured === true,
@@ -1138,6 +1219,7 @@ function summarizeCodexMultiAuthWorkspaceStatus(status: CodexMultiAuthStatusResu
     sendRouting: typeof status.sendRouting === "string" ? status.sendRouting : null,
     statusPhase: typeof status.statusPhase === "string" ? status.statusPhase : null,
     usageSummary: typeof status.usageSummary === "string" ? status.usageSummary : null,
+    runtimeProof,
     warning: typeof status.warning === "string" ? status.warning : null,
     error: typeof status.error === "string" ? status.error : null,
     cache: status.cache ?? null,
@@ -1161,12 +1243,13 @@ async function codexMultiAuthWorkspaceStatus() {
   const fallback = readCodexMultiAuthFastAccountStatus() ?? {
     ok: false,
     configured: true,
-    runtimeReady: CODEX_MULTI_AUTH_RUNTIME_READY,
+    runtimeReady: codexMultiAuthRuntimeReady(),
     sendBlocked: true,
-    sendBlockReason: CODEX_MULTI_AUTH_SEND_BLOCK_REASON,
+    sendBlockReason: codexMultiAuthSendBlockReason(),
+    runtimeProof: readCodexMultiAuthRuntimeProof(),
     accountCount: 0,
     accountsConfigured: false,
-    sendRouting: "openai-fallback",
+    sendRouting: "blocked-no-isolated-account",
     warning: "Codex multi-auth summary is deferred. Open the Codex tab for direct status.",
   }
   const result = await statusWithTimeout<any>("Codex multi-auth status", 600, fallback, codexMultiAuthStatus)
@@ -1180,6 +1263,139 @@ async function codexMultiAuthWorkspaceStatus() {
     }
   }
   return result
+}
+
+function safeCodexMultiAuthProofCwd(value: unknown) {
+  const fallback = "/home/dev/repos/opencode"
+  if (typeof value !== "string" || !value.trim()) return fallback
+  const resolved = path.resolve(value)
+  const allowed = ["/home/dev/repos", "/home/dev/shared", "/tmp"]
+  if (!allowed.some((root) => resolved === root || resolved.startsWith(root + path.sep))) return fallback
+  return resolved
+}
+
+function parseCodexRunJsonLines(output: string) {
+  const events: Array<Record<string, unknown>> = []
+  const text: string[] = []
+  let sessionID: string | null = null
+  for (const line of output.split("\n")) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith("{")) continue
+    try {
+      const event = JSON.parse(trimmed) as Record<string, unknown>
+      events.push(event)
+      if (typeof event.sessionID === "string") sessionID = event.sessionID
+      const part = event.part as Record<string, unknown> | undefined
+      if (event.type === "text" && typeof part?.text === "string") text.push(part.text)
+      if (event.type === "error") {
+        const error = event.error as Record<string, unknown> | undefined
+        const data = error?.data as Record<string, unknown> | undefined
+        const message =
+          typeof data?.message === "string"
+            ? data.message
+            : typeof error?.message === "string"
+              ? error.message
+              : undefined
+        if (message) text.push(`[error] ${message}`)
+      }
+    } catch {}
+  }
+  return { events, text: text.join("\n").trim(), sessionID }
+}
+
+async function codexMultiAuthRunProof(input: Record<string, unknown>) {
+  clearCodexMultiAuthStatusCache()
+  const startedAt = Date.now()
+  const status = await codexMultiAuthStatus()
+  if (status.accountsConfigured !== true) {
+    return {
+      ok: false,
+      providerID: "codex-multi-auth",
+      fallbackUsed: false,
+      runtimeReady: false,
+      sendBlocked: true,
+      sendBlockReason: "No isolated Codex multi-auth account is configured.",
+      status: summarizeCodexMultiAuthWorkspaceStatus(status),
+    }
+  }
+
+  const script = codexMultiAuthScript()
+  const prompt =
+    typeof input.prompt === "string" && input.prompt.trim()
+      ? input.prompt.trim().slice(0, 2000)
+      : "Reply with exactly: MULTI_AUTH_RUNTIME_OK"
+  const modelID = typeof input.modelID === "string" && input.modelID.trim() ? input.modelID.trim() : null
+  const cwd = safeCodexMultiAuthProofCwd(input.cwd)
+  const args = [script, "run", "--format", "json", "--dir", cwd]
+  if (modelID) args.push("--model", modelID)
+  args.push(prompt)
+
+  const env = { ...process.env }
+  delete env.OPENAI_API_KEY
+  delete env.OPENAI_API_BASE
+  delete env.OPENAI_BASE_URL
+  delete env.OPENAI_ORG_ID
+  env.NPM_CONFIG_LOGLEVEL = "error"
+  env.npm_config_loglevel = "error"
+  env.NO_COLOR = "1"
+  env.OPENCODE_MULTI_AUTH_REQUIRE_ACCOUNT = "1"
+
+  const result = await new Promise<{
+    error: Error | null
+    stdout: string
+    stderr: string
+    exitCode: number | null
+  }>((resolve) => {
+    execFile(
+      "node",
+      args,
+      {
+        cwd: path.dirname(path.dirname(script)),
+        timeout: 120_000,
+        maxBuffer: 1_000_000,
+        env,
+      },
+      (error, stdout, stderr) => {
+        const errorCode = error && typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : null
+        resolve({
+          error: error ?? null,
+          stdout: stdout?.toString() ?? "",
+          stderr: stderr?.toString() ?? "",
+          exitCode: errorCode ?? (error ? 1 : 0),
+        })
+      },
+    )
+  })
+  const output = [result.stdout, result.stderr].filter(Boolean).join("\n")
+  const parsed = parseCodexRunJsonLines(output)
+  const text = parsed.text.replace(/\[error\]\s*/g, "").trim()
+  const ok = !result.error && Boolean(text)
+  const proof: CodexMultiAuthRuntimeProof = {
+    ok,
+    providerID: "codex-multi-auth",
+    fallbackUsed: false,
+    accountAlias: typeof status.activeAccount === "string" ? status.activeAccount : null,
+    modelID,
+    cwd,
+    promptPreview: prompt.slice(0, 200),
+    outputPreview: cleanStatusOutput(output).slice(0, 500),
+    text: text.slice(0, 1000),
+    error: result.error ? cleanStatusOutput(output || result.error.message).slice(0, 1000) : undefined,
+    exitCode: result.exitCode,
+    durationMs: Date.now() - startedAt,
+    verifiedAt: new Date().toISOString(),
+    sessionID: parsed.sessionID,
+    profileSource: "isolated-profile-plugin",
+  }
+  writeCodexMultiAuthRuntimeProof(proof)
+  clearCodexMultiAuthStatusCache()
+  return {
+    ...proof,
+    runtimeReady: proof.ok,
+    sendBlocked: true,
+    sendBlockReason: codexMultiAuthSendBlockReason(),
+    status: summarizeCodexMultiAuthWorkspaceStatus(await codexMultiAuthStatus()),
+  }
 }
 
 async function statusWithTimeout<T>(label: string, timeoutMs: number, fallback: T, fn: () => Promise<T>) {
@@ -1565,6 +1781,29 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
         const result = await codexMultiAuthLoginStart()
         publishAppleBridgeEvent("codex_auth", "codex.auth.login.started", summarizeCodexAuthEvent(result))
         return HttpServerResponse.jsonUnsafe(result)
+      }),
+    )
+
+    yield* router.add("POST", "/experimental/codex-multi-auth/run-proof", (request) =>
+      Effect.gen(function* () {
+        const raw = yield* Effect.orDie(request.text)
+        let body: Record<string, unknown>
+        try {
+          body = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
+        } catch {
+          return HttpServerResponse.text("Invalid JSON body", { status: 400 })
+        }
+        const result = yield* Effect.promise(() => codexMultiAuthRunProof(body))
+        const resultRecord = result as Record<string, unknown>
+        publishAppleBridgeEvent("codex_auth", "codex.auth.runtime.proof", {
+          ok: result.ok === true,
+          accountAlias: typeof resultRecord.accountAlias === "string" ? resultRecord.accountAlias : null,
+          modelID: typeof resultRecord.modelID === "string" ? resultRecord.modelID : null,
+          durationMs: typeof resultRecord.durationMs === "number" ? resultRecord.durationMs : null,
+          sendBlocked: result.sendBlocked === true,
+          error: typeof resultRecord.error === "string" ? resultRecord.error.slice(0, 500) : null,
+        })
+        return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : 500 })
       }),
     )
 
