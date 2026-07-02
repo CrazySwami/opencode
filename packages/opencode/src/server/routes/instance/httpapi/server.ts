@@ -962,6 +962,39 @@ async function codexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> {
   return codexMultiAuthStatusInFlight
 }
 
+function summarizeCodexMultiAuthWorkspaceStatus(status: CodexMultiAuthStatusResult) {
+  const loginAttempt = status.loginAttempt as Record<string, unknown> | null | undefined
+  return {
+    ok: status.ok === true,
+    configured: status.configured === true,
+    providerID: typeof status.providerID === "string" ? status.providerID : "codex-multi-auth",
+    baseProviderID: typeof status.baseProviderID === "string" ? status.baseProviderID : "openai",
+    accountCount: typeof status.accountCount === "number" ? status.accountCount : 0,
+    accountsConfigured: status.accountsConfigured === true,
+    activeAccount: typeof status.activeAccount === "string" ? status.activeAccount : null,
+    rotationStrategy: typeof status.rotationStrategy === "string" ? status.rotationStrategy : null,
+    sendRouting: typeof status.sendRouting === "string" ? status.sendRouting : null,
+    statusPhase: typeof status.statusPhase === "string" ? status.statusPhase : null,
+    usageSummary: typeof status.usageSummary === "string" ? status.usageSummary : null,
+    warning: typeof status.warning === "string" ? status.warning : null,
+    error: typeof status.error === "string" ? status.error : null,
+    cache: status.cache ?? null,
+    loginAttempt: loginAttempt
+      ? {
+          phase: typeof loginAttempt.phase === "string" ? loginAttempt.phase : null,
+          authMode: typeof loginAttempt.authMode === "string" ? loginAttempt.authMode : null,
+          background: loginAttempt.background === true,
+          startedAt: typeof loginAttempt.startedAt === "string" ? loginAttempt.startedAt : null,
+          updatedAt: typeof loginAttempt.updatedAt === "string" ? loginAttempt.updatedAt : null,
+          hasAuthorizationURL: typeof loginAttempt.authorizationURL === "string",
+          hasUserCode: Boolean(loginAttempt.userCode || loginAttempt.hasUserCode),
+          error: typeof loginAttempt.error === "string" ? redactCodexAuthOutput(loginAttempt.error) : null,
+          note: typeof loginAttempt.note === "string" ? loginAttempt.note : null,
+        }
+      : null,
+  }
+}
+
 async function statusWithTimeout<T>(label: string, timeoutMs: number, fallback: T, fn: () => Promise<T>) {
   let timedOut = false
   try {
@@ -1403,7 +1436,7 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
             route: "/experimental/resources/status",
             macHost: process.env.OPENCODE_MAC_RESOURCE_HOST || "alfonso-mac",
           },
-          codexAccounts,
+          codexAccounts: summarizeCodexMultiAuthWorkspaceStatus(codexAccounts),
           artifactRootConfigured: !!process.env.OPENCODE_BROWSER_HOME,
           agentChrome: liveBrowserGateStatus(),
           workspaceIndex,
