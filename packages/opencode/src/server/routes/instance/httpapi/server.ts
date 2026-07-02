@@ -819,7 +819,7 @@ function readCodexMultiAuthFastAccountStatus(): CodexMultiAuthStatusResult | nul
 
   const legacy = readJsonObject(legacyStore)
   const legacyAccounts = legacy?.accounts
-  if (Array.isArray(legacyAccounts)) {
+  if (legacy && Array.isArray(legacyAccounts)) {
     const accountCount = legacyAccounts.length
     const activeIndex = typeof legacy.activeIndex === "number" ? legacy.activeIndex : 0
     return {
