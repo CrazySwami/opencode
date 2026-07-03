@@ -20,6 +20,7 @@ type CodexStatus = {
   configured?: boolean
   accountCount?: number
   accounts?: CodexAccount[]
+  loginAttempt?: Record<string, any> | null
   activeAccount?: string | null
   forcedAccount?: string | null
   forcedUntil?: number | null
@@ -35,6 +36,12 @@ type CodexStatus = {
 
 function text(value: unknown) {
   return typeof value === "string" ? value : undefined
+}
+
+function isWaitingForApproval(value: unknown) {
+  if (!value || typeof value !== "object") return false
+  const phase = text((value as Record<string, unknown>).phase)
+  return phase === "waiting_for_device_approval" || phase === "waiting_for_browser_approval"
 }
 
 export function DialogCodexMultiAuthProvider() {
@@ -69,6 +76,12 @@ export function DialogCodexMultiAuthProvider() {
         return
       }
       setStatus(body)
+      if (isWaitingForApproval(body?.loginAttempt)) {
+        setAuth(body.loginAttempt)
+      } else if (auth()) {
+        setAuth(undefined)
+        if ((body?.accountCount ?? 0) > 0) setNotice("Codex account connected.")
+      }
       setStatusError(undefined)
     } catch (err) {
       setStatusError(err instanceof Error ? err.message : String(err))

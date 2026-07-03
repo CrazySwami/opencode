@@ -1274,7 +1274,8 @@ function sanitizeCodexMultiAuthLoginAttempt(value: Record<string, unknown>) {
   else delete sanitized.userCode
   if (output !== undefined) sanitized.output = redactCodexAuthOutput(output)
   if (error !== undefined) sanitized.error = redactCodexAuthOutput(error)
-  if (value.hasUserCode || parsed.code) sanitized.hasUserCode = true
+  if (phase === "waiting_for_device_approval" && userCode) sanitized.hasUserCode = true
+  else delete sanitized.hasUserCode
   return sanitized
 }
 
@@ -1334,16 +1335,19 @@ function redactCodexAuthOutput(value: string | undefined) {
 async function buildCodexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> {
   const rawLoginAttempt = normalizeCodexMultiAuthLoginAttempt(readCodexMultiAuthLoginAttempt())
   const fast = readCodexMultiAuthFastAccountStatus()
+  const rawLoginPhase = typeof rawLoginAttempt?.phase === "string" ? rawLoginAttempt.phase : null
   const loginAttempt =
     fast?.accountsConfigured === true &&
-    typeof rawLoginAttempt?.phase === "string" &&
-    rawLoginAttempt.phase.startsWith("failed")
+    rawLoginPhase &&
+    (rawLoginPhase.startsWith("failed") ||
+      rawLoginPhase === "account_written" ||
+      rawLoginPhase === "account_written_or_already_authorized")
       ? {
           ok: true,
           configured: true,
           background: false,
           phase: "account_written",
-          note: "A Codex multi-auth account is already configured. Older failed login attempts are hidden from the live Accounts panel.",
+          note: "A Codex multi-auth account is already configured. Older login attempts are hidden from the live Accounts panel.",
           updatedAt: new Date().toISOString(),
         }
       : rawLoginAttempt
