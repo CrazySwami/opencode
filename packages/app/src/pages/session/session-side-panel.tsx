@@ -1321,6 +1321,18 @@ function previewURLKind(value: string) {
   }
 }
 
+function previewIframeSrc(url: string, kind: string) {
+  if (kind !== "local") return url
+  try {
+    const parsed = new URL(url, window.location.origin)
+    // CT100-local apps are unreachable from the viewer's machine; route them
+    // through the same-origin preview proxy served by opencode-public-proxy.
+    return `/experimental/preview/proxy/${parsed.host}${parsed.pathname}${parsed.search}`
+  } catch {
+    return url
+  }
+}
+
 function PreviewTabContent(props: { sessionID?: string }) {
   const initial = readPreviewState().url ?? ""
   const [address, setAddress] = createSignal(initial)
@@ -1598,13 +1610,20 @@ function PreviewTabContent(props: { sessionID?: string }) {
               </div>
             }
           >
-            <iframe
-              src={url()}
-              title="Preview"
-              class="absolute inset-0 block h-full w-full border-0 bg-white"
-              sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-downloads"
-              allow="clipboard-read; clipboard-write"
-            />
+            <>
+              <iframe
+                src={previewIframeSrc(url(), currentKind())}
+                title="Preview"
+                class="absolute inset-0 block h-full w-full border-0 bg-white"
+                sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-downloads"
+                allow="clipboard-read; clipboard-write"
+              />
+              <Show when={currentKind() === "local"}>
+                <div class="absolute bottom-3 left-3 rounded bg-background-base/90 px-2 py-1 text-11-regular text-text-weak shadow">
+                  proxied via CT100
+                </div>
+              </Show>
+            </>
           </Show>
         )}
       </Show>

@@ -315,9 +315,9 @@ function previewToBrowserAction(params: PreviewParams): BrowserActionInput {
         json: false,
       }
     case "submit":
+      // fill/click leave focus in the target control; Enter submits its form.
       return {
         action: "press",
-        target: params.selector,
         text: "Enter",
         json: false,
       }
