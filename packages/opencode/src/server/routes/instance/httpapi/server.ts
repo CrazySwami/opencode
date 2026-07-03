@@ -4295,6 +4295,22 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+function openDesignCodexAccount() {
+  const marker =
+    process.env.OPENCODE_OPEN_DESIGN_CODEX_MARKER ||
+    path.join(process.env.HOME || "/home/dev", ".local", "share", "opencode-open-design", "codex-account.json")
+  const parsed = readJsonObject(marker)
+  if (!parsed) return { bridged: false, note: "No Codex Multi-Auth account has been synced into Open Design yet." }
+  return {
+    bridged: true,
+    alias: typeof parsed.alias === "string" ? parsed.alias : null,
+    email: typeof parsed.email === "string" ? parsed.email : null,
+    forced: parsed.forced === true,
+    syncedAt: typeof parsed.syncedAt === "string" ? parsed.syncedAt : null,
+    note: "Open Design's Codex CLI authenticates as the active Codex Multi-Auth account (synced by opencode-open-design-codex-sync).",
+  }
+}
+
 async function openDesignStatus() {
   const { daemonURL, publicURL, token, proxyReady } = openDesignConfig()
   const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {}
@@ -4322,6 +4338,7 @@ async function openDesignStatus() {
   return {
     configured: health.ok === true,
     tokenConfigured: !!token,
+    codexAccount: openDesignCodexAccount(),
     daemonURL,
     publicURL,
     proxyURL: "/experimental/open-design/proxy/",
