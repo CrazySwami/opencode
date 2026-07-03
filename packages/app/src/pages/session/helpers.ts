@@ -81,6 +81,18 @@ export const createSessionTabs = (input: TabsInput) => {
   }
 }
 
+export const shouldStealFocusForTerminal = (wrapperID: string) => {
+  const active = document.activeElement
+  if (!(active instanceof HTMLElement)) return true
+  if (active === document.body) return true
+  const wrapper = document.getElementById(wrapperID)
+  if (wrapper?.contains(active)) return true
+  // The user is focused in some other interactive element (composer, search box,
+  // dialog input). Never yank focus away from it for a terminal retry.
+  if (active.matches("input, textarea, select, [contenteditable=true], [contenteditable='']")) return false
+  return true
+}
+
 export const focusTerminalById = (id: string) => {
   const wrapper = document.getElementById(`terminal-wrapper-${id}`)
   const terminal = wrapper?.querySelector('[data-component="terminal"]')
@@ -92,12 +104,10 @@ export const focusTerminalById = (id: string) => {
     return true
   }
 
+  // Do not dispatch a synthetic pointerdown here: a bubbling pointerdown with no
+  // matching pointerup leaks into drag sensors, tab strips, and dismiss-on-outside
+  // handlers and corrupts pointer/selection state across the whole UI.
   terminal.focus()
-  terminal.dispatchEvent(
-    typeof PointerEvent === "function"
-      ? new PointerEvent("pointerdown", { bubbles: true, cancelable: true })
-      : new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
-  )
   return true
 }
 

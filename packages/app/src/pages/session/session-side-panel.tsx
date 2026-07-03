@@ -1,4 +1,4 @@
-import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, type JSX } from "solid-js"
+import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, untrack, type JSX } from "solid-js"
 import { Portal } from "solid-js/web"
 import { createStore } from "solid-js/store"
 import { createMediaQuery } from "@solid-primitives/media"
@@ -33,6 +33,7 @@ import {
   createOpenSessionFileTab,
   createSessionTabs,
   focusTerminalById,
+  shouldStealFocusForTerminal,
   getTabReorderIndex,
   shouldShowFileTree,
   type Sizing,
@@ -242,15 +243,15 @@ function SessionTerminalTab() {
   const ids = createMemo(() => all().map((pty) => pty.id))
 
   const focus = (id: string) => {
-    focusTerminalById(id)
-    const frame = requestAnimationFrame(() => {
+    const wrapperID = `terminal-wrapper-${id}`
+    const tryFocus = () => {
       if (terminal.active() !== id) return
+      if (!shouldStealFocusForTerminal(wrapperID)) return
       focusTerminalById(id)
-    })
-    const timer = window.setTimeout(() => {
-      if (terminal.active() !== id) return
-      focusTerminalById(id)
-    }, 180)
+    }
+    tryFocus()
+    const frame = requestAnimationFrame(tryFocus)
+    const timer = window.setTimeout(tryFocus, 180)
     return () => {
       cancelAnimationFrame(frame)
       clearTimeout(timer)
@@ -2528,6 +2529,19 @@ function AccountsTabContent() {
   const clearCodexForce = async () =>
     runCodexAccountAction({ action: "clear-force" }, "clear-force", "Codex forced account override cleared")
 
+  const setCodexAccountEnabled = async (alias: string, enabled: boolean) =>
+    runCodexAccountAction(
+      { action: "set-enabled", alias, enabled },
+      `set-enabled:${alias}`,
+      `Codex account ${alias} ${enabled ? "enabled" : "disabled"}`,
+    )
+
+  const removeCodexAccount = async (alias: string) => {
+    if (typeof window !== "undefined" && !window.confirm(`Remove Codex account "${alias}" from the multi-auth store?`))
+      return
+    await runCodexAccountAction({ action: "remove-account", alias }, `remove-account:${alias}`, `Codex account ${alias} removed`)
+  }
+
   const setCodexRotation = async (strategy: string) =>
     runCodexAccountAction({ action: "set-rotation", strategy }, `set-rotation:${strategy}`, `Codex rotation set to ${strategy}`)
 
@@ -2617,8 +2631,30 @@ function AccountsTabContent() {
             <StatusRow label="Rotation" value={codexAccounts()?.rotationStrategy ?? "not set"} />
             <StatusRow label="Runtime proof" value={codexRuntimeReady() ? "ready" : "not verified"} />
             <StatusRow label="Send routing" value={codexRouting()} />
-            <StatusRow label="Usage" value={codexAccounts()?.usageSummary ?? codexAccounts()?.limitsOutput ?? "not reported"} />
+            <StatusRow
+              label="Usage / limits"
+              value={
+                codexAccounts()?.usageSummary ??
+                "Weekly and 5-hour usage are not reported by the multi-auth wrapper yet. Per-account send counts below are local rotation counters, not OpenAI quota."
+              }
+            />
           </div>
+          <details class="mb-3 rounded-md border border-border-weaker-base bg-background-base px-3 py-2 text-12-regular text-text-weak">
+            <summary class="cursor-pointer text-12-medium text-text-strong">How Codex Multi-Auth works</summary>
+            <ul class="mt-2 list-disc space-y-1 pl-4 text-11-regular">
+              <li>
+                All accounts live in one isolated multi-auth profile store (path shown below) - aliases share a single
+                store, they are not separate .codex folders.
+              </li>
+              <li>Prompts route through the sidecar prompt adapter; each send picks an account via the rotation strategy.</li>
+              <li>Force mode pins one account for 2 hours (or until cleared); rotation resumes afterwards.</li>
+              <li>Enable/disable controls whether rotation may pick an account. Active marks the account used for the next send.</li>
+              <li>
+                The base OpenAI provider is hidden from the model picker while multi-auth is ready, so sends cannot
+                silently bypass the account store. Set OPENCODE_SHOW_BASE_OPENAI_WITH_MULTI_AUTH=1 to restore it.
+              </li>
+            </ul>
+          </details>
           <Show when={codexAccountCount() > 0}>
             <div class="mb-3 rounded-md border border-border-weaker-base bg-background-base p-3">
               <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -2682,7 +2718,13 @@ function AccountsTabContent() {
                     </div>
                     <div class="min-w-0 text-11-regular text-text-weak">
                       <div class="truncate">{account.accountId ?? "account id hidden"}</div>
-                      <div class="truncate">source: {account.source ?? "unknown"}</div>
+                      <div class="truncate">
+                        {account.planType ? `ChatGPT ${account.planType}` : "plan unknown"}
+                        {typeof account.usageCount === "number" ? ` · ${account.usageCount} sends via rotation` : ""}
+                      </div>
+                      <div class="truncate">
+                        {account.lastUsed ? `last used ${new Date(account.lastUsed).toLocaleString()}` : "not used yet"}
+                      </div>
                     </div>
                     <div class="flex flex-wrap items-center gap-2 self-center">
                       <span class="rounded bg-background-stronger px-2 py-1 text-11-regular text-text-weak">
@@ -2708,6 +2750,26 @@ function AccountsTabContent() {
                       >
                         <span class="rounded bg-green-500/10 px-2 py-1 text-11-regular text-green-200">active</span>
                       </Show>
+                      <button
+                        type="button"
+                        class="self-center rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60"
+                        disabled={loginResult()?.accountActionPending === `set-enabled:${account.alias}`}
+                        onClick={() => void setCodexAccountEnabled(account.alias, account.enabled === false)}
+                      >
+                        {loginResult()?.accountActionPending === `set-enabled:${account.alias}`
+                          ? "Updating..."
+                          : account.enabled === false
+                            ? "Enable"
+                            : "Disable"}
+                      </button>
+                      <button
+                        type="button"
+                        class="self-center rounded border border-orange-500/30 bg-background-stronger px-2 py-1 text-11-regular text-orange-200 hover:bg-surface-raised-base-hover disabled:opacity-60"
+                        disabled={loginResult()?.accountActionPending === `remove-account:${account.alias}`}
+                        onClick={() => void removeCodexAccount(account.alias)}
+                      >
+                        {loginResult()?.accountActionPending === `remove-account:${account.alias}` ? "Removing..." : "Remove"}
+                      </button>
                       <Show when={codexForcedAccount() !== account.alias}>
                         <button
                           type="button"
@@ -4456,7 +4518,9 @@ export function SessionSidePanel(props: {
     }
 
     if (!openedTabs().includes(canonical)) tabs().open(canonical)
-    if (!mobile() && !view().reviewPanel.opened()) view().reviewPanel.open()
+    // Only react to active-tab changes here. Tracking reviewPanel.opened() made the
+    // header close button useless: closing the panel re-ran this effect and reopened it.
+    if (!untrack(mobile) && !untrack(() => view().reviewPanel.opened())) view().reviewPanel.open()
   })
 
   createEffect(() => {
