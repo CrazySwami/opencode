@@ -406,6 +406,38 @@ const browserPreviewRoute = HttpRouter.use((router) =>
       }),
     )
 
+    yield* router.add("GET", "/experimental/browser/optimized/*", (request) =>
+      Effect.gen(function* () {
+        const access = yield* Effect.promise(() => liveBrowserExposureAccess(request))
+        if (!access.ok) return liveBrowserExposureBlockedResponse("text", access)
+        const url = new URL(request.url, "http://localhost")
+        const pathPart = url.pathname.replace(/^\/experimental\/browser\/optimized\/?/, "")
+        const target = new URL(optimizedBrowserViewerURL() + "/" + pathPart)
+        target.search = url.search
+        return yield* Effect.promise(() => optimizedBrowserViewerProxyResponse({ method: "GET", target }))
+      }),
+    )
+
+    yield* router.add("POST", "/experimental/browser/optimized/*", (request) =>
+      Effect.gen(function* () {
+        const access = yield* Effect.promise(() => liveBrowserExposureAccess(request))
+        if (!access.ok) return liveBrowserExposureBlockedResponse("json", access)
+        const url = new URL(request.url, "http://localhost")
+        const pathPart = url.pathname.replace(/^\/experimental\/browser\/optimized\/?/, "")
+        const target = new URL(optimizedBrowserViewerURL() + "/" + pathPart)
+        target.search = url.search
+        const raw = yield* Effect.orDie(request.text)
+        return yield* Effect.promise(() =>
+          optimizedBrowserViewerProxyResponse({
+            method: "POST",
+            target,
+            body: raw || "{}",
+            contentType: request.headers["content-type"] || "application/json",
+          }),
+        )
+      }),
+    )
+
     yield* router.add("GET", "/experimental/browser/live/status", (request) =>
       Effect.promise(async () => {
         const access = await liveBrowserExposureAccess(request)
@@ -2839,6 +2871,44 @@ const liveBrowserArtifacts = () => path.join(liveBrowserHome(), "artifacts")
 const liveBrowserDebugPort = () => Number(process.env.OPENCODE_LIVE_BROWSER_DEBUG_PORT || 9224)
 const liveBrowserNoVNCURL = () =>
   (process.env.OPENCODE_LIVE_BROWSER_NOVNC_URL || "http://127.0.0.1:6080").replace(/\/+$/, "")
+
+const optimizedBrowserViewerURL = () =>
+  (process.env.OPENCODE_BROWSER_OPTIMIZED_VIEWER_URL || "http://127.0.0.1:7458").replace(/\/+$/, "")
+
+async function optimizedBrowserViewerHealthy() {
+  try {
+    const response = await fetch(`${optimizedBrowserViewerURL()}/api/state`, {
+      signal: AbortSignal.timeout(1200),
+    })
+    if (!response.ok) return false
+    const body = (await response.json().catch(() => null)) as { ok?: boolean } | null
+    return body?.ok === true
+  } catch {
+    return false
+  }
+}
+
+async function optimizedBrowserViewerProxyResponse(input: {
+  method: string
+  target: URL
+  body?: string
+  contentType?: string
+}) {
+  const response = await fetch(input.target, {
+    method: input.method,
+    headers: input.body ? { "content-type": input.contentType || "application/json" } : undefined,
+    body: input.body,
+  })
+  const contentType = response.headers.get("content-type") ?? "application/octet-stream"
+  if (!response.ok) {
+    return HttpServerResponse.text(await response.text(), { status: response.status, contentType })
+  }
+  return HttpServerResponse.setHeader(
+    HttpServerResponse.uint8Array(new Uint8Array(await response.arrayBuffer()), { contentType }),
+    "cache-control",
+    "no-store",
+  )
+}
 const liveBrowserExposureEnabled = () => process.env.OPENCODE_LIVE_BROWSER_EXPOSE !== "0"
 const liveBrowserStrictAccessRequired = () => process.env.OPENCODE_LIVE_BROWSER_REQUIRE_ACCESS === "1"
 const liveBrowserViewport = () => {
@@ -3347,6 +3417,15 @@ async function liveBrowserStatus(access?: Extract<LiveBrowserAccess, { ok: true 
     screenshotURL: "/experimental/browser/live/snapshot",
     streamURL: "/experimental/browser/live/stream",
     proxiedLiveURL: `/experimental/browser/novnc/opencode-lite.html?${defaultNoVNCParams.toString()}`,
+    optimizedViewer: (await optimizedBrowserViewerHealthy())
+      ? {
+          ok: true,
+          proxiedURL: `/experimental/browser/optimized/?vnc=${encodeURIComponent(
+            `/experimental/browser/novnc/opencode-lite.html?${defaultNoVNCParams.toString()}`,
+          )}`,
+          apiBase: "/experimental/browser/optimized/api",
+        }
+      : { ok: false },
     noVNC: {
       viewer: "opencode-lite",
       defaultMode: noVNCMode in noVNCModes ? noVNCMode : "fast",

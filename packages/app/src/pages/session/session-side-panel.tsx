@@ -418,6 +418,11 @@ type LiveBrowserStatus = {
   requiredAccessBoundary?: string
   streamURL?: string
   proxiedLiveURL?: string
+  optimizedViewer?: {
+    ok?: boolean
+    proxiedURL?: string
+    apiBase?: string
+  }
   noVNC?: {
     viewer?: string
     defaultMode?: string
@@ -533,6 +538,19 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
   const interactiveUrl = createMemo(() => {
     if (browserExposureBlocked()) return undefined
     if (!useNoVNC()) return undefined
+
+    const optimized = status().optimizedViewer
+    if (optimized?.ok && optimized.proxiedURL) {
+      try {
+        const parsed = new URL(optimized.proxiedURL, window.location.href)
+        if (!(window.location.protocol === "https:" && parsed.protocol !== "https:")) {
+          parsed.searchParams.set("frame", String(streamKey()))
+          return parsed.toString()
+        }
+      } catch {
+        // fall through to the classic proxied viewer below
+      }
+    }
 
     const proxiedURL = status().proxiedLiveURL
     const liveURL = status().browserUse?.liveURL
