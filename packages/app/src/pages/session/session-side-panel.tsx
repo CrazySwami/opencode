@@ -3117,6 +3117,90 @@ function RoutinesTabContent() {
     if (!selectedID() && first) setSelectedID(first)
   })
 
+  const mutationsEnabled = createMemo(() => jobs.data()?.status?.mutationsEnabled === true)
+  const runEnabled = createMemo(() => jobs.data()?.status?.runEnabled === true)
+  const storeHome = createMemo(() => jobs.data()?.status?.home ?? jobs.data()?.status?.jobsFile ?? null)
+  const [actionPending, setActionPending] = createSignal<string | undefined>()
+  const [actionError, setActionError] = createSignal<string | undefined>()
+  const [actionNote, setActionNote] = createSignal<string | undefined>()
+  const [formOpen, setFormOpen] = createSignal(false)
+  const [formMode, setFormMode] = createSignal<"create" | "edit">("create")
+  const emptyForm = { name: "", schedule: "manual", command: "", description: "" }
+  const [form, setForm] = createStore({ ...emptyForm })
+
+  const routineAction = async (label: string, fn: () => Promise<Response>, successNote: string) => {
+    setActionPending(label)
+    setActionError(undefined)
+    setActionNote(undefined)
+    try {
+      const res = await fn()
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok || body?.ok === false) throw new Error(body?.error ?? `${label} failed (${res.status})`)
+      setActionNote(successNote)
+      void jobs.refresh()
+      return body
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error))
+      return undefined
+    } finally {
+      setActionPending(undefined)
+    }
+  }
+
+  const openCreateForm = () => {
+    setFormMode("create")
+    setForm({ ...emptyForm })
+    setFormOpen(true)
+  }
+  const openEditForm = (routine: any) => {
+    setFormMode("edit")
+    setForm({
+      name: routine.name ?? "",
+      schedule: routine.schedule ?? "manual",
+      command: routine.command ?? "",
+      description: routine.description ?? "",
+    })
+    setFormOpen(true)
+  }
+  const submitForm = async () => {
+    const payload = { name: form.name, schedule: form.schedule, command: form.command, description: form.description }
+    if (formMode() === "create") {
+      const body = await routineAction("create", () =>
+        fetch("/experimental/routines/jobs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) }),
+        "Created disabled draft routine",
+      )
+      if (body?.routine?.id) setSelectedID(body.routine.id)
+    } else {
+      const id = selected()?.id
+      if (!id) return
+      await routineAction("edit", () =>
+        fetch(`/experimental/routines/jobs/${encodeURIComponent(id)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) }),
+        "Routine updated",
+      )
+    }
+    setFormOpen(false)
+  }
+  const toggleEnabled = async (routine: any) => {
+    await routineAction(`toggle:${routine.id}`, () =>
+      fetch(`/experimental/routines/jobs/${encodeURIComponent(routine.id)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: !routine.enabled }) }),
+      routine.enabled ? "Routine disabled" : "Routine enabled",
+    )
+  }
+  const deleteRoutine = async (routine: any) => {
+    if (typeof window !== "undefined" && !window.confirm(`Delete routine "${routine.name}"?`)) return
+    await routineAction(`delete:${routine.id}`, () =>
+      fetch(`/experimental/routines/jobs/${encodeURIComponent(routine.id)}`, { method: "DELETE" }),
+      "Routine deleted",
+    )
+    setSelectedID(undefined)
+  }
+  const runRoutine = async (routine: any) => {
+    await routineAction(`run:${routine.id}`, () =>
+      fetch(`/experimental/routines/jobs/${encodeURIComponent(routine.id)}/run`, { method: "POST" }),
+      "Routine run requested",
+    )
+  }
+
   return (
     <TabChrome
       title="Routines"
@@ -3160,8 +3244,47 @@ function RoutinesTabContent() {
           />
         </div>
 
+        <div class="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            class="rounded-md border border-[#f97316]/40 bg-[#f97316]/10 px-3 py-1.5 text-12-regular text-text-strong hover:bg-[#f97316]/20 disabled:opacity-50"
+            data-testid="routine-new"
+            disabled={!mutationsEnabled()}
+            title={mutationsEnabled() ? "Create a disabled draft routine" : "Draft writes are off (OPENCODE_ROUTINES_MUTATIONS=1)"}
+            onClick={openCreateForm}
+          >
+            New routine (draft)
+          </button>
+          <span class="text-11-regular text-text-weak">
+            New routines are created disabled. Manual runs {runEnabled() ? "are enabled" : "stay gated (OPENCODE_ROUTINES_RUN_ENABLED=1)"}.
+          </span>
+        </div>
+        <Show when={actionNote()}>
+          <div class="rounded-md border border-green-500/20 bg-green-500/10 px-3 py-1.5 text-12-regular text-green-100" data-testid="routine-action-note">{actionNote()}</div>
+        </Show>
+        <Show when={actionError()}>
+          <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-1.5 text-12-regular text-orange-100" data-testid="routine-action-error">{actionError()}</div>
+        </Show>
+        <Show when={formOpen()}>
+          <div class="rounded-md border border-border-weaker-base bg-background-base p-3" data-testid="routine-form">
+            <div class="mb-2 text-13-medium text-text-strong">{formMode() === "create" ? "New routine (created disabled)" : "Edit routine"}</div>
+            <div class="grid gap-2 sm:grid-cols-2">
+              <input class="h-8 rounded border border-border-weaker-base bg-background-stronger px-2 text-12-regular text-text-strong outline-none" data-testid="routine-form-name" placeholder="Name" value={form.name} onInput={(e) => setForm("name", e.currentTarget.value)} />
+              <input class="h-8 rounded border border-border-weaker-base bg-background-stronger px-2 text-12-regular text-text-strong outline-none" data-testid="routine-form-schedule" placeholder="Schedule (e.g. daily 09:00 or manual)" value={form.schedule} onInput={(e) => setForm("schedule", e.currentTarget.value)} />
+            </div>
+            <input class="mt-2 h-8 w-full rounded border border-border-weaker-base bg-background-stronger px-2 font-mono text-11-regular text-text-strong outline-none" data-testid="routine-form-command" placeholder="Command" value={form.command} onInput={(e) => setForm("command", e.currentTarget.value)} />
+            <input class="mt-2 h-8 w-full rounded border border-border-weaker-base bg-background-stronger px-2 text-12-regular text-text-strong outline-none" data-testid="routine-form-description" placeholder="Description (optional)" value={form.description} onInput={(e) => setForm("description", e.currentTarget.value)} />
+            <div class="mt-2 flex items-center gap-2">
+              <button type="button" class="rounded border border-[#f97316]/40 bg-[#f97316]/10 px-3 py-1 text-12-regular text-text-strong hover:bg-[#f97316]/20 disabled:opacity-50" data-testid="routine-form-save" disabled={!form.name.trim() || !!actionPending()} onClick={() => void submitForm()}>
+                {actionPending() === "create" || actionPending() === "edit" ? "Saving..." : formMode() === "create" ? "Create draft" : "Save changes"}
+              </button>
+              <button type="button" class="rounded border border-border-weaker-base bg-background-stronger px-3 py-1 text-12-regular text-text-weak hover:bg-surface-raised-base-hover" onClick={() => setFormOpen(false)}>Cancel</button>
+            </div>
+          </div>
+        </Show>
+
         <div class="grid min-h-0 flex-1 gap-3 xl:grid-cols-[minmax(220px,0.8fr)_minmax(0,1.2fr)]">
-          <div class="min-h-0 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger">
+          <div class="min-h-0 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger" data-testid="routine-list">
             <For each={routines()}>
               {(routine: any) => (
                 <button
@@ -3171,12 +3294,19 @@ function RoutinesTabContent() {
                   onClick={() => setSelectedID(routine.id)}
                 >
                   <div class="flex items-center justify-between gap-3">
-                    <span class="min-w-0 truncate text-13-regular text-text-strong">{routine.name}</span>
-                    <span class="shrink-0 rounded bg-background-base px-2 py-1 text-11-regular text-text-weak">
+                    <span class="min-w-0 truncate text-13-regular text-text-strong" data-testid="routine-row-name">{routine.name}</span>
+                    <span
+                      class="shrink-0 rounded px-2 py-0.5 text-10-medium uppercase tracking-wide"
+                      classList={{ "bg-green-500/15 text-green-200": routine.enabled, "bg-background-base text-text-weak": !routine.enabled }}
+                    >
                       {routine.enabled ? "enabled" : "off"}
                     </span>
                   </div>
-                  <div class="truncate text-12-regular text-text-weak">{routine.schedule ?? "No schedule"}</div>
+                  <div class="truncate text-11-regular text-text-weak">{routine.schedule ?? "No schedule"}</div>
+                  <div class="flex items-center gap-2 text-10-regular text-text-weak">
+                    <span>last: {routine.lastStatus ?? "never"}</span>
+                    <Show when={routine.nextRunAt}><span>· next: {formatShortDate(routine.nextRunAt)}</span></Show>
+                  </div>
                 </button>
               )}
             </For>
@@ -3221,9 +3351,16 @@ function RoutinesTabContent() {
                     </div>
                   </Show>
 
-                  <div class="rounded border border-border-weaker-base bg-background-base p-2 text-12-regular text-text-weak">
-                    Disabled routine drafts can be created from the home Routines page. Enabling schedules and manual
-                    runs remain separate server-side controls.
+                  <div class="flex flex-wrap items-center gap-2" data-testid="routine-actions">
+                    <button type="button" class="rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-50" data-testid="routine-toggle" disabled={!mutationsEnabled() || actionPending() === `toggle:${routine().id}`} onClick={() => void toggleEnabled(routine())}>
+                      {actionPending() === `toggle:${routine().id}` ? "..." : routine().enabled ? "Disable" : "Enable"}
+                    </button>
+                    <button type="button" class="rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-50" data-testid="routine-edit" disabled={!mutationsEnabled()} onClick={() => openEditForm(routine())}>Edit</button>
+                    <button type="button" class="rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-50" data-testid="routine-run" disabled={!runEnabled() || actionPending() === `run:${routine().id}`} title={runEnabled() ? "Run now" : "Manual runs are gated (OPENCODE_ROUTINES_RUN_ENABLED=1)"} onClick={() => void runRoutine(routine())}>Run now</button>
+                    <button type="button" class="ml-auto rounded border border-red-500/30 bg-background-stronger px-2 py-1 text-11-regular text-red-200 hover:bg-red-500/10 disabled:opacity-50" data-testid="routine-delete" disabled={!mutationsEnabled() || actionPending() === `delete:${routine().id}`} onClick={() => void deleteRoutine(routine())}>Delete</button>
+                  </div>
+                  <div class="rounded border border-border-weaker-base bg-background-base p-2 text-11-regular text-text-weak">
+                    Routines are stored globally in <span class="font-mono text-text-strong">{storeHome()}</span>, not per-repo. A repo can reference routine ids in its <span class="font-mono">.opencode/design/project.json</span> "routines" array. New routines are created disabled; enabling activates the schedule. Manual "Run now" is separately gated.
                   </div>
 
                   <div>
