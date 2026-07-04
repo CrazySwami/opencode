@@ -2627,14 +2627,6 @@ function AccountsTabContent() {
       }}
     >
       <div class="flex flex-col gap-3">
-        <StatusRow label="Hostname" value={status.data()?.hostname} />
-        <StatusRow
-          label="Open Design token"
-          value={status.data()?.openDesign?.configured ? "configured" : "not configured"}
-        />
-        <StatusRow label="Mac View" value={status.data()?.macView?.configured ? "configured" : "not configured"} />
-        <StatusRow label="Workspace projects" value={workspace.data()?.projects?.length} />
-        <StatusRow label="Recent sessions" value={workspace.data()?.sessions?.length} />
         <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
           <div class="mb-2 flex items-center justify-between gap-3">
             <div>
@@ -2654,98 +2646,6 @@ function AccountsTabContent() {
             {(warning) => (
               <div class="mb-3 rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-12-regular text-orange-100">
                 {warning()}
-              </div>
-            )}
-          </Show>
-          <div class="mb-3 grid gap-2 md:grid-cols-3">
-            <StatusRow label="Provider owner" value={codexAccounts()?.providerID ?? "codex-multi-auth"} />
-            <StatusRow label="Base OpenAI" value={codexBaseProviderLabel()} />
-            <StatusRow label="Account count" value={codexAccountCount()} />
-            <StatusRow label="Active account" value={codexAccounts()?.activeAccount ?? "none"} />
-            <StatusRow
-              label="Forced account"
-              value={
-                codexForcedAccount()
-                  ? `${codexForcedAccount()}${codexForcedUntilLabel() ? ` until ${codexForcedUntilLabel()}` : ""}`
-                  : "none"
-              }
-            />
-            <StatusRow label="Rotation" value={codexAccounts()?.rotationStrategy ?? "not set"} />
-            <StatusRow label="Runtime proof" value={codexRuntimeReady() ? "ready" : "not verified"} />
-            <StatusRow label="Send routing" value={codexRouting()} />
-            <StatusRow
-              label="Usage / limits"
-              value={
-                codexAccounts()?.usageSummary ??
-                "Weekly and 5-hour usage are not reported by the multi-auth wrapper yet. Per-account send counts below are local rotation counters, not OpenAI quota."
-              }
-            />
-          </div>
-          <details class="mb-3 rounded-md border border-border-weaker-base bg-background-base px-3 py-2 text-12-regular text-text-weak">
-            <summary class="cursor-pointer text-12-medium text-text-strong">How Codex Multi-Auth works</summary>
-            <ul class="mt-2 list-disc space-y-1 pl-4 text-11-regular">
-              <li>
-                All accounts live in one isolated multi-auth profile store (path shown below) - aliases share a single
-                store, they are not separate .codex folders.
-              </li>
-              <li>Prompts route through the sidecar prompt adapter; each send picks an account via the rotation strategy.</li>
-              <li>Force mode pins one account for 2 hours (or until cleared); rotation resumes afterwards.</li>
-              <li>Enable/disable controls whether rotation may pick an account. Active marks the account used for the next send.</li>
-              <li>
-                The base OpenAI provider is hidden from the model picker while multi-auth is ready, so sends cannot
-                silently bypass the account store. Set OPENCODE_SHOW_BASE_OPENAI_WITH_MULTI_AUTH=1 to restore it.
-              </li>
-            </ul>
-          </details>
-          <Show when={codexAccountCount() > 0}>
-            <div class="mb-3 rounded-md border border-border-weaker-base bg-background-base p-3">
-              <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <div class="text-12-medium text-text-strong">Rotation strategy</div>
-                  <div class="text-11-regular text-text-weak">
-                    Rotation is used when no account is forced. Force mode also sets the active account for the current sidecar runner.
-                  </div>
-                </div>
-                <Show when={codexForcedAccount()}>
-                  <button
-                    type="button"
-                    class="rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60"
-                    disabled={loginResult()?.accountActionPending === "clear-force"}
-                    onClick={() => void clearCodexForce()}
-                  >
-                    {loginResult()?.accountActionPending === "clear-force" ? "Clearing..." : "Clear force"}
-                  </button>
-                </Show>
-              </div>
-              <div class="flex flex-wrap gap-2">
-                <For each={["round-robin", "least-used", "random", "weighted-round-robin"]}>
-                  {(strategy) => (
-                    <button
-                      type="button"
-                      class="rounded border px-2 py-1 text-11-regular hover:bg-surface-raised-base-hover disabled:opacity-60"
-                      classList={{
-                        "border-green-500/30 bg-green-500/10 text-green-100": codexAccounts()?.rotationStrategy === strategy,
-                        "border-border-weaker-base bg-background-stronger text-text-strong": codexAccounts()?.rotationStrategy !== strategy,
-                      }}
-                      disabled={loginResult()?.accountActionPending === `set-rotation:${strategy}`}
-                      onClick={() => void setCodexRotation(strategy)}
-                    >
-                      {loginResult()?.accountActionPending === `set-rotation:${strategy}` ? "Setting..." : strategy}
-                    </button>
-                  )}
-                </For>
-              </div>
-            </div>
-          </Show>
-          <Show when={codexBaseProviderVisibility()?.hidden}>
-            <div class="mb-3 rounded-md border border-green-500/20 bg-green-500/10 px-3 py-2 text-12-regular text-green-100">
-              Original OpenAI is hidden from the model picker while Codex Multi-Auth is ready. To temporarily restore it, set <span class="font-mono">OPENCODE_SHOW_BASE_OPENAI_WITH_MULTI_AUTH=1</span>.
-            </div>
-          </Show>
-          <Show when={codexStorePath()}>
-            {(storePath) => (
-              <div class="mb-3 rounded bg-background-base px-3 py-2 text-11-regular text-text-weak">
-                Isolated account store: <span class="font-mono text-text-strong">{storePath()}</span>
               </div>
             )}
           </Show>
@@ -2838,6 +2738,103 @@ function AccountsTabContent() {
               </div>
             </Show>
           </Show>
+          <Show when={codexAccountCount() > 0}>
+            <div class="mb-3 rounded-md border border-border-weaker-base bg-background-base p-3">
+              <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div class="text-12-medium text-text-strong">Rotation strategy</div>
+                  <div class="text-11-regular text-text-weak">
+                    Rotation is used when no account is forced. Force mode also sets the active account for the current sidecar runner.
+                  </div>
+                </div>
+                <Show when={codexForcedAccount()}>
+                  <button
+                    type="button"
+                    class="rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60"
+                    disabled={loginResult()?.accountActionPending === "clear-force"}
+                    onClick={() => void clearCodexForce()}
+                  >
+                    {loginResult()?.accountActionPending === "clear-force" ? "Clearing..." : "Clear force"}
+                  </button>
+                </Show>
+              </div>
+              <div class="flex flex-wrap gap-2">
+                <For each={["round-robin", "least-used", "random", "weighted-round-robin"]}>
+                  {(strategy) => (
+                    <button
+                      type="button"
+                      class="rounded border px-2 py-1 text-11-regular hover:bg-surface-raised-base-hover disabled:opacity-60"
+                      classList={{
+                        "border-green-500/30 bg-green-500/10 text-green-100": codexAccounts()?.rotationStrategy === strategy,
+                        "border-border-weaker-base bg-background-stronger text-text-strong": codexAccounts()?.rotationStrategy !== strategy,
+                      }}
+                      disabled={loginResult()?.accountActionPending === `set-rotation:${strategy}`}
+                      onClick={() => void setCodexRotation(strategy)}
+                    >
+                      {loginResult()?.accountActionPending === `set-rotation:${strategy}` ? "Setting..." : strategy}
+                    </button>
+                  )}
+                </For>
+              </div>
+            </div>
+          </Show>
+          <Show when={codexBaseProviderVisibility()?.hidden}>
+            <div class="mb-3 rounded-md border border-green-500/20 bg-green-500/10 px-3 py-2 text-12-regular text-green-100">
+              Original OpenAI is hidden from the model picker while Codex Multi-Auth is ready. To temporarily restore it, set <span class="font-mono">OPENCODE_SHOW_BASE_OPENAI_WITH_MULTI_AUTH=1</span>.
+            </div>
+          </Show>
+          <Show when={codexStorePath()}>
+            {(storePath) => (
+              <div class="mb-3 rounded bg-background-base px-3 py-2 text-11-regular text-text-weak">
+                Isolated account store: <span class="font-mono text-text-strong">{storePath()}</span>
+              </div>
+            )}
+          </Show>
+          <details class="mb-3 rounded-md border border-border-weaker-base bg-background-base px-3 py-2">
+            <summary class="cursor-pointer text-12-medium text-text-strong">Status &amp; routing details</summary>
+            <div class="mt-2 flex flex-col gap-2">
+          <div class="mb-3 grid gap-2 md:grid-cols-3">
+            <StatusRow label="Provider owner" value={codexAccounts()?.providerID ?? "codex-multi-auth"} />
+            <StatusRow label="Base OpenAI" value={codexBaseProviderLabel()} />
+            <StatusRow label="Account count" value={codexAccountCount()} />
+            <StatusRow label="Active account" value={codexAccounts()?.activeAccount ?? "none"} />
+            <StatusRow
+              label="Forced account"
+              value={
+                codexForcedAccount()
+                  ? `${codexForcedAccount()}${codexForcedUntilLabel() ? ` until ${codexForcedUntilLabel()}` : ""}`
+                  : "none"
+              }
+            />
+            <StatusRow label="Rotation" value={codexAccounts()?.rotationStrategy ?? "not set"} />
+            <StatusRow label="Runtime proof" value={codexRuntimeReady() ? "ready" : "not verified"} />
+            <StatusRow label="Send routing" value={codexRouting()} />
+            <StatusRow
+              label="Usage / limits"
+              value={
+                codexAccounts()?.usageSummary ??
+                "Weekly and 5-hour usage are not reported by the multi-auth wrapper yet. Per-account send counts below are local rotation counters, not OpenAI quota."
+              }
+            />
+          </div>
+          <details class="mb-3 rounded-md border border-border-weaker-base bg-background-base px-3 py-2 text-12-regular text-text-weak">
+            <summary class="cursor-pointer text-12-medium text-text-strong">How Codex Multi-Auth works</summary>
+            <ul class="mt-2 list-disc space-y-1 pl-4 text-11-regular">
+              <li>
+                All accounts live in one isolated multi-auth profile store (path shown below) - aliases share a single
+                store, they are not separate .codex folders.
+              </li>
+              <li>Prompts route through the sidecar prompt adapter; each send picks an account via the rotation strategy.</li>
+              <li>Force mode pins one account for 2 hours (or until cleared); rotation resumes afterwards.</li>
+              <li>Enable/disable controls whether rotation may pick an account. Active marks the account used for the next send.</li>
+              <li>
+                The base OpenAI provider is hidden from the model picker while multi-auth is ready, so sends cannot
+                silently bypass the account store. Set OPENCODE_SHOW_BASE_OPENAI_WITH_MULTI_AUTH=1 to restore it.
+              </li>
+            </ul>
+          </details>
+            </div>
+          </details>
           <Show when={codexAccountList().length === 0}>
             <div class="mb-3 rounded-md border border-border-weaker-base bg-background-base px-3 py-2 text-12-regular text-text-weak">
               No isolated Codex multi-auth accounts are visible yet. Normal OpenAI sign-in is separate from this store.
