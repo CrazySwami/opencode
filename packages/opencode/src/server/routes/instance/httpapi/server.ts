@@ -724,6 +724,62 @@ const fileViewerRoute = HttpRouter.use((router) =>
         )
       }),
     )
+
+    yield* router.add("GET", "/experimental/files/search", (request) =>
+      Effect.promise(async () => {
+        const url = new URL(request.url, "http://localhost")
+        const query = (url.searchParams.get("query") || "").trim().toLowerCase()
+        if (!query) return HttpServerResponse.jsonUnsafe({ ok: false, error: "search requires a query" }, { status: 400 })
+        const requested = path.resolve(url.searchParams.get("path") || fileBrowserDefaultPath())
+        if (!fileViewerAllowed(requested))
+          return HttpServerResponse.text("Directory is outside allowed roots", { status: 403 })
+        const rootStat = safeStat(requested)
+        const root = rootStat?.isDirectory() ? requested : parentDirectory(requested) || requested
+        const cap = Math.min(Math.max(1, Number(url.searchParams.get("limit")) || 200), 500)
+        const skip = new Set(["node_modules", ".git", ".next", "dist", "build", ".cache", ".turbo", ".venv"])
+        const results: Array<Record<string, unknown>> = []
+        const walk = (dir: string, depth: number) => {
+          if (results.length >= cap || depth > 6) return
+          let entries: import("node:fs").Dirent[]
+          try {
+            entries = readdirSync(dir, { withFileTypes: true })
+          } catch {
+            return
+          }
+          for (const entry of entries) {
+            if (results.length >= cap) return
+            if (skip.has(entry.name)) continue
+            const entryPath = path.join(dir, entry.name)
+            const isDirectory = entry.isDirectory()
+            if (entry.name.toLowerCase().includes(query)) {
+              const stat = safeStat(entryPath)
+              const contentType = isDirectory ? null : contentTypeForFile(entryPath)
+              results.push({
+                name: entry.name,
+                path: entryPath,
+                kind: isDirectory ? "directory" : fileKind(contentType ?? ""),
+                contentType,
+                size: isDirectory ? null : stat?.size ?? null,
+                mtime: stat ? stat.mtime.toISOString() : null,
+                browseURL: isDirectory ? `/experimental/files/browse?path=${encodeURIComponent(entryPath)}` : null,
+                url: isDirectory ? null : `/experimental/files/view?path=${encodeURIComponent(entryPath)}`,
+              })
+            }
+            if (isDirectory) walk(entryPath, depth + 1)
+          }
+        }
+        walk(root, 0)
+        return HttpServerResponse.jsonUnsafe({
+          ok: true,
+          root,
+          query,
+          truncated: results.length >= cap,
+          count: results.length,
+          roots: fileViewerRoots(),
+          entries: results,
+        })
+      }),
+    )
   }),
 ).pipe(Layer.provide(authOnlyRouterLayer))
 

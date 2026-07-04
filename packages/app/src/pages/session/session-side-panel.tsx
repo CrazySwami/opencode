@@ -1,4 +1,4 @@
-import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, untrack, type JSX } from "solid-js"
+import { For, Index, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, untrack, type JSX } from "solid-js"
 import { Portal } from "solid-js/web"
 import { createStore } from "solid-js/store"
 import { createMediaQuery } from "@solid-primitives/media"
@@ -114,6 +114,7 @@ function readFileBrowserState() {
       mode?: "list" | "icons"
       query?: string
       selectedPath?: string
+      recursive?: boolean
     }
   } catch {
     return {}
@@ -125,6 +126,7 @@ function writeFileBrowserState(state: {
   mode: "list" | "icons"
   query: string
   selectedPath?: string
+  recursive?: boolean
 }) {
   if (typeof window === "undefined") return
   window.localStorage.setItem(FILE_BROWSER_STATE_KEY, JSON.stringify(state))
@@ -2650,87 +2652,108 @@ function AccountsTabContent() {
             )}
           </Show>
           <Show when={codexAccountList().length > 0}>
-            <div class="mb-3 flex flex-col gap-2" data-testid="codex-account-cards">
-              <For each={codexAccountList()}>
-                {(account: any) => {
-                  const pending = (op: string) => loginResult()?.accountActionPending === `${op}:${account.alias}`
-                  const isForced = () => codexForcedAccount() === account.alias
-                  const reauth = () => account.reauthNeeded === true
+            <div class="mb-3 flex flex-col gap-3" data-testid="codex-account-cards">
+              <Index each={codexAccountList()}>
+                {(accountItem) => {
+                  const account = accountItem
+                  const alias = () => account().alias ?? ""
+                  const pending = (op: string) => loginResult()?.accountActionPending === `${op}:${alias()}`
+                  const isForced = () => codexForcedAccount() === alias()
+                  const reauth = () => account().reauthNeeded === true
+                  const active = () => account().active === true
+                  const enabled = () => account().enabled !== false
+                  const planLabel = () => account().planType ? `ChatGPT ${account().planType}` : "plan unknown"
                   return (
                     <div
-                      class="rounded-lg border bg-background-base p-3"
+                      class="relative overflow-hidden rounded-lg border bg-background-base/95 p-3 shadow-sm transition-colors"
                       classList={{
-                        "border-green-500/40": account.active,
-                        "border-orange-500/30": !account.active && reauth(),
-                        "border-border-weaker-base": !account.active && !reauth(),
+                        "border-green-500/45 shadow-green-950/10": active(),
+                        "border-red-500/35 shadow-red-950/10": !active() && reauth(),
+                        "border-border-weaker-base": !active() && !reauth(),
                       }}
                       data-testid="codex-account-card"
-                      data-alias={account.alias}
+                      data-alias={alias()}
                     >
-                      <div class="flex items-start justify-between gap-3">
-                        <div class="min-w-0">
-                          <div class="flex items-center gap-2">
-                            <span class="truncate text-13-medium text-text-strong">{account.alias ?? "account"}</span>
-                            <Show when={account.active}>
-                              <span class="rounded bg-green-500/15 px-1.5 py-0.5 text-10-medium uppercase tracking-wide text-green-200">active</span>
-                            </Show>
-                            <Show when={isForced()}>
-                              <span class="rounded bg-orange-500/15 px-1.5 py-0.5 text-10-medium uppercase tracking-wide text-orange-100">forced</span>
-                            </Show>
-                            <Show when={reauth()}>
-                              <span class="rounded bg-red-500/15 px-1.5 py-0.5 text-10-medium uppercase tracking-wide text-red-200">re-auth needed</span>
-                            </Show>
-                            <Show when={!reauth() && account.enabled === false}>
-                              <span class="rounded bg-background-stronger px-1.5 py-0.5 text-10-medium uppercase tracking-wide text-text-weak">disabled</span>
-                            </Show>
+                      <div
+                        class="absolute left-0 top-0 h-full w-1"
+                        classList={{
+                          "bg-green-500/80": active(),
+                          "bg-red-500/80": !active() && reauth(),
+                          "bg-border-strong-base": !active() && !reauth(),
+                        }}
+                      />
+                      <div class="pl-2">
+                        <div class="flex flex-wrap items-start justify-between gap-3">
+                          <div class="min-w-0">
+                            <div class="flex flex-wrap items-center gap-2">
+                              <span class="truncate text-14-medium text-text-strong">{alias() || "account"}</span>
+                              <Show when={active()}>
+                                <span class="rounded-full bg-green-500/15 px-2 py-0.5 text-10-medium uppercase tracking-wide text-green-200">active</span>
+                              </Show>
+                              <Show when={isForced()}>
+                                <span class="rounded-full bg-orange-500/15 px-2 py-0.5 text-10-medium uppercase tracking-wide text-orange-100">forced</span>
+                              </Show>
+                              <Show when={reauth()}>
+                                <span class="rounded-full bg-red-500/15 px-2 py-0.5 text-10-medium uppercase tracking-wide text-red-200">re-auth needed</span>
+                              </Show>
+                              <Show when={!reauth() && !enabled()}>
+                                <span class="rounded-full bg-background-stronger px-2 py-0.5 text-10-medium uppercase tracking-wide text-text-weak">disabled</span>
+                              </Show>
+                            </div>
+                            <div class="mt-1 truncate text-12-regular text-text-weak">{account().email ?? account().label ?? "email not reported"}</div>
                           </div>
-                          <div class="mt-0.5 truncate text-11-regular text-text-weak">{account.email ?? account.label ?? "email not reported"}</div>
+                          <span class="shrink-0 rounded-md border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-medium text-text-weak">
+                            {planLabel()}
+                          </span>
                         </div>
-                        <span class="shrink-0 rounded bg-background-stronger px-2 py-1 text-10-medium text-text-weak">
-                          {account.planType ? `ChatGPT ${account.planType}` : "plan unknown"}
-                        </span>
-                      </div>
-                      <div class="mt-2 grid grid-cols-2 gap-x-3 gap-y-0.5 text-10-regular text-text-weak">
-                        <span>{typeof account.usageCount === "number" ? `${account.usageCount} local rotation sends` : "no local send count"}</span>
-                        <span>{account.lastUsed ? `last used ${new Date(account.lastUsed).toLocaleString()}` : "not used yet"}</span>
-                      </div>
-                      <Show when={reauth()}>
-                        <div class="mt-2 rounded border border-red-500/20 bg-red-500/10 px-2 py-1.5 text-10-regular text-red-200">
-                          This account's refresh token was invalidated ({account.disabledReason ?? "reauth_needed"}). It is disabled and cannot send until you re-authenticate it below. Re-enabling without re-auth will not work.
+                        <div class="mt-3 grid gap-2 sm:grid-cols-2">
+                          <div class="rounded-md bg-background-stronger px-2 py-1.5">
+                            <div class="text-10-regular text-text-weak">Local rotation sends</div>
+                            <div class="mt-0.5 text-12-medium text-text-strong">{typeof account().usageCount === "number" ? account().usageCount : "none"}</div>
+                          </div>
+                          <div class="rounded-md bg-background-stronger px-2 py-1.5">
+                            <div class="text-10-regular text-text-weak">Last used</div>
+                            <div class="mt-0.5 truncate text-12-medium text-text-strong">{account().lastUsed ? new Date(account().lastUsed).toLocaleString() : "not used yet"}</div>
+                          </div>
                         </div>
-                      </Show>
-                      <div class="mt-2.5 flex flex-wrap items-center gap-2">
-                        <Show when={!account.active && account.enabled !== false && !reauth()}>
-                          <button type="button" class="rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60" disabled={pending("set-active")} onClick={() => void setCodexActiveAccount(account.alias)}>
-                            {pending("set-active") ? "Setting..." : "Set active"}
-                          </button>
-                        </Show>
                         <Show when={reauth()}>
-                          <button type="button" class="rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-11-regular text-red-100 hover:bg-red-500/20 disabled:opacity-60" disabled={loginStarting()} onClick={() => void reauthCodexAccount(account.alias)}>
-                            {loginStarting() && loginResult()?.reauthTarget === account.alias ? "Starting re-auth..." : "Re-authenticate"}
-                          </button>
+                          <div class="mt-3 rounded-md border border-red-500/20 bg-red-500/10 px-3 py-2 text-11-regular text-red-100">
+                            Refresh token invalidated ({account().disabledReason ?? "reauth_needed"}). Re-authenticate before enabling this account again.
+                          </div>
                         </Show>
-                        <button type="button" class="rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60" disabled={pending("set-enabled") || (reauth() && account.enabled === false)} title={reauth() && account.enabled === false ? "Re-authenticate before enabling" : undefined} onClick={() => void setCodexAccountEnabled(account.alias, account.enabled === false)}>
-                          {pending("set-enabled") ? "Updating..." : account.enabled === false ? "Enable" : "Disable"}
-                        </button>
-                        <Show when={!isForced() && account.enabled !== false && !reauth()}>
-                          <button type="button" class="rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60" disabled={pending("force-account")} onClick={() => void forceCodexAccount(account.alias)}>
-                            {pending("force-account") ? "Forcing..." : "Force 2h"}
+                        <div class="mt-3 flex flex-wrap items-center gap-2">
+                          <Show when={!active() && enabled() && !reauth()}>
+                            <button type="button" class="rounded-md border border-border-weaker-base bg-background-stronger px-2.5 py-1.5 text-11-medium text-text-strong transition hover:bg-surface-raised-base-hover disabled:opacity-60" disabled={pending("set-active")} onClick={() => void setCodexActiveAccount(alias())}>
+                              {pending("set-active") ? "Setting..." : "Set active"}
+                            </button>
+                          </Show>
+                          <Show when={reauth()}>
+                            <button type="button" class="rounded-md border border-red-500/40 bg-red-500/10 px-2.5 py-1.5 text-11-medium text-red-100 transition hover:bg-red-500/20 disabled:opacity-60" disabled={loginStarting()} onClick={() => void reauthCodexAccount(alias())}>
+                              {loginStarting() && loginResult()?.reauthTarget === alias() ? "Starting re-auth..." : "Re-authenticate"}
+                            </button>
+                          </Show>
+                          <button type="button" class="rounded-md border border-border-weaker-base bg-background-stronger px-2.5 py-1.5 text-11-medium text-text-strong transition hover:bg-surface-raised-base-hover disabled:opacity-60" disabled={pending("set-enabled") || (reauth() && !enabled())} title={reauth() && !enabled() ? "Re-authenticate before enabling" : undefined} onClick={() => void setCodexAccountEnabled(alias(), !enabled())}>
+                            {pending("set-enabled") ? "Updating..." : !enabled() ? "Enable" : "Disable"}
                           </button>
-                        </Show>
-                        <Show when={isForced()}>
-                          <button type="button" class="rounded border border-orange-500/30 bg-background-stronger px-2 py-1 text-11-regular text-orange-100 hover:bg-surface-raised-base-hover disabled:opacity-60" disabled={loginResult()?.accountActionPending === "clear-force"} onClick={() => void clearCodexForce()}>
-                            {loginResult()?.accountActionPending === "clear-force" ? "Clearing..." : "Unforce"}
+                          <Show when={!isForced() && enabled() && !reauth()}>
+                            <button type="button" class="rounded-md border border-border-weaker-base bg-background-stronger px-2.5 py-1.5 text-11-medium text-text-strong transition hover:bg-surface-raised-base-hover disabled:opacity-60" disabled={pending("force-account")} onClick={() => void forceCodexAccount(alias())}>
+                              {pending("force-account") ? "Forcing..." : "Force 2h"}
+                            </button>
+                          </Show>
+                          <Show when={isForced()}>
+                            <button type="button" class="rounded-md border border-orange-500/30 bg-orange-500/10 px-2.5 py-1.5 text-11-medium text-orange-100 transition hover:bg-orange-500/20 disabled:opacity-60" disabled={loginResult()?.accountActionPending === "clear-force"} onClick={() => void clearCodexForce()}>
+                              {loginResult()?.accountActionPending === "clear-force" ? "Clearing..." : "Unforce"}
+                            </button>
+                          </Show>
+                          <button type="button" class="ml-auto rounded-md border border-red-500/30 bg-background-stronger px-2.5 py-1.5 text-11-medium text-red-200 transition hover:bg-red-500/10 disabled:opacity-60" disabled={pending("remove-account")} onClick={() => void removeCodexAccount(alias())}>
+                            {pending("remove-account") ? "Removing..." : "Remove"}
                           </button>
-                        </Show>
-                        <button type="button" class="ml-auto rounded border border-red-500/30 bg-background-stronger px-2 py-1 text-11-regular text-red-200 hover:bg-red-500/10 disabled:opacity-60" disabled={pending("remove-account")} onClick={() => void removeCodexAccount(account.alias)}>
-                          {pending("remove-account") ? "Removing..." : "Remove"}
-                        </button>
+                        </div>
                       </div>
                     </div>
                   )
                 }}
-              </For>
+              </Index>
             </div>
             <Show when={codexAccountList().filter((a: any) => a.enabled !== false).length <= 1}>
               <div class="mb-3 rounded border border-border-weaker-base bg-background-base px-3 py-2 text-10-regular text-text-weak">
@@ -3920,7 +3943,7 @@ function FileBrowserTabContent() {
     12000,
   )
   createEffect(() =>
-    writeFileBrowserState({ currentPath: currentPath(), mode: mode(), query: query(), selectedPath: selectedPath() }),
+    writeFileBrowserState({ currentPath: currentPath(), mode: mode(), query: query(), selectedPath: selectedPath(), recursive: recursive() }),
   )
 
   // Back/forward history over resolved folder paths.
@@ -4018,6 +4041,67 @@ function FileBrowserTabContent() {
     )
   })
 
+  // Recursive search hits the server search route; current-folder search stays
+  // a client-side filter over the loaded folder listing.
+  const [recursive, setRecursive] = createSignal(initialState.recursive ?? false)
+  const [searchResults, setSearchResults] = createSignal<any[] | undefined>()
+  const [searchState, setSearchState] = createSignal<"idle" | "loading" | "ready" | "error">("idle")
+  const [searchError, setSearchError] = createSignal<string | undefined>()
+  const [searchTruncated, setSearchTruncated] = createSignal(false)
+  const searchActive = createMemo(() => recursive() && query().trim().length > 0)
+
+  // Recursive search: fetch the server search route when recursive+query are set.
+  // Debounce is a plain module-scoped timer so effect re-runs (folder polls)
+  // never clear an in-flight request via onCleanup.
+  let searchTimer: ReturnType<typeof setTimeout> | undefined
+  let searchToken = 0
+  const runRecursiveSearch = (base: string, needle: string) => {
+    const token = ++searchToken
+    setSearchState("loading")
+    fetch(`/experimental/files/search?path=${encodeURIComponent(base)}&query=${encodeURIComponent(needle)}`, {
+      cache: "no-store",
+    })
+      .then(async (res) => {
+        const body = await res.json().catch(() => ({}))
+        if (token !== searchToken) return
+        if (!res.ok || body?.ok === false) throw new Error(body?.error ?? `search failed (${res.status})`)
+        setSearchResults(Array.isArray(body.entries) ? body.entries : [])
+        setSearchTruncated(!!body.truncated)
+        setSearchState("ready")
+        setSearchError(undefined)
+      })
+      .catch((error) => {
+        if (token !== searchToken) return
+        setSearchError(error instanceof Error ? error.message : String(error))
+        setSearchState("error")
+      })
+  }
+  createEffect(() => {
+    const needle = query().trim()
+    const base = currentPath() || browser.data()?.path
+    const on = recursive()
+    if (searchTimer) clearTimeout(searchTimer)
+    if (!on || !needle || !base) {
+      searchToken++
+      setSearchResults(undefined)
+      setSearchState("idle")
+      setSearchError(undefined)
+      return
+    }
+    searchTimer = setTimeout(() => runRecursiveSearch(base, needle), 250)
+  })
+  onCleanup(() => {
+    if (searchTimer) clearTimeout(searchTimer)
+  })
+
+  // Entries the list renders: recursive search results, else the folder filter.
+  const viewEntries = createMemo(() => (searchActive() ? searchResults() ?? [] : entries()))
+  const relativeToRoot = (full: string) => {
+    const base = browser.data()?.path
+    if (base && full.startsWith(base + "/")) return full.slice(base.length + 1)
+    return full
+  }
+
   createEffect(() => {
     const path = selectedPath()
     if (!path) {
@@ -4093,11 +4177,25 @@ function FileBrowserTabContent() {
             </Show>
           </div>
           <input
-            class="h-8 min-w-[180px] rounded-md border border-border-weaker-base bg-background-stronger px-2 text-13-regular text-text-strong outline-none placeholder:text-text-weak"
+            class="h-8 min-w-[160px] flex-1 rounded-md border border-border-weaker-base bg-background-stronger px-2 text-13-regular text-text-strong outline-none placeholder:text-text-weak"
             value={query()}
             onInput={(event) => setQuery(event.currentTarget.value)}
-            placeholder="Search this folder"
+            placeholder={recursive() ? "Search this folder + subfolders" : "Search this folder"}
+            data-testid="file-browser-search"
           />
+          <button
+            type="button"
+            class="h-8 shrink-0 rounded-md border px-2 text-12-regular"
+            classList={{
+              "border-[#f97316] bg-[#f97316]/10 text-text-strong": recursive(),
+              "border-border-weaker-base bg-background-stronger text-text-weak hover:bg-surface-raised-base-hover": !recursive(),
+            }}
+            onClick={() => setRecursive(!recursive())}
+            title="Toggle recursive search into subfolders"
+            data-testid="file-browser-recursive-toggle"
+          >
+            Subfolders
+          </button>
           <IconButton
             icon={mode() === "list" ? "dot-grid" : "bullet-list"}
             variant="ghost"
@@ -4123,12 +4221,24 @@ function FileBrowserTabContent() {
             </div>
           )}
         </Show>
+        <Show when={searchActive()}>
+          <div class="flex items-center gap-2 rounded-md border border-border-weaker-base bg-background-stronger px-3 py-1.5 text-11-regular text-text-weak" data-testid="file-browser-search-status">
+            <Switch fallback={<span>Type to search subfolders...</span>}>
+              <Match when={searchState() === "loading"}><span>Searching subfolders...</span></Match>
+              <Match when={searchState() === "error"}><span class="text-orange-200">Search failed: {searchError()}</span></Match>
+              <Match when={searchState() === "ready"}>
+                <span>{viewEntries().length} match{viewEntries().length === 1 ? "" : "es"} under {(currentPath() || browser.data()?.path)?.split("/").filter(Boolean).pop() ?? "root"}</span>
+                <Show when={searchTruncated()}><span class="text-orange-200">(truncated)</span></Show>
+              </Match>
+            </Switch>
+          </div>
+        </Show>
         <div class="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(280px,40%)]">
           <div class="min-h-0 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger">
             <Switch>
               <Match when={mode() === "icons"}>
                 <div class="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-2 p-2">
-                  <For each={entries()}>
+                  <For each={viewEntries()}>
                     {(entry: any) => (
                       <button
                         class="min-h-24 rounded-md bg-background-base p-2 text-left hover:bg-surface-raised-base-hover"
@@ -4153,7 +4263,7 @@ function FileBrowserTabContent() {
               </Match>
               <Match when={true}>
                 <div class="flex flex-col">
-                  <For each={entries()}>
+                  <For each={viewEntries()}>
                     {(entry: any) => (
                       <button
                         class="flex items-center gap-3 border-b border-border-weaker-base px-3 py-2 text-left last:border-b-0 hover:bg-surface-raised-base-hover"
@@ -4170,16 +4280,21 @@ function FileBrowserTabContent() {
                             size="small"
                           />
                         </span>
-                        <span class="min-w-0 flex-1 truncate text-13-regular text-text-strong">{entry.name}</span>
+                        <span class="min-w-0 flex-1 truncate">
+                          <span class="block truncate text-13-regular text-text-strong">{entry.name}</span>
+                          <Show when={searchActive()}>
+                            <span class="block truncate text-11-regular text-text-weak">{relativeToRoot(entry.path)}</span>
+                          </Show>
+                        </span>
                         <span class="shrink-0 text-12-regular text-text-weak">
                           {entry.kind === "directory" ? "folder" : `${entry.size ?? 0} bytes`}
                         </span>
                       </button>
                     )}
                   </For>
-                  <Show when={entries().length === 0}>
+                  <Show when={viewEntries().length === 0 && searchState() !== "loading"}>
                     <div class="flex min-h-40 items-center justify-center p-6 text-center text-12-regular text-text-weak">
-                      No files match this search in the current folder.
+                      {searchActive() ? "No matches in this folder or its subfolders." : "No files match this search in the current folder."}
                     </div>
                   </Show>
                 </div>
