@@ -3578,8 +3578,58 @@ function EnvironmentVariableManager(props: {
   const [draft, setDraft] = createSignal<EnvironmentDraft>(emptyEnvironmentDraft())
   const [saving, setSaving] = createSignal(false)
   const [message, setMessage] = createSignal<string>()
-  const entries = createMemo(() => props.registry?.entries ?? [])
+  const [envQuery, setEnvQuery] = createSignal("")
+  const [revealed, setRevealed] = createSignal<Record<string, boolean>>({})
+  const [importOpen, setImportOpen] = createSignal(false)
+  const [importText, setImportText] = createSignal("")
+  const [importValidation, setImportValidation] = createSignal<any>()
+  const allEntries = createMemo(() => props.registry?.entries ?? [])
+  const entries = createMemo(() => {
+    const needle = envQuery().trim().toLowerCase()
+    if (!needle) return allEntries()
+    return allEntries().filter((e: any) => `${e.name} ${e.scope} ${e.description ?? ""}`.toLowerCase().includes(needle))
+  })
   const editing = createMemo(() => !!draft().id)
+  const [changed, setChanged] = createSignal(false)
+
+  const validateImport = async () => {
+    setImportValidation(undefined)
+    try {
+      const res = await fetch("/experimental/workspace-env", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "validate", dotenv: importText() }),
+      })
+      const body = await res.json().catch(() => ({}))
+      setImportValidation(body?.validation ?? { ok: false })
+    } catch (error) {
+      setImportValidation({ ok: false, error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+  const runImport = async () => {
+    if (typeof window !== "undefined" && !window.confirm("Import these variables into the server-local env registry?")) return
+    setSaving(true)
+    setMessage(undefined)
+    try {
+      const res = await fetch("/experimental/workspace-env", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "import", dotenv: importText() }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok || body?.ok === false) throw new Error(body?.summary?.malformed?.length ? "Fix malformed lines first" : body?.error ?? "Import failed")
+      setMessage(`Imported ${body.summary?.imported ?? 0} variables (${body.summary?.created ?? 0} new, ${body.summary?.updated ?? 0} updated).`)
+      setImportText("")
+      setImportValidation(undefined)
+      setImportOpen(false)
+      setChanged(true)
+      props.onRefresh()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSaving(false)
+    }
+  }
 
   const updateDraft = (patch: Partial<EnvironmentDraft>) => setDraft((current) => ({ ...current, ...patch }))
   const loadEntry = (entry: any) => {
@@ -3626,6 +3676,7 @@ function EnvironmentVariableManager(props: {
       if (!response.ok || result?.ok === false) throw new Error(result?.error ?? "Could not save environment variable")
       setMessage(`Saved ${next.name}. New processes launched through OpenCode will inherit matching enabled variables.`)
       resetDraft()
+      setChanged(true)
       props.onRefresh()
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
@@ -3650,6 +3701,7 @@ function EnvironmentVariableManager(props: {
       if (!response.ok || result?.ok === false) throw new Error(result?.error ?? "Could not delete environment variable")
       setMessage(`Deleted ${entry.name}.`)
       if (draft().id === entry.id) resetDraft()
+      setChanged(true)
       props.onRefresh()
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
@@ -3761,25 +3813,96 @@ function EnvironmentVariableManager(props: {
         {(value) => <div class="mt-3 rounded bg-background-base p-2 text-12-regular text-text-weak">{value()}</div>}
       </Show>
 
-      <div class="mt-3 flex flex-col gap-2">
+      <Show when={changed()}>
+        <div class="mt-3 rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-11-regular text-orange-100" data-testid="env-restart-banner">
+          Saved to the server-local registry. Applies to newly launched OpenCode terminals/bash immediately. Already-running services (opencode.service, open terminals, running project servers) keep their current env until restarted.
+        </div>
+      </Show>
+
+      <div class="mt-3 flex flex-wrap items-center gap-2">
+        <input
+          class="h-8 min-w-[180px] flex-1 rounded border border-border-weaker-base bg-background-base px-2 text-12-regular text-text-strong outline-none placeholder:text-text-weak"
+          placeholder="Search variables"
+          data-testid="env-search"
+          value={envQuery()}
+          onInput={(e) => setEnvQuery(e.currentTarget.value)}
+        />
+        <button type="button" class="h-8 shrink-0 rounded border border-border-weaker-base bg-background-base px-3 text-12-regular text-text-strong hover:bg-surface-raised-base-hover" data-testid="env-import-toggle" onClick={() => setImportOpen(!importOpen())}>
+          {importOpen() ? "Close import" : "Import .env"}
+        </button>
+      </div>
+
+      <Show when={importOpen()}>
+        <div class="mt-2 rounded-md border border-border-weaker-base bg-background-base p-2" data-testid="env-import-panel">
+          <textarea
+            class="h-28 w-full rounded border border-border-weaker-base bg-background-stronger px-2 py-1 font-mono text-11-regular text-text-strong outline-none"
+            placeholder={"Paste dotenv lines, e.g.\nKEY=value\nANOTHER_KEY=value"}
+            data-testid="env-import-text"
+            value={importText()}
+            onInput={(e) => {
+              setImportText(e.currentTarget.value)
+              setImportValidation(undefined)
+            }}
+          />
+          <div class="mt-2 flex flex-wrap items-center gap-2">
+            <button type="button" class="rounded border border-border-weaker-base bg-background-stronger px-3 py-1 text-12-regular text-text-strong hover:bg-surface-raised-base-hover" data-testid="env-import-validate" onClick={() => void validateImport()}>Validate</button>
+            <button type="button" class="rounded border border-[#f97316]/40 bg-[#f97316]/10 px-3 py-1 text-12-regular text-text-strong hover:bg-[#f97316]/20 disabled:opacity-50" data-testid="env-import-apply" disabled={!importText().trim() || saving() || (importValidation() && importValidation().ok === false)} onClick={() => void runImport()}>Import</button>
+            <Show when={importValidation()}>
+              <span class="text-11-regular" data-testid="env-import-result" classList={{ "text-green-200": importValidation().ok, "text-orange-200": !importValidation().ok }}>
+                {importValidation().ok
+                  ? `${new Set(importValidation().keys ?? []).size} unique key(s) OK${importValidation().duplicates?.length ? `, ${importValidation().duplicates.length} duplicate(s) collapsed` : ""}`
+                  : `${importValidation().malformed?.length ?? 0} malformed line(s)${importValidation().malformed?.[0] ? ` (line ${importValidation().malformed[0].lineNumber}: ${importValidation().malformed[0].reason})` : ""}`}
+              </span>
+            </Show>
+          </div>
+        </div>
+      </Show>
+
+      <div class="mt-3 flex flex-col gap-2" data-testid="env-list">
         <For
           each={entries()}
           fallback={<div class="rounded bg-background-base p-3 text-12-regular text-text-weak">No variables yet.</div>}
         >
           {(entry: any) => (
-            <div class="grid gap-2 rounded bg-background-base p-2 text-12-regular text-text-weak xl:grid-cols-[1fr_0.7fr_0.7fr_1fr_auto]">
+            <div class="grid gap-2 rounded bg-background-base p-2 text-12-regular text-text-weak xl:grid-cols-[1fr_0.6fr_0.6fr_1.1fr_auto]" data-testid="env-row" data-name={entry.name}>
               <div class="min-w-0">
                 <div class="truncate text-text-strong">{entry.name}</div>
                 <div class="truncate">{entry.description ?? "No description"}</div>
               </div>
-              <div>{entry.scope}</div>
-              <div>{entry.enabled ? "enabled" : "disabled"}</div>
-              <div>{entry.secret ? "secret" : entry.valuePreview ?? (entry.hasValue ? "value set" : "empty")}</div>
+              <div>
+                <div>{entry.scope}</div>
+                <div class="text-10-regular">{entry.secret ? "secret" : "plain"}</div>
+              </div>
+              <div>
+                <div>{entry.enabled ? "enabled" : "disabled"}</div>
+                <Show when={entry.updatedAt}><div class="text-10-regular">{formatShortDate(entry.updatedAt)}</div></Show>
+              </div>
+              <div class="min-w-0">
+                <Show
+                  when={!entry.secret && revealed()[entry.id]}
+                  fallback={
+                    <div class="flex items-center gap-2">
+                      <span class="truncate font-mono text-11-regular" data-testid="env-value-masked">{entry.hasValue ? entry.maskedValue : "(empty)"}</span>
+                      <Show when={!entry.secret && entry.hasValue}>
+                        <button type="button" class="shrink-0 rounded border border-border-weaker-base px-1.5 py-0.5 text-10-regular text-text-weak hover:bg-surface-raised-base-hover" data-testid="env-reveal" onClick={() => setRevealed((r) => ({ ...r, [entry.id]: true }))}>Reveal</button>
+                      </Show>
+                      <Show when={entry.secret}>
+                        <span class="shrink-0 text-10-regular text-text-weak">secret · hidden</span>
+                      </Show>
+                    </div>
+                  }
+                >
+                  <div class="flex items-center gap-2">
+                    <span class="truncate font-mono text-11-regular text-text-strong" data-testid="env-value-revealed">{entry.valuePreview}</span>
+                    <button type="button" class="shrink-0 rounded border border-border-weaker-base px-1.5 py-0.5 text-10-regular text-text-weak hover:bg-surface-raised-base-hover" onClick={() => setRevealed((r) => ({ ...r, [entry.id]: false }))}>Hide</button>
+                  </div>
+                </Show>
+              </div>
               <div class="flex justify-end gap-2">
-                <button class="rounded px-2 py-1 text-text-strong hover:bg-surface-raised-base-hover" type="button" onClick={() => loadEntry(entry)}>
+                <button class="rounded px-2 py-1 text-text-strong hover:bg-surface-raised-base-hover" type="button" data-testid="env-edit" onClick={() => loadEntry(entry)}>
                   Edit
                 </button>
-                <button class="rounded px-2 py-1 text-red-400 hover:bg-red-500/10" type="button" onClick={() => void deleteEntry(entry)}>
+                <button class="rounded px-2 py-1 text-red-400 hover:bg-red-500/10" type="button" data-testid="env-delete" onClick={() => void deleteEntry(entry)}>
                   Delete
                 </button>
               </div>

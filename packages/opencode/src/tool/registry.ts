@@ -26,6 +26,7 @@ import { ArtifactTool } from "./artifact"
 import { FileBrowserTool } from "./file-browser"
 import { AccountStatusTool } from "./account-status"
 import { RoutinesTool } from "./routines"
+import { WorkspaceEnvTool } from "./workspace-env"
 import { WorkspaceTabsTool } from "./workspace-tabs"
 import * as Tool from "./tool"
 import { Config } from "@/config/config"
@@ -126,6 +127,7 @@ export const layer = Layer.effect(
     const fileBrowser = yield* FileBrowserTool
     const accountStatus = yield* AccountStatusTool
     const routines = yield* RoutinesTool
+    const workspaceEnv = yield* WorkspaceEnvTool
     const workspaceTabs = yield* WorkspaceTabsTool
     const agent = yield* Agent.Service
 
@@ -238,6 +240,7 @@ export const layer = Layer.effect(
           resourceStatus: Tool.init(resourceStatus),
           artifact: Tool.init(artifact),
           fileBrowser: Tool.init(fileBrowser),
+          workspaceEnv: Tool.init(workspaceEnv),
           accountStatus: Tool.init(accountStatus),
           routines: Tool.init(routines),
           workspaceTabs: Tool.init(workspaceTabs),
@@ -280,6 +283,7 @@ export const layer = Layer.effect(
             tool.resourceStatus,
             tool.artifact,
             tool.fileBrowser,
+            tool.workspaceEnv,
             tool.accountStatus,
             tool.routines,
             tool.workspaceTabs,

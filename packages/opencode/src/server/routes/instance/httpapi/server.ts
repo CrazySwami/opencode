@@ -77,8 +77,11 @@ import { SessionV2 } from "@opencode-ai/core/session"
 import * as SessionExecutionLocal from "@opencode-ai/core/session/execution/local"
 import {
   deleteWorkspaceEnvEntry,
+  importDotenvText,
   readWorkspaceEnvRegistryPublic,
   upsertWorkspaceEnvEntry,
+  validateDotenvText,
+  workspaceEnvPath,
   workspaceEnvPromptSummary,
 } from "@opencode-ai/core/workspace-env"
 import { lazy } from "@/util/lazy"
@@ -4239,6 +4242,14 @@ function workspaceEnvStatus() {
         workspaceEnvPromptSummary({ directory: "/home/dev/repos", cwd: "/home/dev/repos", surface: "bash" }) ?? null,
       inheritedBy: ["terminal", "bash"],
       plannedScopes: ["routines", "browser", "preview", "open_design"],
+      apply: {
+        // Enabled entries are injected into NEW OpenCode-launched terminals/bash
+        // processes at spawn time. Already-running processes (this opencode.service,
+        // open terminals, the live browser) keep the env they started with.
+        appliesTo: "new OpenCode-launched terminal/bash processes",
+        restartRequiredFor: ["opencode.service", "already-open terminals", "running project servers"],
+        note: "Saving a variable takes effect for newly launched processes immediately; restart a service or open a fresh terminal to pick up changes there.",
+      },
     },
   }
 }
@@ -4250,6 +4261,18 @@ function workspaceEnvAction(body: any) {
       const id = typeof body?.id === "string" ? body.id : ""
       if (!id) throw new Error("Missing env entry id")
       return { ok: true, action, ...deleteWorkspaceEnvEntry(id), registry: readWorkspaceEnvRegistryPublic() }
+    }
+    if (action === "validate") {
+      // No values returned - safe for chat/logs/artifacts.
+      return { ok: true, action, validation: validateDotenvText(typeof body?.dotenv === "string" ? body.dotenv : "") }
+    }
+    if (action === "import") {
+      if (typeof body?.dotenv !== "string" || !body.dotenv.trim()) throw new Error("Missing dotenv text")
+      const summary = importDotenvText(body.dotenv, {
+        scope: typeof body?.scope === "string" ? body.scope : undefined,
+        enabled: typeof body?.enabled === "boolean" ? body.enabled : undefined,
+      })
+      return { ok: summary.ok, action, summary, registry: readWorkspaceEnvRegistryPublic() }
     }
     if (action === "upsert") {
       const entry = upsertWorkspaceEnvEntry({

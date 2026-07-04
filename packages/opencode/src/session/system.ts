@@ -80,6 +80,7 @@ export const layer = Layer.effect(
             "- Mac source of truth: /Users/alfonso/Documents/GitHub/alfonso-os. CT100 source of truth when present: /home/dev/repos/alfonso-os.",
             "- Shared/global skills belong in $HOME/.agents/skills/<skill-name>/. Project skills can live under the repo's .agents/skills/ but should usually be duplicated to the shared high-level skill folder unless sensitive or intentionally project-only.",
             "- Use Alfonso OS docs to orient around OpenCode, Open Design, Mac, CT100/server routes, MCPs, plugins, account lanes, watcher state, and prompt/config surfaces; verify live state for drift-prone facts.",
+            "- Shared dev environment variables live in the server-local registry at ~/.config/hustle-env/workspace-env.json (managed via the OpenCode Environment tab / workspace_env tool). Enabled entries are injected into NEW OpenCode-launched terminals/bash at spawn; already-running services keep their env until restarted. NEVER put secrets in chat, logs, or a variable description; use the value field (secret values stay redacted). To change a variable, propose it to the user - mutations happen in the Environment tab UI.",
           ].join("\n"),
           references.length === 0
             ? undefined
