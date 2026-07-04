@@ -3923,6 +3923,64 @@ function FileBrowserTabContent() {
     writeFileBrowserState({ currentPath: currentPath(), mode: mode(), query: query(), selectedPath: selectedPath() }),
   )
 
+  // Back/forward history over resolved folder paths.
+  const [history, setHistory] = createSignal<string[]>(initialState.currentPath ? [initialState.currentPath] : [])
+  const [historyIndex, setHistoryIndex] = createSignal(initialState.currentPath ? 0 : -1)
+  const clearSelection = () => {
+    setSelected(undefined)
+    setSelectedPath(undefined)
+  }
+  // Seed history from the first resolved path so back/forward work from a default root.
+  createEffect(() => {
+    const resolved = browser.data()?.path
+    if (resolved && history().length === 0) {
+      setHistory([resolved])
+      setHistoryIndex(0)
+    }
+  })
+  const navigateTo = (next: string | undefined) => {
+    if (!next || next === currentPath()) return
+    clearSelection()
+    setCurrentPath(next)
+    setQuery("")
+    const trimmed = history().slice(0, historyIndex() + 1)
+    if (trimmed[trimmed.length - 1] !== next) trimmed.push(next)
+    setHistory(trimmed)
+    setHistoryIndex(trimmed.length - 1)
+  }
+  const canBack = () => historyIndex() > 0
+  const canForward = () => historyIndex() < history().length - 1
+  const goBack = () => {
+    if (!canBack()) return
+    const i = historyIndex() - 1
+    setHistoryIndex(i)
+    clearSelection()
+    setCurrentPath(history()[i])
+  }
+  const goForward = () => {
+    if (!canForward()) return
+    const i = historyIndex() + 1
+    setHistoryIndex(i)
+    clearSelection()
+    setCurrentPath(history()[i])
+  }
+  const breadcrumbs = createMemo(() => {
+    const full = browser.data()?.path
+    if (!full) return [] as Array<{ label: string; path: string }>
+    const roots: string[] = Array.isArray(browser.data()?.roots) ? browser.data().roots : []
+    const containingRoot = roots.filter((r) => full === r || full.startsWith(r + "/")).sort((a, b) => b.length - a.length)[0]
+    if (!containingRoot) {
+      const parts = full.split("/").filter(Boolean)
+      let acc = ""
+      return parts.map((part: string) => ({ label: part, path: (acc += "/" + part) }))
+    }
+    const crumbs: Array<{ label: string; path: string }> = [{ label: containingRoot.split("/").filter(Boolean).pop() || containingRoot, path: containingRoot }]
+    const rest = full.slice(containingRoot.length).split("/").filter(Boolean)
+    let acc = containingRoot
+    for (const part of rest) crumbs.push({ label: part, path: (acc += "/" + part) })
+    return crumbs
+  })
+
   const opensInViewer = (entry: any) => ["image", "video", "audio", "pdf", "html", "json", "text"].includes(entry.kind)
   const openCodeFile = (entry: any) => {
     const tab = fileContext.tab(entry.path)
@@ -3939,9 +3997,7 @@ function FileBrowserTabContent() {
   const openEntry = (entry: any) => {
     selectEntry(entry)
     if (entry.kind === "directory") {
-      setSelected(undefined)
-      setSelectedPath(undefined)
-      setCurrentPath(entry.path)
+      navigateTo(entry.path)
       return
     }
     if (!opensInViewer(entry)) {
@@ -3986,16 +4042,55 @@ function FileBrowserTabContent() {
             icon="arrow-left"
             variant="ghost"
             class="h-7 w-7"
-            disabled={!browser.data()?.parent}
-            onClick={() => {
-              setSelected(undefined)
-              setSelectedPath(undefined)
-              setCurrentPath(browser.data()?.parent)
-            }}
-            aria-label="Parent folder"
+            disabled={!canBack()}
+            onClick={goBack}
+            aria-label="Back"
+            data-testid="file-browser-back"
           />
-          <div class="min-w-[180px] flex-1 truncate rounded-md border border-border-weaker-base bg-background-stronger px-2 py-1 text-13-regular text-text-strong">
-            {browser.data()?.path ?? "Loading..."}
+          <IconButton
+            icon="arrow-right"
+            variant="ghost"
+            class="h-7 w-7"
+            disabled={!canForward()}
+            onClick={goForward}
+            aria-label="Forward"
+            data-testid="file-browser-forward"
+          />
+          <IconButton
+            icon="arrow-up"
+            variant="ghost"
+            class="h-7 w-7"
+            disabled={!browser.data()?.parent}
+            onClick={() => navigateTo(browser.data()?.parent)}
+            aria-label="Parent folder"
+            data-testid="file-browser-parent"
+          />
+          <div
+            class="flex min-w-[180px] flex-1 items-center gap-0.5 overflow-x-auto rounded-md border border-border-weaker-base bg-background-stronger px-2 py-1 text-13-regular"
+            data-testid="file-browser-breadcrumbs"
+          >
+            <Show when={breadcrumbs().length > 0} fallback={<span class="text-text-weak">{browser.data()?.path ?? "Loading..."}</span>}>
+              <For each={breadcrumbs()}>
+                {(crumb, index) => (
+                  <>
+                    <Show when={index() > 0}>
+                      <span class="shrink-0 text-text-weak">/</span>
+                    </Show>
+                    <button
+                      type="button"
+                      class="shrink-0 truncate rounded px-1 py-0.5 hover:bg-surface-raised-base-hover"
+                      classList={{
+                        "text-text-strong": index() === breadcrumbs().length - 1,
+                        "text-text-weak": index() !== breadcrumbs().length - 1,
+                      }}
+                      onClick={() => navigateTo(crumb.path)}
+                    >
+                      {crumb.label}
+                    </button>
+                  </>
+                )}
+              </For>
+            </Show>
           </div>
           <input
             class="h-8 min-w-[180px] rounded-md border border-border-weaker-base bg-background-stronger px-2 text-13-regular text-text-strong outline-none placeholder:text-text-weak"
@@ -4038,7 +4133,10 @@ function FileBrowserTabContent() {
                       <button
                         class="min-h-24 rounded-md bg-background-base p-2 text-left hover:bg-surface-raised-base-hover"
                         classList={{ "ring-1 ring-[#f97316]": selected()?.path === entry.path }}
-                        onClick={() => selectEntry(entry)}
+                        data-testid="fb-entry"
+                        data-kind={entry.kind}
+                        data-name={entry.name}
+                        onClick={() => (entry.kind === "directory" ? navigateTo(entry.path) : selectEntry(entry))}
                         onDblClick={() => openEntry(entry)}
                       >
                         <div class="mb-2 flex justify-center text-[#f97316]">
@@ -4060,7 +4158,10 @@ function FileBrowserTabContent() {
                       <button
                         class="flex items-center gap-3 border-b border-border-weaker-base px-3 py-2 text-left last:border-b-0 hover:bg-surface-raised-base-hover"
                         classList={{ "bg-background-base": selected()?.path === entry.path }}
-                        onClick={() => selectEntry(entry)}
+                        data-testid="fb-entry"
+                        data-kind={entry.kind}
+                        data-name={entry.name}
+                        onClick={() => (entry.kind === "directory" ? navigateTo(entry.path) : selectEntry(entry))}
                         onDblClick={() => openEntry(entry)}
                       >
                         <span class="text-[#f97316]">
@@ -4141,6 +4242,14 @@ function FileDetails(props: { file: any; onOpen?: () => void }) {
           <StatusRow label="Size" value={file().kind === "directory" ? "Folder" : formatBytes(file().size)} />
           <StatusRow label="Modified" value={file().mtime ? new Date(file().mtime).toLocaleString() : "Unknown"} />
         </div>
+        <Show when={file().kind !== "directory" && (file().url || file().path)}>
+          <div class="mt-3" data-testid="file-preview">
+            <div class="mb-1 text-11-medium text-text-weak">Preview</div>
+            <div class="h-72 overflow-hidden rounded-md border border-border-weaker-base bg-background-base">
+              <FilePreview file={file()} showHeader={false} />
+            </div>
+          </div>
+        </Show>
       </div>
       <div class="flex shrink-0 items-center justify-end gap-2 border-t border-border-weaker-base p-3">
         <Show when={file().url}>
