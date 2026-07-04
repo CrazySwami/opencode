@@ -859,6 +859,8 @@ function codexAccountSummaryFromGuard(alias: string, value: unknown, activeAlias
     lastUsed: typeof record.lastUsed === "number" ? record.lastUsed : null,
     lastSeenAt: typeof record.lastSeenAt === "number" ? record.lastSeenAt : null,
     expiresAt: typeof record.expiresAt === "number" ? record.expiresAt : null,
+    reauthNeeded: record.reauthNeeded === true,
+    disabledReason: typeof record.disabledReason === "string" ? record.disabledReason : null,
   }
 }
 
@@ -872,6 +874,8 @@ function codexAccountSummaryFromLegacy(value: unknown, index: number, activeInde
     label: typeof record.accountLabel === "string" ? record.accountLabel : null,
     enabled: true,
     active: index === activeIndex,
+    reauthNeeded: false,
+    disabledReason: null,
     source: "legacy-oc-codex-multi-auth",
     planType: null,
     usageCount: null,

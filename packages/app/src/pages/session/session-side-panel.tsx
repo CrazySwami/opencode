@@ -2579,6 +2579,11 @@ function AccountsTabContent() {
     await runCodexAccountAction({ action: "remove-account", alias }, `remove-account:${alias}`, `Codex account ${alias} removed`)
   }
 
+  const reauthCodexAccount = async (alias: string) => {
+    setLoginResult((current: any) => ({ ...(current ?? {}), reauthTarget: alias }))
+    await startCodexLogin()
+  }
+
   const setCodexRotation = async (strategy: string) =>
     runCodexAccountAction({ action: "set-rotation", strategy }, `set-rotation:${strategy}`, `Codex rotation set to ${strategy}`)
 
@@ -2745,83 +2750,93 @@ function AccountsTabContent() {
             )}
           </Show>
           <Show when={codexAccountList().length > 0}>
-            <div class="mb-3 overflow-hidden rounded-md border border-border-weaker-base">
+            <div class="mb-3 flex flex-col gap-2" data-testid="codex-account-cards">
               <For each={codexAccountList()}>
-                {(account: any) => (
-                  <div class="grid gap-2 border-b border-border-weaker-base bg-background-base px-3 py-2 text-12-regular last:border-b-0 md:grid-cols-[1fr_1fr_auto_auto]">
-                    <div class="min-w-0">
-                      <div class="truncate text-text-strong">{account.alias ?? "account"}</div>
-                      <div class="truncate text-11-regular text-text-weak">{account.email ?? account.label ?? "email not reported"}</div>
-                    </div>
-                    <div class="min-w-0 text-11-regular text-text-weak">
-                      <div class="truncate">{account.accountId ?? "account id hidden"}</div>
-                      <div class="truncate">
-                        {account.planType ? `ChatGPT ${account.planType}` : "plan unknown"}
-                        {typeof account.usageCount === "number" ? ` · ${account.usageCount} sends via rotation` : ""}
+                {(account: any) => {
+                  const pending = (op: string) => loginResult()?.accountActionPending === `${op}:${account.alias}`
+                  const isForced = () => codexForcedAccount() === account.alias
+                  const reauth = () => account.reauthNeeded === true
+                  return (
+                    <div
+                      class="rounded-lg border bg-background-base p-3"
+                      classList={{
+                        "border-green-500/40": account.active,
+                        "border-orange-500/30": !account.active && reauth(),
+                        "border-border-weaker-base": !account.active && !reauth(),
+                      }}
+                      data-testid="codex-account-card"
+                      data-alias={account.alias}
+                    >
+                      <div class="flex items-start justify-between gap-3">
+                        <div class="min-w-0">
+                          <div class="flex items-center gap-2">
+                            <span class="truncate text-13-medium text-text-strong">{account.alias ?? "account"}</span>
+                            <Show when={account.active}>
+                              <span class="rounded bg-green-500/15 px-1.5 py-0.5 text-10-medium uppercase tracking-wide text-green-200">active</span>
+                            </Show>
+                            <Show when={isForced()}>
+                              <span class="rounded bg-orange-500/15 px-1.5 py-0.5 text-10-medium uppercase tracking-wide text-orange-100">forced</span>
+                            </Show>
+                            <Show when={reauth()}>
+                              <span class="rounded bg-red-500/15 px-1.5 py-0.5 text-10-medium uppercase tracking-wide text-red-200">re-auth needed</span>
+                            </Show>
+                            <Show when={!reauth() && account.enabled === false}>
+                              <span class="rounded bg-background-stronger px-1.5 py-0.5 text-10-medium uppercase tracking-wide text-text-weak">disabled</span>
+                            </Show>
+                          </div>
+                          <div class="mt-0.5 truncate text-11-regular text-text-weak">{account.email ?? account.label ?? "email not reported"}</div>
+                        </div>
+                        <span class="shrink-0 rounded bg-background-stronger px-2 py-1 text-10-medium text-text-weak">
+                          {account.planType ? `ChatGPT ${account.planType}` : "plan unknown"}
+                        </span>
                       </div>
-                      <div class="truncate">
-                        {account.lastUsed ? `last used ${new Date(account.lastUsed).toLocaleString()}` : "not used yet"}
+                      <div class="mt-2 grid grid-cols-2 gap-x-3 gap-y-0.5 text-10-regular text-text-weak">
+                        <span>{typeof account.usageCount === "number" ? `${account.usageCount} local rotation sends` : "no local send count"}</span>
+                        <span>{account.lastUsed ? `last used ${new Date(account.lastUsed).toLocaleString()}` : "not used yet"}</span>
                       </div>
-                    </div>
-                    <div class="flex flex-wrap items-center gap-2 self-center">
-                      <span class="rounded bg-background-stronger px-2 py-1 text-11-regular text-text-weak">
-                        {account.enabled === false ? "disabled" : "enabled"}
-                      </span>
-                      <Show when={codexForcedAccount() === account.alias}>
-                        <span class="rounded bg-orange-500/10 px-2 py-1 text-11-regular text-orange-100">forced</span>
+                      <Show when={reauth()}>
+                        <div class="mt-2 rounded border border-red-500/20 bg-red-500/10 px-2 py-1.5 text-10-regular text-red-200">
+                          This account's refresh token was invalidated ({account.disabledReason ?? "reauth_needed"}). It is disabled and cannot send until you re-authenticate it below. Re-enabling without re-auth will not work.
+                        </div>
                       </Show>
-                    </div>
-                    <div class="flex flex-wrap items-center justify-end gap-2 self-center">
-                      <Show
-                        when={account.active}
-                        fallback={
-                          <button
-                            type="button"
-                            class="rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60"
-                            disabled={loginResult()?.accountActionPending === `set-active:${account.alias}`}
-                            onClick={() => void setCodexActiveAccount(account.alias)}
-                          >
-                            {loginResult()?.accountActionPending === `set-active:${account.alias}` ? "Setting..." : "Set active"}
+                      <div class="mt-2.5 flex flex-wrap items-center gap-2">
+                        <Show when={!account.active && account.enabled !== false && !reauth()}>
+                          <button type="button" class="rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60" disabled={pending("set-active")} onClick={() => void setCodexActiveAccount(account.alias)}>
+                            {pending("set-active") ? "Setting..." : "Set active"}
                           </button>
-                        }
-                      >
-                        <span class="rounded bg-green-500/10 px-2 py-1 text-11-regular text-green-200">active</span>
-                      </Show>
-                      <button
-                        type="button"
-                        class="self-center rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60"
-                        disabled={loginResult()?.accountActionPending === `set-enabled:${account.alias}`}
-                        onClick={() => void setCodexAccountEnabled(account.alias, account.enabled === false)}
-                      >
-                        {loginResult()?.accountActionPending === `set-enabled:${account.alias}`
-                          ? "Updating..."
-                          : account.enabled === false
-                            ? "Enable"
-                            : "Disable"}
-                      </button>
-                      <button
-                        type="button"
-                        class="self-center rounded border border-orange-500/30 bg-background-stronger px-2 py-1 text-11-regular text-orange-200 hover:bg-surface-raised-base-hover disabled:opacity-60"
-                        disabled={loginResult()?.accountActionPending === `remove-account:${account.alias}`}
-                        onClick={() => void removeCodexAccount(account.alias)}
-                      >
-                        {loginResult()?.accountActionPending === `remove-account:${account.alias}` ? "Removing..." : "Remove"}
-                      </button>
-                      <Show when={codexForcedAccount() !== account.alias}>
-                        <button
-                          type="button"
-                          class="self-center rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60"
-                          disabled={loginResult()?.accountActionPending === `force-account:${account.alias}`}
-                          onClick={() => void forceCodexAccount(account.alias)}
-                        >
-                          {loginResult()?.accountActionPending === `force-account:${account.alias}` ? "Forcing..." : "Force 2h"}
+                        </Show>
+                        <Show when={reauth()}>
+                          <button type="button" class="rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-11-regular text-red-100 hover:bg-red-500/20 disabled:opacity-60" disabled={loginStarting()} onClick={() => void reauthCodexAccount(account.alias)}>
+                            {loginStarting() && loginResult()?.reauthTarget === account.alias ? "Starting re-auth..." : "Re-authenticate"}
+                          </button>
+                        </Show>
+                        <button type="button" class="rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60" disabled={pending("set-enabled") || (reauth() && account.enabled === false)} title={reauth() && account.enabled === false ? "Re-authenticate before enabling" : undefined} onClick={() => void setCodexAccountEnabled(account.alias, account.enabled === false)}>
+                          {pending("set-enabled") ? "Updating..." : account.enabled === false ? "Enable" : "Disable"}
                         </button>
-                      </Show>
+                        <Show when={!isForced() && account.enabled !== false && !reauth()}>
+                          <button type="button" class="rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60" disabled={pending("force-account")} onClick={() => void forceCodexAccount(account.alias)}>
+                            {pending("force-account") ? "Forcing..." : "Force 2h"}
+                          </button>
+                        </Show>
+                        <Show when={isForced()}>
+                          <button type="button" class="rounded border border-orange-500/30 bg-background-stronger px-2 py-1 text-11-regular text-orange-100 hover:bg-surface-raised-base-hover disabled:opacity-60" disabled={loginResult()?.accountActionPending === "clear-force"} onClick={() => void clearCodexForce()}>
+                            {loginResult()?.accountActionPending === "clear-force" ? "Clearing..." : "Unforce"}
+                          </button>
+                        </Show>
+                        <button type="button" class="ml-auto rounded border border-red-500/30 bg-background-stronger px-2 py-1 text-11-regular text-red-200 hover:bg-red-500/10 disabled:opacity-60" disabled={pending("remove-account")} onClick={() => void removeCodexAccount(account.alias)}>
+                          {pending("remove-account") ? "Removing..." : "Remove"}
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )
+                }}
               </For>
             </div>
+            <Show when={codexAccountList().filter((a: any) => a.enabled !== false).length <= 1}>
+              <div class="mb-3 rounded border border-border-weaker-base bg-background-base px-3 py-2 text-10-regular text-text-weak">
+                Only one account is enabled, so rotation is effectively single-account. The model picker's Codex Multi-Auth lane always routes through the active account; base OpenAI stays hidden. OpenDesign design prompts use this same active lane.
+              </div>
+            </Show>
           </Show>
           <Show when={codexAccountList().length === 0}>
             <div class="mb-3 rounded-md border border-border-weaker-base bg-background-base px-3 py-2 text-12-regular text-text-weak">
@@ -2893,7 +2908,18 @@ function AccountsTabContent() {
           </Show>
           <Show when={authPanel()}>
             {(result) => (
-              <div class="mb-3 rounded-md border border-border-weaker-base bg-background-base p-3 text-12-regular">
+              <div class="mb-3 rounded-md border border-border-weaker-base bg-background-base p-3 text-12-regular" data-testid="codex-auth-panel">
+                <div class="mb-2 flex items-center justify-between gap-2">
+                  <div class="text-12-medium text-text-strong">
+                    {loginResult()?.reauthTarget ? `Re-authenticate "${loginResult()?.reauthTarget}"` : "Add Codex account"}
+                  </div>
+                  <Show when={!/authorized|complete|written|success/i.test(String(result().phase ?? ""))}>
+                    <span class="rounded-full bg-orange-500/15 px-2 py-0.5 text-10-medium text-orange-100">waiting for approval</span>
+                  </Show>
+                </div>
+                <div class="mb-2 text-10-regular text-text-weak">
+                  Open the link (or copy the code), approve in ChatGPT, then this panel refreshes automatically. The device-code flow needs no localhost callback.
+                </div>
                 <div class="mb-2 flex items-center justify-between gap-2">
                   <div class="text-12-medium text-text-strong">Auth command</div>
                   <button
