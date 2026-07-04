@@ -1467,6 +1467,20 @@ function PreviewTabContent(props: { sessionID?: string }) {
   const previewStateTimer = window.setInterval(() => void syncPreviewState(), 2000)
   onCleanup(() => window.clearInterval(previewStateTimer))
 
+  // Instant open from other tabs (e.g. File Browser project card).
+  if (typeof window !== "undefined") {
+    const onPreviewOpen = (event: Event) => {
+      const url = (event as CustomEvent).detail?.url
+      if (typeof url !== "string" || !url.trim()) return
+      const next = normalizePreviewURL(url)
+      setAddress(next)
+      setCurrentURL(next)
+      void writePreviewServerState(next)
+    }
+    window.addEventListener("opencode:preview-open", onPreviewOpen as EventListener)
+    onCleanup(() => window.removeEventListener("opencode:preview-open", onPreviewOpen as EventListener))
+  }
+
   createEffect(() => {
     const url = currentURL()
     if (!url || currentKind() !== "external") {
@@ -3929,7 +3943,7 @@ function ArtifactsTabContent(props: { sessionID?: string }) {
   )
 }
 
-function FileBrowserTabContent() {
+function FileBrowserTabContent(props: { onOpenPreview?: (url: string) => void }) {
   const fileContext = useFile()
   const { tabs } = useSessionLayout()
   const initialState = readFileBrowserState()
@@ -4255,7 +4269,30 @@ function FileBrowserTabContent() {
                 </div>
               </Show>
               <Show when={(projectMeta.data()?.metadata?.preview?.urls?.length ?? 0) > 0}>
-                <div class="text-text-weak">Preview: {(projectMeta.data()?.metadata?.preview?.urls ?? []).join(", ")}</div>
+                <div class="flex flex-col gap-1" data-testid="project-preview-urls">
+                  <span class="text-text-weak">Preview URLs:</span>
+                  <For each={projectMeta.data()?.metadata?.preview?.urls ?? []}>
+                    {(url: string) => (
+                      <div class="flex items-center gap-2">
+                        <span class="min-w-0 flex-1 truncate font-mono text-10-regular text-text-strong">{url}</span>
+                        <button
+                          type="button"
+                          class="shrink-0 rounded border border-[#f97316]/40 bg-[#f97316]/10 px-2 py-0.5 text-10-regular text-text-strong hover:bg-[#f97316]/20 disabled:opacity-50"
+                          data-testid="open-in-preview"
+                          data-url={url}
+                          disabled={!props.onOpenPreview || !/^https?:\/\//i.test(String(url))}
+                          onClick={(event) => {
+                            event.preventDefault()
+                            const target = String(url).trim()
+                            if (props.onOpenPreview && /^https?:\/\//i.test(target)) props.onOpenPreview(target)
+                          }}
+                        >
+                          Open in Preview
+                        </button>
+                      </div>
+                    )}
+                  </For>
+                </div>
               </Show>
               <Show when={(projectMeta.data()?.metadata?.routines?.length ?? 0) > 0}>
                 <div class="text-text-weak">Routines: {(projectMeta.data()?.metadata?.routines ?? []).map((r: any) => r.name ?? r.id).join(", ")}</div>
@@ -4894,6 +4931,27 @@ export function SessionSidePanel(props: {
     tabs().setActive(nextTab)
   }
 
+  // Open a URL in the Preview tab without disturbing the caller's tab (used by
+  // the File Browser project-metadata card). Seeds localStorage (for a fresh
+  // mount), the server preview state (for an already-open Preview poll), and
+  // dispatches an event (for an instant update on the mounted Preview).
+  const openPreviewURL = (url: string) => {
+    const clean = String(url || "").trim()
+    if (!clean) return
+    writePreviewState({ url: clean })
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("opencode:preview-open", { detail: { url: clean } }))
+      if (params.id) {
+        void fetch(`/experimental/preview/${encodeURIComponent(params.id)}/state`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ url: clean, action: "navigate", source: "file-browser" }),
+        }).catch(() => {})
+      }
+    }
+    openPanelTab(PANEL_PREVIEW_TAB)
+  }
+
   const changeActiveTab = (tab: string) => {
     setPanelMenuOpen(false)
     if (isPanelTab(tab) || tab === "review" || tab === "context" || tab === "empty") {
@@ -5494,7 +5552,7 @@ export function SessionSidePanel(props: {
                         class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
                       >
                         <Show when={activePanelTab() === PANEL_FILE_BROWSER_TAB}>
-                          <FileBrowserTabContent />
+                          <FileBrowserTabContent onOpenPreview={openPreviewURL} />
                         </Show>
                       </Tabs.Content>
 
