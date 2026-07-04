@@ -3111,6 +3111,10 @@ function RoutinesTabContent() {
     () => (selected()?.id ? `/experimental/routines/jobs/${encodeURIComponent(selected().id)}/logs` : undefined),
     10000,
   )
+  const linkage = createPolledJson<any>(
+    () => (selected()?.id ? `/experimental/project-metadata/for-routine?id=${encodeURIComponent(selected().id)}` : undefined),
+    30000,
+  )
 
   createEffect(() => {
     const first = routines()[0]?.id
@@ -3340,7 +3344,16 @@ function RoutinesTabContent() {
                     <EnvironmentInfoRow label="Next run" value={routine().nextRunAt} />
                     <EnvironmentInfoRow label="Notify" value={(routine().notify ?? []).join(", ") || "in-app"} />
                     <EnvironmentInfoRow label="Tags" value={(routine().tags ?? []).join(", ") || "none"} />
+                    <EnvironmentInfoRow
+                      label="Linked project"
+                      value={(linkage.data()?.projects ?? []).map((p: any) => p.name ?? p.repoRoot).join(", ") || "none"}
+                    />
                   </div>
+                  <Show when={(linkage.data()?.projects?.length ?? 0) > 0}>
+                    <div class="rounded border border-[#f97316]/20 bg-[#f97316]/5 px-2 py-1.5 text-11-regular text-text-weak" data-testid="routine-linked-project">
+                      Referenced by {(linkage.data()?.projects ?? []).length} project via <span class="font-mono">.opencode/design/project.json</span> routines[].
+                    </div>
+                  </Show>
 
                   <Show when={routine().command}>
                     <div class="rounded bg-background-base p-2">
@@ -4203,7 +4216,7 @@ function ArtifactsTabContent(props: { sessionID?: string }) {
   )
 }
 
-function FileBrowserTabContent(props: { onOpenPreview?: (url: string) => void }) {
+function FileBrowserTabContent(props: { onOpenPreview?: (url: string) => void; onOpenRoutines?: () => void }) {
   const fileContext = useFile()
   const { tabs } = useSessionLayout()
   const initialState = readFileBrowserState()
@@ -4555,7 +4568,18 @@ function FileBrowserTabContent(props: { onOpenPreview?: (url: string) => void })
                 </div>
               </Show>
               <Show when={(projectMeta.data()?.metadata?.routines?.length ?? 0) > 0}>
-                <div class="text-text-weak">Routines: {(projectMeta.data()?.metadata?.routines ?? []).map((r: any) => r.name ?? r.id).join(", ")}</div>
+                <div class="flex flex-wrap items-center gap-2" data-testid="project-routines">
+                  <span class="text-text-weak">Routines: {(projectMeta.data()?.metadata?.routines ?? []).map((r: any) => r.name ?? r.id).join(", ")}</span>
+                  <button
+                    type="button"
+                    class="shrink-0 rounded border border-[#f97316]/40 bg-[#f97316]/10 px-2 py-0.5 text-10-regular text-text-strong hover:bg-[#f97316]/20 disabled:opacity-50"
+                    data-testid="open-routines"
+                    disabled={!props.onOpenRoutines}
+                    onClick={() => props.onOpenRoutines?.()}
+                  >
+                    Open Routines
+                  </button>
+                </div>
               </Show>
               <Show when={(projectMeta.data()?.metadata?.relatedFiles?.length ?? 0) > 0}>
                 <div class="text-text-weak">Related files: {(projectMeta.data()?.metadata?.relatedFiles ?? []).length}</div>
@@ -5812,7 +5836,7 @@ export function SessionSidePanel(props: {
                         class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
                       >
                         <Show when={activePanelTab() === PANEL_FILE_BROWSER_TAB}>
-                          <FileBrowserTabContent onOpenPreview={openPreviewURL} />
+                          <FileBrowserTabContent onOpenPreview={openPreviewURL} onOpenRoutines={() => openPanelTab(PANEL_ROUTINES_TAB)} />
                         </Show>
                       </Tabs.Content>
 

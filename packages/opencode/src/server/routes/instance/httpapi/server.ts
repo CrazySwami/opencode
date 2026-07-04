@@ -787,6 +787,14 @@ const fileViewerRoute = HttpRouter.use((router) =>
     yield* router.add("GET", "/experimental/project-metadata", (request) =>
       Effect.promise(async () => HttpServerResponse.jsonUnsafe(resolveProjectMetadata(new URL(request.url, "http://localhost").searchParams.get("path")))),
     )
+
+    yield* router.add("GET", "/experimental/project-metadata/for-routine", (request) =>
+      Effect.promise(async () =>
+        HttpServerResponse.jsonUnsafe(
+          projectsReferencingRoutine(new URL(request.url, "http://localhost").searchParams.get("id")),
+        ),
+      ),
+    )
   }),
 ).pipe(Layer.provide(authOnlyRouterLayer))
 
@@ -2898,6 +2906,36 @@ const PROJECT_METADATA_MAX_BYTES = 256 * 1024
 
 // Walk up from a path (within allowlisted roots) to find the nearest
 // .opencode/design/project.json. Read-only; returns present:false gracefully.
+function projectsReferencingRoutine(routineId: string | null) {
+  const id = String(routineId || "").trim()
+  if (!id) return { ok: false, error: "routine id is required" }
+  const reposRoot = process.env.OPENCODE_DEV_ROOT || "/home/dev/repos"
+  if (!fileViewerAllowed(reposRoot)) return { ok: true, id, projects: [] }
+  const projects: Array<{ repoRoot: string; name: string | null; metadataPath: string }> = []
+  let dirs: import("node:fs").Dirent[]
+  try {
+    dirs = readdirSync(reposRoot, { withFileTypes: true })
+  } catch {
+    return { ok: true, id, projects: [] }
+  }
+  for (const dir of dirs) {
+    if (!dir.isDirectory()) continue
+    const candidate = path.join(reposRoot, dir.name, ".opencode", "design", "project.json")
+    const stat = safeStat(candidate)
+    if (!stat?.isFile() || stat.size > 256 * 1024) continue
+    try {
+      const metadata = JSON.parse(readFileSync(candidate, "utf8"))
+      const routines = Array.isArray(metadata?.routines) ? metadata.routines : []
+      if (routines.some((r: any) => (typeof r === "string" ? r : r?.id) === id)) {
+        projects.push({ repoRoot: path.join(reposRoot, dir.name), name: typeof metadata?.name === "string" ? metadata.name : null, metadataPath: candidate })
+      }
+    } catch {
+      // skip unreadable/invalid metadata
+    }
+  }
+  return { ok: true, id, projects }
+}
+
 function resolveProjectMetadata(requested: string | null) {
   const start = path.resolve(requested || fileBrowserDefaultPath())
   if (!fileViewerAllowed(start)) return { ok: false, error: "Path is outside allowlisted roots" }
