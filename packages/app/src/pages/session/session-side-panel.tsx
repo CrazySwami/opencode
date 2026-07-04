@@ -3946,6 +3946,14 @@ function FileBrowserTabContent() {
     writeFileBrowserState({ currentPath: currentPath(), mode: mode(), query: query(), selectedPath: selectedPath(), recursive: recursive() }),
   )
 
+  const projectMeta = createPolledJson<any>(
+    () => {
+      const base = currentPath() || browser.data()?.path
+      return base ? `/experimental/project-metadata?path=${encodeURIComponent(base)}` : undefined
+    },
+    30000,
+  )
+
   // Back/forward history over resolved folder paths.
   const [history, setHistory] = createSignal<string[]>(initialState.currentPath ? [initialState.currentPath] : [])
   const [historyIndex, setHistoryIndex] = createSignal(initialState.currentPath ? 0 : -1)
@@ -4220,6 +4228,44 @@ function FileBrowserTabContent() {
               {error()}
             </div>
           )}
+        </Show>
+        <Show when={projectMeta.data()?.present}>
+          <details class="rounded-md border border-[#f97316]/30 bg-background-stronger px-3 py-2" data-testid="project-metadata-card">
+            <summary class="cursor-pointer text-12-medium text-text-strong">
+              Project: {projectMeta.data()?.metadata?.name ?? "Untitled"} <span class="text-11-regular text-text-weak">· design surfaces</span>
+            </summary>
+            <div class="mt-2 grid gap-1 text-11-regular">
+              <Show when={projectMeta.data()?.metadata?.description}>
+                <div class="text-text-weak">{projectMeta.data()?.metadata?.description}</div>
+              </Show>
+              <Show when={projectMeta.data()?.metadata?.openDesign?.url}>
+                <div class="text-text-weak">
+                  Open Design:{" "}
+                  <a href={projectMeta.data()?.metadata?.openDesign?.url} target="_blank" rel="noreferrer" class="text-[#f97316] hover:underline">
+                    {projectMeta.data()?.metadata?.openDesign?.projectId ?? projectMeta.data()?.metadata?.openDesign?.url}
+                  </a>
+                </div>
+              </Show>
+              <Show when={projectMeta.data()?.metadata?.paper?.url}>
+                <div class="text-text-weak">
+                  Paper:{" "}
+                  <a href={projectMeta.data()?.metadata?.paper?.url} target="_blank" rel="noreferrer" class="text-[#f97316] hover:underline">
+                    {projectMeta.data()?.metadata?.paper?.projectId ?? projectMeta.data()?.metadata?.paper?.url}
+                  </a>
+                </div>
+              </Show>
+              <Show when={(projectMeta.data()?.metadata?.preview?.urls?.length ?? 0) > 0}>
+                <div class="text-text-weak">Preview: {(projectMeta.data()?.metadata?.preview?.urls ?? []).join(", ")}</div>
+              </Show>
+              <Show when={(projectMeta.data()?.metadata?.routines?.length ?? 0) > 0}>
+                <div class="text-text-weak">Routines: {(projectMeta.data()?.metadata?.routines ?? []).map((r: any) => r.name ?? r.id).join(", ")}</div>
+              </Show>
+              <Show when={(projectMeta.data()?.metadata?.relatedFiles?.length ?? 0) > 0}>
+                <div class="text-text-weak">Related files: {(projectMeta.data()?.metadata?.relatedFiles ?? []).length}</div>
+              </Show>
+              <div class="truncate font-mono text-10-regular text-text-weak">{projectMeta.data()?.metadataPath}</div>
+            </div>
+          </details>
         </Show>
         <Show when={searchActive()}>
           <div class="flex items-center gap-2 rounded-md border border-border-weaker-base bg-background-stronger px-3 py-1.5 text-11-regular text-text-weak" data-testid="file-browser-search-status">

@@ -5,7 +5,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
 import path from "node:path"
 
 export const Parameters = Schema.Struct({
-  action: Schema.Literals(["roots", "list", "browse", "stat", "metadata", "search", "preview"]).annotate({
+  action: Schema.Literals(["roots", "list", "browse", "stat", "metadata", "search", "preview", "project"]).annotate({
     description:
       "File browser action. roots=list allowlisted roots; list/browse=directory entries; stat/metadata=file/dir metadata; search=recursive name match under a path; preview=bounded text/image preview. open_viewer/open_editor/attach_to_chat are UI actions routed via workspace_tabs, not this read-only tool.",
   }),
@@ -15,7 +15,7 @@ export const Parameters = Schema.Struct({
 })
 
 type Metadata = {
-  action: "roots" | "list" | "browse" | "stat" | "metadata" | "search" | "preview"
+  action: "roots" | "list" | "browse" | "stat" | "metadata" | "search" | "preview" | "project"
   path?: string
 }
 
@@ -46,8 +46,36 @@ type FileBrowserParams = Schema.Schema.Type<typeof Parameters>
 const PREVIEW_MAX_BYTES = 64 * 1024
 const SEARCH_SKIP = new Set(["node_modules", ".git", ".next", "dist", "build", ".cache", ".turbo"])
 
+const PROJECT_METADATA_REL = path.join(".opencode", "design", "project.json")
+
 function executeFileBrowser(params: FileBrowserParams) {
   if (params.action === "roots") return { roots: fileRoots(), defaultPath: defaultPath() }
+
+  if (params.action === "project") {
+    const start = path.resolve(params.path || defaultPath())
+    assertAllowed(start)
+    const startStat = statSync(start, { throwIfNoEntry: false })
+    let dir = startStat?.isDirectory() ? start : path.dirname(start)
+    const searched: string[] = []
+    for (let i = 0; i < 12; i++) {
+      const resolvedDir = path.resolve(dir)
+      if (!fileRoots().some((root) => resolvedDir === root || resolvedDir.startsWith(root + path.sep))) break
+      const candidate = path.join(dir, PROJECT_METADATA_REL)
+      searched.push(candidate)
+      const stat = statSync(candidate, { throwIfNoEntry: false })
+      if (stat?.isFile()) {
+        try {
+          return { present: true, repoRoot: dir, metadataPath: candidate, metadata: JSON.parse(readFileSync(candidate, "utf8")) }
+        } catch (error) {
+          return { present: false, repoRoot: dir, metadataPath: candidate, reason: `invalid json: ${(error as Error).message}` }
+        }
+      }
+      const parent = path.dirname(dir)
+      if (parent === dir) break
+      dir = parent
+    }
+    return { present: false, repoRoot: startStat?.isDirectory() ? start : path.dirname(start), searched }
+  }
 
   const target = path.resolve(params.path || defaultPath())
   assertAllowed(target)

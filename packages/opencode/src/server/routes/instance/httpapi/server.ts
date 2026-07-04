@@ -780,6 +780,10 @@ const fileViewerRoute = HttpRouter.use((router) =>
         })
       }),
     )
+
+    yield* router.add("GET", "/experimental/project-metadata", (request) =>
+      Effect.promise(async () => HttpServerResponse.jsonUnsafe(resolveProjectMetadata(new URL(request.url, "http://localhost").searchParams.get("path")))),
+    )
   }),
 ).pipe(Layer.provide(authOnlyRouterLayer))
 
@@ -2884,6 +2888,39 @@ function parentDirectory(directory: string) {
   const parent = path.dirname(directory)
   if (parent === directory) return null
   return fileViewerAllowed(parent) ? parent : null
+}
+
+const PROJECT_METADATA_REL = path.join(".opencode", "design", "project.json")
+const PROJECT_METADATA_MAX_BYTES = 256 * 1024
+
+// Walk up from a path (within allowlisted roots) to find the nearest
+// .opencode/design/project.json. Read-only; returns present:false gracefully.
+function resolveProjectMetadata(requested: string | null) {
+  const start = path.resolve(requested || fileBrowserDefaultPath())
+  if (!fileViewerAllowed(start)) return { ok: false, error: "Path is outside allowlisted roots" }
+  const startStat = safeStat(start)
+  let dir = startStat?.isDirectory() ? start : path.dirname(start)
+  const searched: string[] = []
+  for (let i = 0; i < 12; i++) {
+    if (!fileViewerAllowed(dir)) break
+    const candidate = path.join(dir, PROJECT_METADATA_REL)
+    searched.push(candidate)
+    const stat = safeStat(candidate)
+    if (stat?.isFile()) {
+      if (stat.size > PROJECT_METADATA_MAX_BYTES)
+        return { ok: true, present: false, repoRoot: dir, reason: "metadata file too large", metadataPath: candidate }
+      try {
+        const metadata = JSON.parse(readFileSync(candidate, "utf8"))
+        return { ok: true, present: true, repoRoot: dir, metadataPath: candidate, metadata }
+      } catch (error) {
+        return { ok: true, present: false, repoRoot: dir, reason: `invalid json: ${(error as Error).message}`, metadataPath: candidate }
+      }
+    }
+    const parent = path.dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return { ok: true, present: false, repoRoot: startStat?.isDirectory() ? start : path.dirname(start), searched }
 }
 
 function fileKind(contentType: string) {
