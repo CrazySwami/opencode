@@ -4398,13 +4398,19 @@ function openDesignCodexAccount() {
     path.join(process.env.HOME || "/home/dev", ".local", "share", "opencode-open-design", "codex-account.json")
   const parsed = readJsonObject(marker)
   if (!parsed) return { bridged: false, note: "No Codex Multi-Auth account has been synced into Open Design yet." }
+  const degraded = parsed.degraded === true
+  const requestedActiveAlias = typeof parsed.requestedActiveAlias === "string" ? parsed.requestedActiveAlias : null
   return {
     bridged: true,
     alias: typeof parsed.alias === "string" ? parsed.alias : null,
     email: typeof parsed.email === "string" ? parsed.email : null,
     forced: parsed.forced === true,
+    degraded,
+    requestedActiveAlias,
     syncedAt: typeof parsed.syncedAt === "string" ? parsed.syncedAt : null,
-    note: "Open Design's Codex CLI authenticates as the active Codex Multi-Auth account (synced by opencode-open-design-codex-sync).",
+    note: degraded
+      ? `Open Design is authenticated as ${typeof parsed.email === "string" ? parsed.email : "an existing account"}, which may differ from the active Codex account${requestedActiveAlias ? ` (${requestedActiveAlias})` : ""}. Re-seed could not rotate the active token; it re-syncs on the next successful account switch.`
+      : "Open Design's Codex CLI authenticates as the active Codex Multi-Auth account (synced by opencode-open-design-codex-sync).",
   }
 }
 
