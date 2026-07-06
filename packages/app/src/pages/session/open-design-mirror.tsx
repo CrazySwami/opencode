@@ -1,46 +1,16 @@
-import { createSignal, createMemo, createEffect, onCleanup, onMount, Show, For, Switch, Match } from "solid-js"
+import { createMemo, createEffect, createSignal, onCleanup, onMount, Show, For, Switch, Match } from "solid-js"
 import { Portal } from "solid-js/web"
+import { OPEN_DESIGN_BRIDGE_EVENT, type ODEvent, type ODMessage, type ODBridgeState } from "./open-design-mirror-types"
+import { ODEventList, type ODAnswer } from "./open-design-mirror-events"
+import { createOpenDesignStream } from "./use-open-design-stream"
+import { answerOpenDesignToolUse } from "./open-design-mirror-actions"
 
-// Phase 1 of the OpenDesign chat MIRROR. When the composer is bridged to an
-// Open Design project, this overlays the left message region and renders OD's
-// live conversation (read-only) — text, thinking, and status events — so the
-// user sees Open Design's side (responses, questions-as-text, progress) inside
-// their OpenCode session. Interactive tool_use/tool_result cards are Phase 2.
+// The OpenDesign chat MIRROR overlays the left message region and renders OD's
+// live conversation. Streaming comes from use-open-design-stream (SSE + poll
+// fallback); events render via open-design-mirror-events; brief-question cards
+// answer back through open-design-mirror-actions.
 
-const OPEN_DESIGN_BRIDGE_EVENT = "opencode:open-design-bridge-state"
-
-type BridgeState = {
-  active?: boolean
-  acceptsPrompts?: boolean
-  projectId?: string
-  projectName?: string
-  activeConversationId?: string | null
-  conversations?: { id: string; title?: string | null }[]
-  chatId?: string | null
-  chatName?: string | null
-} | undefined
-
-// Subset of OD's PersistedAgentEvent (packages/contracts/src/api/chat.ts).
-type ODEvent =
-  | { kind: "status"; label: string; detail?: string }
-  | { kind: "text"; text: string }
-  | { kind: "thinking"; text: string }
-  | { kind: "tool_use"; id: string; name: string; input?: unknown }
-  | { kind: "tool_result"; toolUseId: string; content: string; isError?: boolean }
-  | { kind: "usage"; inputTokens?: number; outputTokens?: number; costUsd?: number; durationMs?: number }
-  | { kind: "image" | "file" | "live_artifact" | "live_artifact_refresh" | "raw"; [k: string]: unknown }
-
-type ODMessage = {
-  id: string
-  role: "user" | "assistant"
-  content: string
-  agentName?: string
-  events?: ODEvent[]
-  runStatus?: "queued" | "running" | "succeeded" | "failed" | "canceled"
-  createdAt?: number
-}
-
-type LoadState = "idle" | "loading" | "ready" | "error"
+type BridgeState = ODBridgeState
 
 const OD_ACCENT = "#f97316"
 
@@ -78,9 +48,6 @@ function findLeftTimelineRect(): DOMRect | null {
 
 export function OpenDesignMirror() {
   const [bridge, setBridge] = createSignal<BridgeState>(undefined)
-  const [messages, setMessages] = createSignal<ODMessage[]>([])
-  const [loadState, setLoadState] = createSignal<LoadState>("idle")
-  const [errorNote, setErrorNote] = createSignal<string | undefined>(undefined)
   const [rect, setRect] = createSignal<DOMRect | null>(null)
   const [collapsed, setCollapsed] = createSignal(false)
 
@@ -166,48 +133,28 @@ export function OpenDesignMirror() {
     })
   })
 
-  // Poll OD's persisted conversation (read-only) through the CT100 proxy.
-  createEffect(() => {
-    const pid = projectId()
-    const cid = resolvedCid()
-    if (!shouldShow() || !pid || !cid) {
-      setMessages([])
-      setLoadState("idle")
-      return
-    }
-    let stop = false
-    let timer = 0
-    const url = `/experimental/open-design/proxy/api/projects/${encodeURIComponent(pid)}/conversations/${encodeURIComponent(cid)}/messages`
-    const poll = async () => {
-      if (stop) return
-      if (loadState() === "idle") setLoadState("loading")
-      try {
-        const controller = new AbortController()
-        const to = window.setTimeout(() => controller.abort(), 6000)
-        const res = await fetch(url, { signal: controller.signal })
-        window.clearTimeout(to)
-        if (!res.ok) throw new Error(`daemon ${res.status}`)
-        const json = (await res.json()) as { messages?: ODMessage[] }
-        if (!stop) {
-          setMessages(Array.isArray(json.messages) ? json.messages : [])
-          setLoadState("ready")
-          setErrorNote(undefined)
-        }
-      } catch (err) {
-        if (!stop) {
-          setErrorNote(err instanceof Error ? err.message : "unreachable")
-          // Keep the last good transcript; only flip to error if we have nothing.
-          if (messages().length === 0) setLoadState("error")
-        }
-      }
-      if (!stop) timer = window.setTimeout(poll, 1500) as unknown as number
-    }
-    poll()
-    onCleanup(() => {
-      stop = true
-      window.clearTimeout(timer)
-    })
+  // Live stream of OD's conversation via the proxy (SSE with a 1.5s poll
+  // fallback, resumable). Replaces the Phase-1 poll effect.
+  const stream = createOpenDesignStream({
+    projectId,
+    conversationId: resolvedCid,
+    enabled: shouldShow,
   })
+  const messages = stream.messages
+  const status = stream.status
+  const errorNote = stream.error
+
+  // Answer OD's in-flight brief-question cards from the OpenCode side.
+  const handleAnswer = (m: ODMessage, answer: ODAnswer) => {
+    if (!m.runId || !answer.text.trim()) return
+    void answerOpenDesignToolUse({
+      runId: m.runId,
+      toolUseId: answer.toolUseId,
+      content: answer.text,
+      projectId: projectId(),
+      conversationId: resolvedCid(),
+    })
+  }
 
   const eventsFor = (m: ODMessage): ODEvent[] => {
     const evts = Array.isArray(m.events) ? m.events : []
@@ -279,7 +226,7 @@ export function OpenDesignMirror() {
                     </span>
                   </Show>
                   <div class="ml-auto flex items-center gap-1">
-                    <Show when={errorNote() && loadState() !== "error"}>
+                    <Show when={errorNote() && status() !== "error"}>
                       <span class="text-[10px] text-v2-text-text-faint" title={`Reconnecting — ${errorNote()}`}>
                         reconnecting…
                       </span>
@@ -299,12 +246,12 @@ export function OpenDesignMirror() {
                 {/* body */}
                 <div class="min-h-0 flex-1 overflow-y-auto px-3 py-3">
                   <Switch>
-                    <Match when={loadState() === "loading" && messages().length === 0}>
+                    <Match when={status() === "loading" && messages().length === 0}>
                       <div class="flex h-full items-center justify-center text-[12px] text-v2-text-text-faint">
                         Loading the Open Design conversation…
                       </div>
                     </Match>
-                    <Match when={loadState() === "error" && messages().length === 0}>
+                    <Match when={status() === "error" && messages().length === 0}>
                       <div class="flex h-full flex-col items-center justify-center gap-1 text-center text-[12px] text-v2-text-text-faint">
                         <span>Couldn’t reach Open Design ({errorNote()}).</span>
                         <span class="text-[11px]">Retrying automatically…</span>
@@ -341,47 +288,7 @@ export function OpenDesignMirror() {
                                       <span class="text-red-400">failed</span>
                                     </Show>
                                   </div>
-                                  <div class="flex flex-col gap-1.5">
-                                    <For each={eventsFor(m)}>
-                                      {(ev) => (
-                                        <Switch>
-                                          <Match when={ev.kind === "text"}>
-                                            <div class="whitespace-pre-wrap break-words text-[13px] leading-5 text-v2-text-text-base">
-                                              {(ev as { text: string }).text}
-                                            </div>
-                                          </Match>
-                                          <Match when={ev.kind === "thinking"}>
-                                            <details class="rounded-md bg-v2-background-bg-layer-02/60 px-2 py-1">
-                                              <summary class="cursor-pointer list-none text-[11px] text-v2-text-text-faint [&::-webkit-details-marker]:hidden">
-                                                💭 Thinking
-                                              </summary>
-                                              <div class="mt-1 whitespace-pre-wrap break-words text-[12px] leading-5 text-v2-text-text-muted">
-                                                {(ev as { text: string }).text}
-                                              </div>
-                                            </details>
-                                          </Match>
-                                          <Match when={ev.kind === "status"}>
-                                            <div class="flex items-center gap-1.5 text-[11px] text-v2-text-text-faint">
-                                              <span class="rounded bg-v2-background-bg-layer-02 px-1.5 py-0.5">
-                                                {(ev as { label: string }).label}
-                                              </span>
-                                              <Show when={(ev as { detail?: string }).detail}>
-                                                <span class="truncate">{(ev as { detail?: string }).detail}</span>
-                                              </Show>
-                                            </div>
-                                          </Match>
-                                          {/* Phase 2 renders tool_use / tool_result / image / live_artifact. */}
-                                          <Match when={ev.kind === "tool_use" || ev.kind === "tool_result"}>
-                                            <div class="rounded-md border border-dashed border-v2-border-border-base px-2 py-1 text-[11px] text-v2-text-text-faint">
-                                              {ev.kind === "tool_use"
-                                                ? `▸ ${(ev as { name?: string }).name ?? "tool"}`
-                                                : "▸ result"}
-                                            </div>
-                                          </Match>
-                                        </Switch>
-                                      )}
-                                    </For>
-                                  </div>
+                                  <ODEventList events={eventsFor(m)} onAnswer={(a) => handleAnswer(m, a)} />
                                 </div>
                               </Match>
                             </Switch>
