@@ -948,7 +948,61 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     onSelect: handleAtSelect,
   })
 
+  // --- Open Design bridge state (defined early so the `/` slash menu can swap
+  // to Open Design's commands while in Design Mode). ---
+  const [openDesignBridgeState, setOpenDesignBridgeState] = createSignal<OpenDesignBridgePromptState | undefined>(
+    readOpenDesignBridgeState(),
+  )
+  if (typeof window !== "undefined") {
+    const syncOpenDesignBridgeState = (event: Event) => {
+      const detail = event instanceof CustomEvent ? event.detail : readOpenDesignBridgeState()
+      if (!detail || typeof detail !== "object") {
+        setOpenDesignBridgeState(undefined)
+        return
+      }
+      setOpenDesignBridgeState(detail as OpenDesignBridgePromptState)
+    }
+    window.addEventListener(OPEN_DESIGN_BRIDGE_EVENT, syncOpenDesignBridgeState)
+    onCleanup(() => window.removeEventListener(OPEN_DESIGN_BRIDGE_EVENT, syncOpenDesignBridgeState))
+  }
+  const designModeBridge = createMemo(() => {
+    const state = openDesignBridgeState()
+    if (!state?.active) return undefined
+    return state
+  })
+  // Manual exit from Design Mode: drop back to the OpenCode chat while an OD
+  // project is open, and re-enter. Resets when the OD project changes.
+  const [designExited, setDesignExited] = createSignal(false)
+  createEffect(
+    on(
+      () => designModeBridge()?.projectId,
+      () => setDesignExited(false),
+    ),
+  )
+  const designBridgeActive = createMemo(() => {
+    const state = designModeBridge()
+    return !designExited() && !!state && state.acceptsPrompts === true && store.mode !== "shell"
+  })
+  const designSlashCommands = createMemo(() => {
+    const list = designModeBridge()?.slashCommands
+    return Array.isArray(list) && list.length > 0 ? list : DEFAULT_OPEN_DESIGN_COMMANDS
+  })
+
   const slashCommands = createMemo<SlashCommand[]>(() => {
+    // In Design Mode the composer drives the Open Design chat, so the `/` menu
+    // must show Open Design's commands — not OpenCode's. They are inserted as
+    // text (custom type) so they route to OD on submit and never trigger an
+    // OpenCode command.
+    if (designBridgeActive()) {
+      return designSlashCommands().map((c) => ({
+        id: `design.${c.label}`,
+        trigger: c.label.replace(/^\//, ""),
+        title: c.label,
+        description: c.hint ?? undefined,
+        type: "custom" as const,
+      }))
+    }
+
     const builtin = command.options
       .filter((opt) => !opt.disabled && !opt.id.startsWith("suggested.") && opt.slash)
       .map((opt) => ({
@@ -1665,28 +1719,6 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     (p) => p,
   )
 
-  const [openDesignBridgeState, setOpenDesignBridgeState] = createSignal<OpenDesignBridgePromptState | undefined>(
-    readOpenDesignBridgeState(),
-  )
-  if (typeof window !== "undefined") {
-    const syncOpenDesignBridgeState = (event: Event) => {
-      const detail = event instanceof CustomEvent ? event.detail : readOpenDesignBridgeState()
-      if (!detail || typeof detail !== "object") {
-        setOpenDesignBridgeState(undefined)
-        return
-      }
-      setOpenDesignBridgeState(detail as OpenDesignBridgePromptState)
-    }
-    window.addEventListener(OPEN_DESIGN_BRIDGE_EVENT, syncOpenDesignBridgeState)
-    onCleanup(() => window.removeEventListener(OPEN_DESIGN_BRIDGE_EVENT, syncOpenDesignBridgeState))
-  }
-
-  const designModeBridge = createMemo(() => {
-    const state = openDesignBridgeState()
-    if (!state?.active) return undefined
-    return state
-  })
-
   const designModeTitle = createMemo(() => {
     const state = designModeBridge()
     if (!state) return undefined
@@ -1706,24 +1738,8 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     restoreFocus()
   }
 
-  // When the embedded Open Design build advertises the inbound prompt bridge,
-  // the composer drives the active Open Design chat instead of the OpenCode LLM,
-  // so the two chats are not redundant.
-  // Manual exit from Design Mode: the user can drop back to the normal OpenCode
-  // chat even while an OD project is open, and re-enter. Resets when the OD
-  // project changes so opening a new project re-enters automatically.
-  const [designExited, setDesignExited] = createSignal(false)
-  createEffect(
-    on(
-      () => designModeBridge()?.projectId,
-      () => setDesignExited(false),
-    ),
-  )
-  const designBridgeActive = createMemo(() => {
-    const state = designModeBridge()
-    return !designExited() && !!state && state.acceptsPrompts === true && store.mode !== "shell"
-  })
-
+  // The composer drives the active Open Design chat instead of the OpenCode LLM
+  // when in Design Mode, so the two chats are not redundant.
   const composerText = () =>
     prompt
       .current()
@@ -1767,23 +1783,11 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     window.dispatchEvent(new CustomEvent("opencode:open-design-new-chat"))
     openDesignPanel()
   }
-  const designSlashCommands = createMemo(() => {
-    const list = designModeBridge()?.slashCommands
-    return Array.isArray(list) && list.length > 0 ? list : DEFAULT_OPEN_DESIGN_COMMANDS
-  })
   const designModelTooltip = createMemo(() => {
     const state = designModeBridge()
     if (!state?.model) return undefined
     return `This Open Design chat runs on ${state.model}${state.apiProtocol ? ` (${state.apiProtocol})` : ""} — Open Design's own provider, not the OpenCode-selected model. Change it in the Open Design tab → Settings.`
   })
-  // Insert an Open Design slash-command into the composer (which routes it to the
-  // OD chat). Mirrors handleSlashSelect: sync the editor DOM + the prompt store.
-  const insertDesignCommand = (label: string) => {
-    const text = `${label} `
-    setEditorText(text)
-    prompt.set([{ type: "text", content: text, start: 0, end: text.length }], text.length)
-    focusEditorEnd()
-  }
 
   const designPlaceholder = () => {
     if (store.mode === "shell") return placeholder()
@@ -1928,34 +1932,12 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                       >
                         <Icon name="plus-small" size="small" />
                       </button>
-                      <details class="group relative shrink-0" data-action="prompt-design-commands">
-                        <summary
-                          class="flex h-6 cursor-pointer list-none items-center rounded-md px-1.5 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-background-bg-base hover:text-v2-text-text-base [&::-webkit-details-marker]:hidden"
-                          title="Open Design chat commands"
-                        >
-                          /
-                        </summary>
-                        <div class="absolute bottom-8 left-0 z-30 w-64 rounded-lg border border-v2-border-border-base bg-v2-background-bg-layer-01 p-1 shadow-[var(--v2-elevation-floating)]">
-                          <div class="px-2 py-1 text-[10px] uppercase tracking-wide text-v2-text-text-faint">
-                            Open Design commands
-                          </div>
-                          <For each={designSlashCommands()}>
-                            {(command: { label: string; hint?: string | null }) => (
-                              <button
-                                type="button"
-                                data-action="prompt-design-command-item"
-                                class="flex w-full flex-col items-start rounded-md px-2 py-1 text-left transition-colors hover:bg-v2-background-bg-base"
-                                onClick={() => insertDesignCommand(command.label)}
-                              >
-                                <span class="text-[12px] font-[540] text-v2-text-text-base">{command.label}</span>
-                                <Show when={command.hint}>
-                                  <span class="text-[11px] text-v2-text-text-muted">{command.hint}</span>
-                                </Show>
-                              </button>
-                            )}
-                          </For>
-                        </div>
-                      </details>
+                      <span
+                        class="flex h-6 shrink-0 items-center rounded-md px-1.5 text-[11px] text-v2-text-text-faint"
+                        title="Type / in the composer for Open Design commands"
+                      >
+                        / commands
+                      </span>
                       <Show when={designModelLabel()}>
                         {(model) => (
                           <span
