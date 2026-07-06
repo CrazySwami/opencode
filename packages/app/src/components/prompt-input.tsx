@@ -1801,7 +1801,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const designModelTooltip = createMemo(() => {
     const state = designModeBridge()
     if (!state?.model) return undefined
-    return `This Open Design chat runs on ${state.model}${state.apiProtocol ? ` (${state.apiProtocol})` : ""} — Open Design's own provider, not the OpenCode-selected model. Change it in the Open Design tab → Settings.`
+    return `Open Design is running on ${state.model} (its active coding agent) — mirrored here from Open Design. Change it in the Open Design tab → Settings.`
   })
 
   const designPlaceholder = () => {
