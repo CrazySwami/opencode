@@ -1709,9 +1709,19 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   // When the embedded Open Design build advertises the inbound prompt bridge,
   // the composer drives the active Open Design chat instead of the OpenCode LLM,
   // so the two chats are not redundant.
+  // Manual exit from Design Mode: the user can drop back to the normal OpenCode
+  // chat even while an OD project is open, and re-enter. Resets when the OD
+  // project changes so opening a new project re-enters automatically.
+  const [designExited, setDesignExited] = createSignal(false)
+  createEffect(
+    on(
+      () => designModeBridge()?.projectId,
+      () => setDesignExited(false),
+    ),
+  )
   const designBridgeActive = createMemo(() => {
     const state = designModeBridge()
-    return !!state && state.acceptsPrompts === true && store.mode !== "shell"
+    return !designExited() && !!state && state.acceptsPrompts === true && store.mode !== "shell"
   })
 
   const composerText = () =>
@@ -1777,8 +1787,10 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
   const designPlaceholder = () => {
     if (store.mode === "shell") return placeholder()
-    const title = designModeTitle()
-    if (title) return designBridgeActive() ? `Message Open Design: ${title}` : `Design Mode: ${title}`
+    if (designBridgeActive()) {
+      const title = designModeTitle()
+      if (title) return `Message Open Design: ${title}`
+    }
     return "Ask anything, / for commands, @ for context..."
   }
 
@@ -1850,8 +1862,8 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
               onSubmit={handleComposerSubmit}
               classList={{
                 "group/prompt-input min-h-[96px] w-full rounded-xl bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]": true,
-                "ring-1 ring-blue-400/45 shadow-[0_0_0_1px_rgba(96,165,250,0.24),0_18px_48px_rgba(37,99,235,0.20)]":
-                  !!designModeBridge(),
+                "ring-1 ring-[#f97316]/40 shadow-[0_0_0_1px_rgba(249,115,22,0.20),0_18px_48px_rgba(249,115,22,0.12)]":
+                  designBridgeActive(),
                 "border-icon-info-active border-dashed": store.draggingType !== null,
                 [props.class ?? ""]: !!props.class,
               }}
@@ -1955,9 +1967,37 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                           </span>
                         )}
                       </Show>
+                      <button
+                        type="button"
+                        data-action="prompt-design-exit"
+                        class="flex size-6 shrink-0 items-center justify-center rounded-md text-v2-text-text-muted transition-colors hover:bg-v2-background-bg-base hover:text-v2-text-text-base"
+                        classList={{ "ml-auto": !designModelLabel() }}
+                        onClick={() => setDesignExited(true)}
+                        title="Exit Design Mode — back to the OpenCode chat"
+                        aria-label="Exit Design Mode"
+                      >
+                        <Icon name="close-small" size="small" />
+                      </button>
                     </Show>
                   </div>
                 )}
+              </Show>
+              <Show when={designModeBridge()?.acceptsPrompts && designExited()}>
+                <button
+                  type="button"
+                  data-action="prompt-design-reenter"
+                  class="mx-2 mt-2 flex max-w-[calc(100%-1rem)] items-center gap-1.5 self-start rounded-lg border border-dashed border-v2-border-border-base bg-v2-background-bg-layer-02 px-2 py-1 text-[12px] leading-4 text-v2-text-text-muted transition-colors hover:text-v2-text-text-base"
+                  onClick={() => setDesignExited(false)}
+                  title="Re-enter Design Mode — send this chat to Open Design"
+                >
+                  <span class="flex size-[15px] shrink-0 items-center justify-center rounded bg-[#f97316]/15 text-[7px] font-semibold tracking-tight text-[#f97316]">
+                    OD
+                  </span>
+                  <span>Re-enter Design Mode</span>
+                  <span class="min-w-0 truncate text-v2-text-text-faint">
+                    {designModeBridge()?.projectName ?? "Open Design"}
+                  </span>
+                </button>
               </Show>
               <PromptContextItems
                 items={contextItems()}

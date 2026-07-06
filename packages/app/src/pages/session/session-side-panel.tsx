@@ -6185,25 +6185,6 @@ export function SessionSidePanel(props: {
 
   return (
     <>
-      <Show when={openDesignBridgeState()?.active ? openDesignBridgeState() : undefined}>
-        {(bridge) => (
-          <Portal>
-            <div class="pointer-events-none fixed bottom-24 left-1/2 z-[900] max-w-[min(560px,calc(100vw-2rem))] -translate-x-1/2 rounded-full border border-blue-400/35 bg-blue-500/12 px-3 py-1.5 text-12-medium text-blue-200 shadow-[0_0_24px_rgba(59,130,246,0.22)] backdrop-blur">
-              <span class="text-blue-100">Design Mode</span>
-              <span class="mx-2 text-blue-300/70">/</span>
-              <span class="text-blue-200/90">{bridge().projectName ?? bridge().projectId ?? "OpenDesign"}</span>
-              <Show when={bridge().chatName ?? bridge().chatId}>
-                {(chat) => (
-                  <>
-                    <span class="mx-2 text-blue-300/70">/</span>
-                    <span class="text-blue-200/75">{chat()}</span>
-                  </>
-                )}
-              </Show>
-            </div>
-          </Portal>
-        )}
-      </Show>
       <Show when={(mobile() && !!params.id) || (isDesktop() && !(settings.general.newLayoutDesigns() && !params.id))}>
         <aside
           id="review-panel"
