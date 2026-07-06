@@ -12,6 +12,179 @@ import pkg from "../package.json"
 import { ServerConnection } from "./context/server"
 
 const DEFAULT_SERVER_URL_KEY = "opencode.settings.dat:defaultServerUrl"
+const CT100_SERVER_URL = "https://code.hustletogether.com"
+const CT100_TAILSCALE_URL = "http://100.99.131.90:8310"
+const MAC_SERVER_URL = "https://alfonsos-macbook-pro.tailf704e2.ts.net:4096"
+
+const CT100_PROJECT_SEEDS = [
+  "/home/dev/repos/AI-Brand-Studio",
+  "/home/dev/repos/AI-Brand-Studio-main-brand-studio-package",
+  "/home/dev/repos/Blog-Approval-Application",
+  "/home/dev/repos/Eleven-Labs-Wordpress-Plugin",
+  "/home/dev/repos/GPTCache",
+  "/home/dev/repos/Hustle-Dash",
+  "/home/dev/repos/Hustle-Together",
+  "/home/dev/repos/Hustle-Tweets",
+  "/home/dev/repos/JS-Front-End",
+  "/home/dev/repos/LLM-APIs",
+  "/home/dev/repos/LLM-Experiments",
+  "/home/dev/repos/MF-Workstation",
+  "/home/dev/repos/MM-REACT",
+  "/home/dev/repos/Mercury-Editor-demo",
+  "/home/dev/repos/Moonshots-Magic-AI-Map",
+  "/home/dev/repos/OpenChat",
+  "/home/dev/repos/ROI-Official-Company-Repo",
+  "/home/dev/repos/ROI-amplified-website",
+  "/home/dev/repos/SquareCoil",
+  "/home/dev/repos/TKX-Email-Generator",
+  "/home/dev/repos/TKX-Ticket-Data-Analysis",
+  "/home/dev/repos/alfonso-os",
+  "/home/dev/repos/api-dev-tools",
+  "/home/dev/repos/api_test",
+  "/home/dev/repos/audio-layer",
+  "/home/dev/repos/aura",
+  "/home/dev/repos/brand-studio",
+  "/home/dev/repos/chatbot-az",
+  "/home/dev/repos/chatbot-ui",
+  "/home/dev/repos/crochet-tool",
+  "/home/dev/repos/csr-theme",
+  "/home/dev/repos/developer-docs-temp",
+  "/home/dev/repos/devtest2026",
+  "/home/dev/repos/ditto",
+  "/home/dev/repos/docs",
+  "/home/dev/repos/easel",
+  "/home/dev/repos/faq-wp-plugin",
+  "/home/dev/repos/gpt-researcher",
+  "/home/dev/repos/hustle-ai",
+  "/home/dev/repos/hustle-api",
+  "/home/dev/repos/hustle-dashboard-dev",
+  "/home/dev/repos/hustle-dashboard-next",
+  "/home/dev/repos/hustle-dashboard-production",
+  "/home/dev/repos/hustle-dashboard-staging",
+  "/home/dev/repos/hustle-dev-app",
+  "/home/dev/repos/hustle-elementor",
+  "/home/dev/repos/hustle-elementor-webapp",
+  "/home/dev/repos/hustle-for-life",
+  "/home/dev/repos/hustle-hub",
+  "/home/dev/repos/hustle-tersa",
+  "/home/dev/repos/hustle-together-Archived-",
+  "/home/dev/repos/hustle-together-ai",
+  "/home/dev/repos/hustle-together-api",
+  "/home/dev/repos/hustle-together-dashboard",
+  "/home/dev/repos/hustle-together-dashboard-release-20260603-040204",
+  "/home/dev/repos/hustle-together-dashboard-source",
+  "/home/dev/repos/hustle-together-local-api",
+  "/home/dev/repos/hustle-together-sites",
+  "/home/dev/repos/hustle-together-wordpress-plugin",
+  "/home/dev/repos/hustle-tools",
+  "/home/dev/repos/layers",
+  "/home/dev/repos/layers-dev",
+  "/home/dev/repos/layers-mf",
+  "/home/dev/repos/lcpmd",
+  "/home/dev/repos/local-ai-chat",
+  "/home/dev/repos/mf-core",
+  "/home/dev/repos/mf-symphony",
+  "/home/dev/repos/mirror-factory",
+  "/home/dev/repos/mirror-factory-website",
+  "/home/dev/repos/muse",
+  "/home/dev/repos/nextjs-fastapi-starter",
+  "/home/dev/repos/nextjs-fastapi-starter-testing",
+  "/home/dev/repos/nextjs-fastapi-startertest",
+  "/home/dev/repos/nextjs-openai-doc-search-starter",
+  "/home/dev/repos/nextjs-with-supabase",
+  "/home/dev/repos/olive-branch-plugin-dev",
+  "/home/dev/repos/open-design",
+  "/home/dev/repos/open-design-runtime",
+  "/home/dev/repos/open-swiftui-animations",
+  "/home/dev/repos/opencode",
+  "/home/dev/repos/opencode-github-push",
+  "/home/dev/repos/openv0",
+  "/home/dev/repos/orlando-daily",
+  "/home/dev/repos/platforms-starter-kit",
+  "/home/dev/repos/python-hello-world",
+  "/home/dev/repos/quivr",
+  "/home/dev/repos/ralph-claude-plugin",
+  "/home/dev/repos/rapidpages",
+  "/home/dev/repos/roi-amplified",
+  "/home/dev/repos/roi-website-pages",
+  "/home/dev/repos/sazant-wp-site",
+  "/home/dev/repos/search_with_lepton",
+  "/home/dev/repos/sway-surface",
+  "/home/dev/repos/vercel-ai-starter-kit",
+  "/home/dev/repos/x-bookmark-review",
+]
+
+const MAC_PROJECT_SEEDS = [
+  "/Users/alfonso/Documents/GitHub/AI-Brand-Studio",
+  "/Users/alfonso/Documents/GitHub/Hustle-Together",
+  "/Users/alfonso/Documents/GitHub/LLM-Experiments",
+  "/Users/alfonso/Documents/GitHub/Mercury-Editor-demo",
+  "/Users/alfonso/Documents/GitHub/Moonshots-Magic-AI-Map",
+  "/Users/alfonso/Documents/GitHub/ROI-Clients",
+  "/Users/alfonso/Documents/GitHub/ROI-Official-Company-Repo",
+  "/Users/alfonso/Documents/GitHub/SquareCoil",
+  "/Users/alfonso/Documents/GitHub/alfonso-os",
+  "/Users/alfonso/Documents/GitHub/api-dev-tools",
+  "/Users/alfonso/Documents/GitHub/audio-layer",
+  "/Users/alfonso/Documents/GitHub/hustle-together-dashboard",
+  "/Users/alfonso/Documents/GitHub/layers",
+  "/Users/alfonso/Documents/GitHub/local-ai-chat",
+  "/Users/alfonso/Documents/GitHub/open-design",
+  "/Users/alfonso/Documents/GitHub/sazant-wp-site",
+  "/Users/alfonso/Documents/GitHub/x-bookmark-review",
+]
+
+const normalizedUrl = (url: string) => url.replace(/\/+$/, "")
+const isCT100Url = (url: string) => {
+  const value = normalizedUrl(url)
+  return value === CT100_SERVER_URL || value === CT100_TAILSCALE_URL
+}
+const isMacUrl = (url: string) => normalizedUrl(url) === MAC_SERVER_URL
+
+const builtInServers = (current: ServerConnection.Http) => {
+  const defaults: Array<ServerConnection.Http> = [
+    {
+      type: "http",
+      displayName: "code.hustletogether.com",
+      label: "LIVE",
+      http: { url: CT100_SERVER_URL },
+    },
+    {
+      type: "http",
+      displayName: "Alfonso Mac",
+      label: "MAC",
+      http: { url: MAC_SERVER_URL, username: "opencode" },
+    },
+  ]
+
+  const servers = new Map<ServerConnection.Key, ServerConnection.Http>()
+  for (const conn of defaults) servers.set(ServerConnection.key(conn), conn)
+
+  const key = ServerConnection.key(current)
+  const existing = servers.get(key)
+  servers.set(key, {
+    ...existing,
+    ...current,
+    displayName: current.displayName ?? existing?.displayName,
+    label: current.label ?? existing?.label,
+    http: { ...(existing?.http ?? {}), ...current.http },
+  })
+
+  return [...servers.values()]
+}
+
+const projectSeeds = (current: ServerConnection.Http) => {
+  const seeds: Record<string, string[]> = {
+    [CT100_SERVER_URL]: CT100_PROJECT_SEEDS,
+    [CT100_TAILSCALE_URL]: CT100_PROJECT_SEEDS,
+    [MAC_SERVER_URL]: MAC_PROJECT_SEEDS,
+  }
+
+  if (isCT100Url(current.http.url)) seeds.local = CT100_PROJECT_SEEDS
+  if (isMacUrl(current.http.url)) seeds.local = MAC_PROJECT_SEEDS
+
+  return seeds
+}
 
 const getLocale = () => {
   if (typeof navigator !== "object") return "en" as const
@@ -171,7 +344,8 @@ if (root instanceof HTMLElement) {
           <AppInterface
             defaultServer={ServerConnection.Key.make(getDefaultUrl())}
             canonicalLocalServer={ServerConnection.key(server)}
-            servers={[server]}
+            servers={builtInServers(server)}
+            projectSeeds={projectSeeds(server)}
             disableHealthCheck
           />
         </AppBaseProviders>

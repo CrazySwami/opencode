@@ -572,6 +572,7 @@ export function AppInterface(props: {
   defaultServer: ServerConnection.Key
   canonicalLocalServer?: ServerConnection.Key
   servers?: Array<ServerConnection.Any>
+  projectSeeds?: Record<string, string[]>
   router?: Component<BaseRouterProps>
   disableHealthCheck?: boolean
 }) {
@@ -592,6 +593,7 @@ export function AppInterface(props: {
       defaultServer={props.defaultServer}
       canonicalLocalServer={props.canonicalLocalServer}
       servers={props.servers}
+      projectSeeds={props.projectSeeds}
     >
       <GlobalProvider>
         <SettingsProvider>
