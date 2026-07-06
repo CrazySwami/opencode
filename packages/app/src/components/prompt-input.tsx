@@ -111,6 +111,11 @@ type OpenDesignBridgePromptState = {
   slashCommands?: { label: string; hint?: string | null }[]
   // Open Design @-mention skills (project-scoped) for the composer.
   mentionOptions?: { id: string; label: string; token: string }[]
+  // Available coding agents (+ models) and the active selection, so the composer
+  // can render a model/agent switcher that drives Open Design.
+  agentOptions?: { id: string; name: string; models: { id: string; label: string }[] }[]
+  activeAgentId?: string | null
+  activeAgentModel?: string | null
 }
 
 // Core Open Design chat commands, used when the OD build does not advertise its
@@ -1793,6 +1798,23 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     if (!chatId || chatId === designActiveChatId() || typeof window === "undefined") return
     window.dispatchEvent(new CustomEvent("opencode:open-design-switch-chat", { detail: { chatId } }))
   }
+  const designAgentOptions = createMemo(() => {
+    const list = designModeBridge()?.agentOptions
+    return Array.isArray(list) ? list : []
+  })
+  // The active "agentId::modelId" value; model defaults to "default" when unset.
+  const designActiveModelValue = createMemo(() => {
+    const state = designModeBridge()
+    if (!state?.activeAgentId) return ""
+    return `${state.activeAgentId}::${state.activeAgentModel ?? "default"}`
+  })
+  const switchDesignModel = (value: string) => {
+    const [agentId, model] = value.split("::")
+    if (!agentId || typeof window === "undefined") return
+    window.dispatchEvent(
+      new CustomEvent("opencode:open-design-switch-model", { detail: { agentId, model: model ?? "" } }),
+    )
+  }
   const newDesignChat = () => {
     if (typeof window === "undefined") return
     window.dispatchEvent(new CustomEvent("opencode:open-design-new-chat"))
@@ -1801,7 +1823,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const designModelTooltip = createMemo(() => {
     const state = designModeBridge()
     if (!state?.model) return undefined
-    return `Open Design is running on ${state.model} (its active coding agent) — mirrored here from Open Design. Change it in the Open Design tab → Settings.`
+    return `Open Design is running on ${state.model} (its active coding agent). Switch the agent/model here — it changes Open Design.`
   })
 
   const designPlaceholder = () => {
@@ -1953,16 +1975,41 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                       >
                         / commands
                       </span>
-                      <Show when={designModelLabel()}>
-                        {(model) => (
-                          <span
-                            data-action="prompt-design-model"
-                            class="ml-auto min-w-0 max-w-[190px] truncate rounded-md bg-v2-background-bg-base px-1.5 py-1 text-[11px] text-v2-text-text-muted"
-                            title={designModelTooltip()}
-                          >
-                            {model()}
-                          </span>
-                        )}
+                      <Show
+                        when={designAgentOptions().length > 0}
+                        fallback={
+                          <Show when={designModelLabel()}>
+                            {(model) => (
+                              <span
+                                data-action="prompt-design-model"
+                                class="ml-auto min-w-0 max-w-[190px] truncate rounded-md bg-v2-background-bg-base px-1.5 py-1 text-[11px] text-v2-text-text-muted"
+                                title={designModelTooltip()}
+                              >
+                                {model()}
+                              </span>
+                            )}
+                          </Show>
+                        }
+                      >
+                        <select
+                          data-action="prompt-design-model"
+                          class="ml-auto max-w-[210px] cursor-pointer truncate rounded-md bg-v2-background-bg-base px-1.5 py-1 text-[11px] text-v2-text-text-muted outline-none transition-colors hover:text-v2-text-text-base"
+                          value={designActiveModelValue()}
+                          onChange={(event) => switchDesignModel(event.currentTarget.value)}
+                          title={designModelTooltip()}
+                        >
+                          <For each={designAgentOptions()}>
+                            {(agent: { id: string; name: string; models: { id: string; label: string }[] }) => (
+                              <For each={agent.models}>
+                                {(m: { id: string; label: string }) => (
+                                  <option value={`${agent.id}::${m.id}`}>
+                                    {agent.name} · {m.label}
+                                  </option>
+                                )}
+                              </For>
+                            )}
+                          </For>
+                        </select>
                       </Show>
                       <button
                         type="button"

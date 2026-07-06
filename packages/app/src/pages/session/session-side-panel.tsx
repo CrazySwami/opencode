@@ -40,6 +40,7 @@ import {
 } from "@/pages/session/helpers"
 import { setSessionHandoff } from "@/pages/session/handoff"
 import { useSessionLayout } from "@/pages/session/session-layout"
+import { OpenDesignMirror } from "@/pages/session/open-design-mirror"
 import {
   WORKSPACE_PANEL_TAB_BY_ID,
   WORKSPACE_PANEL_TAB_IDS,
@@ -2168,13 +2169,21 @@ function OpenDesignTabContent(
       if (typeof chatId !== "string" || !chatId) return
       postCommand("switch-conversation", { chatId })
     }
+    const onSwitchModel = (event: Event) => {
+      const detail = (event as CustomEvent<{ agentId?: unknown; model?: unknown }>).detail
+      const agentId = typeof detail?.agentId === "string" ? detail.agentId : ""
+      if (!agentId) return
+      postCommand("switch-agent-model", { agentId, model: typeof detail?.model === "string" ? detail.model : "" })
+    }
     window.addEventListener("opencode:open-design-submit", onSubmit as EventListener)
     window.addEventListener("opencode:open-design-new-chat", onNewChat as EventListener)
     window.addEventListener("opencode:open-design-switch-chat", onSwitchChat as EventListener)
+    window.addEventListener("opencode:open-design-switch-model", onSwitchModel as EventListener)
     onCleanup(() => {
       window.removeEventListener("opencode:open-design-submit", onSubmit as EventListener)
       window.removeEventListener("opencode:open-design-new-chat", onNewChat as EventListener)
       window.removeEventListener("opencode:open-design-switch-chat", onSwitchChat as EventListener)
+      window.removeEventListener("opencode:open-design-switch-model", onSwitchModel as EventListener)
     })
   })
 
@@ -6185,6 +6194,8 @@ export function SessionSidePanel(props: {
 
   return (
     <>
+      {/* Phase 1: mirror Open Design's live conversation over the left message region when bridged. */}
+      <OpenDesignMirror />
       <Show when={(mobile() && !!params.id) || (isDesktop() && !(settings.general.newLayoutDesigns() && !params.id))}>
         <aside
           id="review-panel"
