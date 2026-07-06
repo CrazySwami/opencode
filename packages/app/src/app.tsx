@@ -140,7 +140,17 @@ function ResolvedTargetSessionRoute() {
         throw error
       }),
   )
-  const current = createMemo(() => selectSessionLineage(params.id, cached(), resolved()))
+  // A missing/stale session id must not strand the app on the root error
+  // boundary. Reading an errored resource (resolved()) rethrows, so guard
+  // current() to never read it while errored, and redirect home for a
+  // session-not-found error instead of bubbling to "Something went wrong".
+  const sessionNotFound = createMemo(
+    () => resolved.state === "errored" && isSessionNotFoundError(resolved.error, params.id),
+  )
+  const current = createMemo(() => {
+    if (resolved.state === "errored") return undefined
+    return selectSessionLineage(params.id, cached(), resolved())
+  })
   const directory = createMemo(() => current()?.session.directory)
   const targetDirectory = () => directory()!
 
@@ -154,22 +164,24 @@ function ResolvedTargetSessionRoute() {
   })
 
   return (
-    <TargetServerScopedProviders directory={directory} sessionID={() => params.id}>
-      <Show when={!!current() || resolved.state !== "errored"} fallback={<ErrorPage error={resolved.error} />}>
-        <Show when={directory()} fallback={<RouteLoadingFallback />}>
-          <Show
-            when={settings.general.newLayoutDesigns()}
-            fallback={<Navigate href={legacySessionHref(directory()!, params.id)} />}
-          >
-            <SDKProvider directory={targetDirectory}>
-              <DirectoryDataProvider directory={targetDirectory} server={serverKey}>
-                <TargetSessionPage />
-              </DirectoryDataProvider>
-            </SDKProvider>
+    <Show when={!sessionNotFound()} fallback={<Navigate href="/" />}>
+      <TargetServerScopedProviders directory={directory} sessionID={() => params.id}>
+        <Show when={!!current() || resolved.state !== "errored"} fallback={<ErrorPage error={resolved.error} />}>
+          <Show when={directory()} fallback={<RouteLoadingFallback />}>
+            <Show
+              when={settings.general.newLayoutDesigns()}
+              fallback={<Navigate href={legacySessionHref(directory()!, params.id)} />}
+            >
+              <SDKProvider directory={targetDirectory}>
+                <DirectoryDataProvider directory={targetDirectory} server={serverKey}>
+                  <TargetSessionPage />
+                </DirectoryDataProvider>
+              </SDKProvider>
+            </Show>
           </Show>
         </Show>
-      </Show>
-    </TargetServerScopedProviders>
+      </TargetServerScopedProviders>
+    </Show>
   )
 }
 
