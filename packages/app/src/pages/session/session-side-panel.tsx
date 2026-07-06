@@ -2144,6 +2144,17 @@ function OpenDesignTabContent(
     onCleanup(() => window.removeEventListener("message", onMessage))
   })
 
+  // Leaving the Open Design tab clears Design Mode so the composer and other
+  // surfaces stop showing an active OpenDesign project/chat context.
+  onCleanup(() => {
+    const cleared = { mode: "dashboard", active: false, clearedAt: new Date().toISOString() }
+    setLocalBridgeState(cleared)
+    props.onBridgeState?.(cleared)
+  })
+
+  const codexAccount = createMemo(() => status.data()?.codexAccount)
+  const authDegraded = createMemo(() => codexAccount()?.degraded === true)
+
   return (
     <TabChrome
       iconTab={PANEL_OPEN_DESIGN_TAB}
@@ -2205,6 +2216,17 @@ function OpenDesignTabContent(
               <StatusRow label="Projects" value={status.data()?.projects?.count} />
               <StatusRow label="Bridge" value={stateLabel()} />
               <StatusRow label="Active project/chat" value={bridgeSummary()} />
+              <StatusRow label="Design auth account" value={codexAccount()?.email ?? "unknown"} />
+              <StatusRow
+                label="Auth vs active Codex"
+                value={
+                  authDegraded()
+                    ? `degraded (active: ${codexAccount()?.requestedActiveAlias ?? "unknown"})`
+                    : codexAccount()?.bridged
+                      ? "aligned"
+                      : "not bridged"
+                }
+              />
             </div>
           </details>
         </div>
@@ -2216,6 +2238,16 @@ function OpenDesignTabContent(
             {error()}
           </div>
         )}
+      </Show>
+      <Show when={authDegraded()}>
+        <div
+          class="absolute inset-x-0 top-0 z-10 border-b border-orange-500/25 bg-orange-500/10 px-3 py-1.5 text-11-regular text-orange-100"
+          data-testid="open-design-auth-degraded"
+        >
+          Open Design is authenticated as {codexAccount()?.email ?? "another account"}; the active Codex account is{" "}
+          {codexAccount()?.requestedActiveAlias ?? "different"}. It re-syncs on the next successful account switch (no
+          tokens are copied manually).
+        </div>
       </Show>
       <div class="absolute inset-0 overflow-hidden bg-background-base">
         <div class="absolute inset-0 overflow-hidden bg-background-stronger">
