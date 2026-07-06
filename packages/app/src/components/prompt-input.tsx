@@ -107,7 +107,17 @@ type OpenDesignBridgePromptState = {
   activeConversationId?: string | null
   model?: string | null
   apiProtocol?: string | null
+  // Open Design chat slash-commands (if the OD build advertises them).
+  slashCommands?: { label: string; hint?: string | null }[]
 }
+
+// Core Open Design chat commands, used when the OD build does not advertise its
+// own list. These route to the OD chat (the composer sends them into Open Design).
+const DEFAULT_OPEN_DESIGN_COMMANDS: { label: string; hint?: string | null }[] = [
+  { label: "/search", hint: "Web search inside Open Design" },
+  { label: "/mcp", hint: "Use a connected MCP server's tools" },
+  { label: "/pet", hint: "Toggle or adopt the Open Design pet" },
+]
 
 const OPEN_DESIGN_BRIDGE_EVENT = "opencode:open-design-bridge-state"
 
@@ -1747,6 +1757,23 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     window.dispatchEvent(new CustomEvent("opencode:open-design-new-chat"))
     openDesignPanel()
   }
+  const designSlashCommands = createMemo(() => {
+    const list = designModeBridge()?.slashCommands
+    return Array.isArray(list) && list.length > 0 ? list : DEFAULT_OPEN_DESIGN_COMMANDS
+  })
+  const designModelTooltip = createMemo(() => {
+    const state = designModeBridge()
+    if (!state?.model) return undefined
+    return `This Open Design chat runs on ${state.model}${state.apiProtocol ? ` (${state.apiProtocol})` : ""} — Open Design's own provider, not the OpenCode-selected model. Change it in the Open Design tab → Settings.`
+  })
+  // Insert an Open Design slash-command into the composer (which routes it to the
+  // OD chat). Mirrors handleSlashSelect: sync the editor DOM + the prompt store.
+  const insertDesignCommand = (label: string) => {
+    const text = `${label} `
+    setEditorText(text)
+    prompt.set([{ type: "text", content: text, start: 0, end: text.length }], text.length)
+    focusEditorEnd()
+  }
 
   const designPlaceholder = () => {
     if (store.mode === "shell") return placeholder()
@@ -1837,26 +1864,37 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
               />
               <Show when={designModeBridge()}>
                 {(bridge) => (
-                  <div class="mx-2 mt-2 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-1.5">
+                  <div class="mx-2 mt-2 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-0.5 rounded-lg border border-v2-border-border-base bg-v2-background-bg-layer-02 p-1 text-[12px] leading-4">
                     <button
                       type="button"
                       data-action="prompt-design-mode"
-                      class="flex min-w-0 items-center gap-2 rounded-lg border border-blue-400/25 bg-blue-500/10 px-2.5 py-1.5 text-left text-[12px] leading-4 text-blue-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] transition-colors hover:bg-blue-500/15"
+                      class="flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-v2-text-text-base transition-colors hover:bg-v2-background-bg-base"
                       onClick={openDesignPanel}
-                      title="Open the active OpenDesign tab"
+                      title="Open the Open Design tab"
                     >
-                      <span class="size-2 shrink-0 rounded-full bg-blue-400 shadow-[0_0_10px_rgba(96,165,250,0.8)]" />
-                      <span class="font-[520]">Design Mode</span>
-                      <span class="text-blue-300/70">/</span>
-                      <span class="min-w-0 truncate text-blue-100/90">
-                        {bridge().projectName ?? bridge().projectId ?? "OpenDesign"}
+                      <span class="flex size-[15px] shrink-0 items-center justify-center rounded bg-[#f97316]/15 text-[7px] font-semibold tracking-tight text-[#f97316]">
+                        OD
                       </span>
+                      <span class="font-[560] text-v2-text-text-faint">Design</span>
+                      <span class="min-w-0 truncate">{bridge().projectName ?? bridge().projectId ?? "OpenDesign"}</span>
                     </button>
                     <Show when={designBridgeActive()}>
-                      <Show when={designConversations().length > 0}>
+                      <span class="mx-0.5 h-4 w-px shrink-0 bg-v2-border-border-base" />
+                      <Show
+                        when={designConversations().length > 0}
+                        fallback={
+                          <Show when={bridge().chatName ?? bridge().chatId}>
+                            {(chat) => (
+                              <span class="min-w-0 max-w-[140px] truncate rounded-md px-1.5 py-1 text-v2-text-text-muted">
+                                {chat()}
+                              </span>
+                            )}
+                          </Show>
+                        }
+                      >
                         <select
                           data-action="prompt-design-chat"
-                          class="max-w-[160px] rounded-lg border border-blue-400/25 bg-blue-500/10 px-2 py-1.5 text-[12px] leading-4 text-blue-100 outline-none hover:bg-blue-500/15"
+                          class="max-w-[150px] cursor-pointer rounded-md bg-transparent px-1.5 py-1 text-v2-text-text-base outline-none transition-colors hover:bg-v2-background-bg-base"
                           value={designActiveChatId() ?? ""}
                           onChange={(event) => switchDesignChat(event.currentTarget.value)}
                           title="Switch Open Design chat"
@@ -1871,18 +1909,47 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                       <button
                         type="button"
                         data-action="prompt-design-new-chat"
-                        class="rounded-lg border border-blue-400/25 bg-blue-500/10 px-2.5 py-1.5 text-[12px] leading-4 text-blue-100 transition-colors hover:bg-blue-500/15"
+                        class="flex size-6 shrink-0 items-center justify-center rounded-md text-v2-text-text-muted transition-colors hover:bg-v2-background-bg-base hover:text-v2-text-text-base"
                         onClick={newDesignChat}
                         title="Start a new Open Design chat"
+                        aria-label="Start a new Open Design chat"
                       >
-                        + New chat
+                        <Icon name="plus-small" size="small" />
                       </button>
+                      <details class="group relative shrink-0" data-action="prompt-design-commands">
+                        <summary
+                          class="flex h-6 cursor-pointer list-none items-center rounded-md px-1.5 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-background-bg-base hover:text-v2-text-text-base [&::-webkit-details-marker]:hidden"
+                          title="Open Design chat commands"
+                        >
+                          /
+                        </summary>
+                        <div class="absolute bottom-8 left-0 z-30 w-64 rounded-lg border border-v2-border-border-base bg-v2-background-bg-layer-01 p-1 shadow-[var(--v2-elevation-floating)]">
+                          <div class="px-2 py-1 text-[10px] uppercase tracking-wide text-v2-text-text-faint">
+                            Open Design commands
+                          </div>
+                          <For each={designSlashCommands()}>
+                            {(command: { label: string; hint?: string | null }) => (
+                              <button
+                                type="button"
+                                data-action="prompt-design-command-item"
+                                class="flex w-full flex-col items-start rounded-md px-2 py-1 text-left transition-colors hover:bg-v2-background-bg-base"
+                                onClick={() => insertDesignCommand(command.label)}
+                              >
+                                <span class="text-[12px] font-[540] text-v2-text-text-base">{command.label}</span>
+                                <Show when={command.hint}>
+                                  <span class="text-[11px] text-v2-text-text-muted">{command.hint}</span>
+                                </Show>
+                              </button>
+                            )}
+                          </For>
+                        </div>
+                      </details>
                       <Show when={designModelLabel()}>
                         {(model) => (
                           <span
                             data-action="prompt-design-model"
-                            class="min-w-0 max-w-[200px] truncate rounded-lg border border-blue-400/15 bg-blue-500/5 px-2 py-1.5 text-[11px] leading-4 text-blue-200/75"
-                            title="Model / provider the Open Design chat runs on"
+                            class="ml-auto min-w-0 max-w-[190px] truncate rounded-md bg-v2-background-bg-base px-1.5 py-1 text-[11px] text-v2-text-text-muted"
+                            title={designModelTooltip()}
                           >
                             {model()}
                           </span>
