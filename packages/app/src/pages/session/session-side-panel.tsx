@@ -4086,7 +4086,11 @@ function ResourcesTabContent() {
         <div data-testid="resources-section-active" data-section={section()}>
           <Switch>
             <Match when={section() === "overview"}>
-              <ResourcesOverviewSection data={data()} onView={(s) => setResourcesSection(s)} />
+              <ResourcesOverviewSection
+                data={data()}
+                onView={(s) => setResourcesSection(s)}
+                onRefresh={() => void cli.refresh()}
+              />
             </Match>
             <Match when={section() === "system"}>
               <div class="flex flex-col gap-3" data-testid="resources-system">
@@ -4121,18 +4125,24 @@ function ResourcesTabContent() {
   )
 }
 
-function ResourcesOverviewSection(props: { data?: any; onView: (s: ResourcesSection) => void }) {
+function ResourcesOverviewSection(props: {
+  data?: any
+  onView: (s: ResourcesSection) => void
+  onRefresh: () => void
+}) {
   const lanes = () => (Array.isArray(props.data?.lanes) ? props.data.lanes : [])
   return (
     <div class="flex flex-col gap-3" data-testid="resources-overview">
       <div class="rounded-md border border-border-weaker-base bg-background-stronger px-3 py-2 text-11-regular text-text-weak">
         Connected CLI &amp; provider resources on this workspace. Codex Multi-Auth is a custom terminal sidecar; OpenCode
         Providers is the native model catalog; Claude Code and Antigravity are separate CLIs with their own auth. No
-        tokens or secret values are shown.
+        tokens or secret values are shown. Account changes stay inside each detail section.
       </div>
       <Show when={lanes().length > 0} fallback={<div class="text-12-regular text-text-weak">Loading resources…</div>}>
         <div class="grid gap-3 sm:grid-cols-2" data-testid="resources-overview-cards">
-          <For each={lanes()}>{(lane: any) => <OverviewLaneCard lane={lane} onView={props.onView} />}</For>
+          <For each={lanes()}>
+            {(lane: any) => <OverviewLaneCard lane={lane} onView={props.onView} onRefresh={props.onRefresh} />}
+          </For>
         </div>
       </Show>
       <StatusRow label="Last checked" value={props.data?.checkedAt} />
@@ -4140,7 +4150,7 @@ function ResourcesOverviewSection(props: { data?: any; onView: (s: ResourcesSect
   )
 }
 
-function OverviewLaneCard(props: { lane: any; onView: (s: ResourcesSection) => void }) {
+function OverviewLaneCard(props: { lane: any; onView: (s: ResourcesSection) => void; onRefresh: () => void }) {
   const lane = () => props.lane
   const status = () => String(lane().status ?? "unknown")
   const statusColor = () => {
@@ -4188,13 +4198,31 @@ function OverviewLaneCard(props: { lane: any; onView: (s: ResourcesSection) => v
       <Show when={lane().note}>
         <div class="text-10-regular text-text-weak/80">{lane().note}</div>
       </Show>
-      <div class="mt-1 flex items-center justify-between gap-2">
-        <Show
-          when={Array.isArray(lane().actions) && lane().actions.length > 0}
-          fallback={<span class="text-10-regular text-text-weak">no actions</span>}
+      <Show when={Array.isArray(lane().actions) && lane().actions.length > 0}>
+        <div class="flex flex-wrap gap-1" data-testid="resources-overview-actions" title="Available in this section's detail view">
+          <For each={lane().actions}>
+            {(action: string) => (
+              <span
+                class="rounded bg-background-base px-1.5 py-0.5 text-10-regular text-text-weak"
+                data-testid="resources-overview-action-chip"
+              >
+                {action}
+              </span>
+            )}
+          </For>
+        </div>
+      </Show>
+      <div class="mt-1 flex items-center justify-end gap-1.5">
+        <button
+          type="button"
+          data-testid="resources-overview-refresh"
+          data-section={lane().section}
+          class="shrink-0 rounded-md border border-border-weaker-base bg-background-base px-2.5 py-1 text-11-medium text-text-weak transition hover:bg-surface-raised-base-hover hover:text-text-strong"
+          onClick={() => props.onRefresh()}
+          title="Re-check resource status"
         >
-          <span class="truncate text-10-regular text-text-weak">{lane().actions.slice(0, 3).join(" · ")}</span>
-        </Show>
+          Refresh
+        </button>
         <button
           type="button"
           data-testid="resources-overview-view"
