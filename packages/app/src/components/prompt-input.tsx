@@ -109,6 +109,8 @@ type OpenDesignBridgePromptState = {
   apiProtocol?: string | null
   // Open Design chat slash-commands (if the OD build advertises them).
   slashCommands?: { label: string; hint?: string | null }[]
+  // Open Design @-mention skills (project-scoped) for the composer.
+  mentionOptions?: { id: string; label: string; token: string }[]
 }
 
 // Core Open Design chat commands, used when the OD build does not advertise its
@@ -900,56 +902,8 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     }
   }
 
-  const atKey = (x: AtOption | undefined) => {
-    if (!x) return ""
-    if (x.type === "agent") return `agent:${x.name}`
-    if (x.type === "tool") return `tool:${x.id}`
-    return `file:${x.path}`
-  }
-
-  const {
-    flat: atFlat,
-    active: atActive,
-    setActive: setAtActive,
-    onInput: atOnInput,
-    onKeyDown: atOnKeyDown,
-  } = useFilteredList<AtOption>({
-    items: async (query) => {
-      const agents = agentList()
-      const tools = toolList() ?? []
-      const open = recent()
-      const seen = new Set(open)
-      const pinned: AtOption[] = open.map((path) => ({ type: "file", path, display: path, recent: true }))
-      if (!query.trim()) return [...agents, ...tools, ...pinned]
-      const paths = await files.searchFilesAndDirectories(query)
-      const fileOptions: AtOption[] = paths
-        .filter((path) => !seen.has(path))
-        .map((path) => ({ type: "file", path, display: path }))
-      return [...agents, ...tools, ...pinned, ...fileOptions]
-    },
-    key: atKey,
-    filterKeys: ["display"],
-    skipFilter: (item) => item.type === "file" && !item.recent,
-    groupBy: (item) => {
-      if (item.type === "agent") return "agent"
-      if (item.type === "tool") return "tool"
-      if (item.recent) return "recent"
-      return "file"
-    },
-    sortGroupsBy: (a, b) => {
-      const rank = (category: string) => {
-        if (category === "agent") return 0
-        if (category === "tool") return 1
-        if (category === "recent") return 2
-        return 3
-      }
-      return rank(a.category) - rank(b.category)
-    },
-    onSelect: handleAtSelect,
-  })
-
-  // --- Open Design bridge state (defined early so the `/` slash menu can swap
-  // to Open Design's commands while in Design Mode). ---
+  // --- Open Design bridge state (defined early so the `/` slash menu and `@`
+  // mention list can swap to Open Design's while in Design Mode). ---
   const [openDesignBridgeState, setOpenDesignBridgeState] = createSignal<OpenDesignBridgePromptState | undefined>(
     readOpenDesignBridgeState(),
   )
@@ -986,6 +940,67 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const designSlashCommands = createMemo(() => {
     const list = designModeBridge()?.slashCommands
     return Array.isArray(list) && list.length > 0 ? list : DEFAULT_OPEN_DESIGN_COMMANDS
+  })
+  const designMentionOptions = createMemo(() => {
+    const list = designModeBridge()?.mentionOptions
+    return Array.isArray(list) ? list : []
+  })
+
+  const atKey = (x: AtOption | undefined) => {
+    if (!x) return ""
+    if (x.type === "agent") return `agent:${x.name}`
+    if (x.type === "tool") return `tool:${x.id}`
+    return `file:${x.path}`
+  }
+
+  const {
+    flat: atFlat,
+    active: atActive,
+    setActive: setAtActive,
+    onInput: atOnInput,
+    onKeyDown: atOnKeyDown,
+  } = useFilteredList<AtOption>({
+    items: async (query) => {
+      // In Design Mode the `@` menu lists Open Design's project skills, not the
+      // OpenCode workspace. They map to agent-type options so selecting inserts
+      // the `@token` text that routes to the OD chat.
+      if (designBridgeActive()) {
+        const q = query.trim().toLowerCase()
+        return designMentionOptions()
+          .filter((m) => !q || m.label.toLowerCase().includes(q))
+          .map((m): AtOption => ({ type: "agent", name: m.label, display: m.label }))
+      }
+      const agents = agentList()
+      const tools = toolList() ?? []
+      const open = recent()
+      const seen = new Set(open)
+      const pinned: AtOption[] = open.map((path) => ({ type: "file", path, display: path, recent: true }))
+      if (!query.trim()) return [...agents, ...tools, ...pinned]
+      const paths = await files.searchFilesAndDirectories(query)
+      const fileOptions: AtOption[] = paths
+        .filter((path) => !seen.has(path))
+        .map((path) => ({ type: "file", path, display: path }))
+      return [...agents, ...tools, ...pinned, ...fileOptions]
+    },
+    key: atKey,
+    filterKeys: ["display"],
+    skipFilter: (item) => item.type === "file" && !item.recent,
+    groupBy: (item) => {
+      if (item.type === "agent") return "agent"
+      if (item.type === "tool") return "tool"
+      if (item.recent) return "recent"
+      return "file"
+    },
+    sortGroupsBy: (a, b) => {
+      const rank = (category: string) => {
+        if (category === "agent") return 0
+        if (category === "tool") return 1
+        if (category === "recent") return 2
+        return 3
+      }
+      return rank(a.category) - rank(b.category)
+    },
+    onSelect: handleAtSelect,
   })
 
   const slashCommands = createMemo<SlashCommand[]>(() => {
