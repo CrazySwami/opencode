@@ -80,6 +80,12 @@ export type PreviewSurfaceState = {
   browserSessionID?: string
   url?: string
   action?: PreviewParams["action"]
+  // How the visible Preview surface rendered the URL (iframe vs
+  // external-browser-render) and why — written by the web client, read by the
+  // preview tool and workspace_tabs state.
+  renderMode?: string
+  embedKind?: string
+  embedNote?: string
   mappedBrowserAction?: BrowserActionInput["action"]
   artifactURL?: string
   screenshotPath?: string

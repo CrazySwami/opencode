@@ -283,17 +283,31 @@ const browserPreviewRoute = HttpRouter.use((router) =>
         if (!sessionID) return HttpServerResponse.text("Missing session ID", { status: 400 })
 
         const raw = yield* Effect.orDie(request.text)
-        let body: { url?: string; action?: string; source?: string }
+        let body: {
+          url?: string
+          action?: string
+          source?: string
+          renderMode?: string
+          embedKind?: string
+          embedNote?: string
+        }
         try {
-          body = JSON.parse(raw || "{}") as { url?: string; action?: string; source?: string }
+          body = JSON.parse(raw || "{}") as typeof body
         } catch {
           return HttpServerResponse.text("Invalid JSON body", { status: 400 })
         }
 
+        const boundedText = (value: unknown, max = 300) =>
+          typeof value === "string" && value.length > 0 ? value.slice(0, max) : undefined
         const state = writePreviewSurfaceState(sessionID, {
           url: typeof body.url === "string" ? body.url : undefined,
           action: body.action === "navigate" ? "navigate" : undefined,
           source: body.source === "client" ? "client" : "unknown",
+          // Embed-mode metadata from the visible Preview so the preview tool /
+          // workspace_tabs state can explain how a URL is rendered and why.
+          renderMode: boundedText(body.renderMode, 40),
+          embedKind: boundedText(body.embedKind, 20),
+          embedNote: boundedText(body.embedNote),
         })
         return HttpServerResponse.jsonUnsafe(state)
       }),

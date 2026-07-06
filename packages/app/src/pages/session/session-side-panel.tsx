@@ -1370,6 +1370,7 @@ function PreviewTabContent(props: { sessionID?: string }) {
   const [externalKey, setExternalKey] = createSignal(Date.now())
   const [externalViewport, setExternalViewport] = createSignal({ width: 1920, height: 1400 })
   let externalImageRef: HTMLImageElement | undefined
+  let externalRetries = 0
   const currentKind = createMemo(() => previewURLKind(currentURL()))
   const externalStreamURL = createMemo(() =>
     props.sessionID
@@ -1402,14 +1403,47 @@ function PreviewTabContent(props: { sessionID?: string }) {
   const writePreviewServerState = async (url: string) => {
     const stateURL = previewStateURL()
     if (!stateURL) return
+    // Expose how the Preview surface is rendering this URL so the preview tool
+    // and workspace_tabs state explain embed mode and its limits to the LLM.
+    const kind = previewURLKind(url)
+    const renderMode = kind === "external" ? "external-browser-render" : kind === "invalid" ? "invalid" : "iframe"
+    const embedNote =
+      kind === "external"
+        ? "Public URL: direct iframe embedding is blocked by CSP/X-Frame policies, so Preview renders via the server Chromium screenshot stream with click/type/scroll relay. For login-heavy or heavy interaction use the Browser tab."
+        : kind === "local"
+          ? "CT100-local URL proxied through /experimental/preview/proxy for same-origin embedding."
+          : "Same-origin URL embedded directly in an iframe."
     const response = await fetch(stateURL, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ url, action: "navigate", source: "client" }),
+      body: JSON.stringify({ url, action: "navigate", source: "client", renderMode, embedKind: kind, embedNote }),
     }).catch(() => undefined)
     if (!response?.ok) return
     const state = await response.json().catch(() => undefined)
     if (typeof state?.updatedAt === "string") setLastPreviewStateAt(state.updatedAt)
+  }
+
+  // Hand the current URL to the real Agent Browser (live Chrome) and focus the
+  // Browser tab — the escape hatch when Preview embedding is not enough.
+  const openInAgentBrowser = async (url: string) => {
+    const clean = String(url || "").trim()
+    if (!clean) return
+    await fetch("/experimental/browser/live/input", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "goto", url: clean }),
+    }).catch(() => {})
+    window.dispatchEvent(
+      new CustomEvent("opencode:workspace-tab-action", {
+        detail: {
+          type: "workspace_tab",
+          action: "open",
+          tab: PANEL_BROWSER_TAB,
+          source: "preview-open-in-browser",
+          actionID: `preview-browser-${Date.now()}`,
+        },
+      }),
+    )
   }
 
   const runExternalInput = async (body: Record<string, unknown>) => {
@@ -1515,6 +1549,7 @@ function PreviewTabContent(props: { sessionID?: string }) {
     }
     setExternalMode("loading")
     setExternalError(undefined)
+    externalRetries = 0
     void refreshExternalViewport()
     runExternalInput({ action: "goto", url })
       .then(() => {
@@ -1614,7 +1649,18 @@ function PreviewTabContent(props: { sessionID?: string }) {
                       <div class="max-w-md rounded-lg border border-border-weaker-base bg-background-base p-5 text-13-regular text-text-weak">
                         <div class="mb-2 text-14-medium text-text-strong">External preview failed</div>
                         <div>{externalError() ?? "The Chromium preview renderer could not open this URL."}</div>
+                        <div class="mt-2 text-11-regular text-text-weak/80">
+                          Public sites often block embedding (CSP/X-Frame). Use the Agent Browser for full interaction.
+                        </div>
                         <div class="mt-4 flex justify-center gap-2">
+                          <button
+                            type="button"
+                            data-testid="preview-open-in-browser"
+                            class="rounded-md border border-[#f97316]/40 bg-[#f97316]/10 px-3 py-1.5 text-12-medium text-text-strong hover:bg-[#f97316]/20"
+                            onClick={() => void openInAgentBrowser(url())}
+                          >
+                            Open in Browser
+                          </button>
                           <button
                             type="button"
                             class="rounded-md border border-border-weaker-base px-3 py-1.5 text-12-regular text-text-strong hover:bg-surface-raised-base-hover"
@@ -1638,14 +1684,35 @@ function PreviewTabContent(props: { sessionID?: string }) {
                     alt="External site preview"
                     class="block w-full select-none bg-white object-contain"
                     style={{ "aspect-ratio": `${externalViewport().width} / ${externalViewport().height}` }}
-                    onLoad={() => setExternalMode("ready")}
+                    onLoad={() => {
+                      externalRetries = 0
+                      setExternalMode("ready")
+                    }}
                     onError={() => {
+                      // The first request boots the per-session Chromium, which
+                      // can take a few seconds — retry before declaring failure.
+                      if (externalRetries < 3) {
+                        externalRetries += 1
+                        window.setTimeout(() => setExternalKey(Date.now()), 1800)
+                        return
+                      }
                       setExternalError("Chromium preview stream is unavailable.")
                       setExternalMode("failed")
                     }}
                   />
-                  <div class="absolute bottom-3 left-3 rounded bg-background-base/90 px-2 py-1 text-11-regular text-text-weak shadow">
-                    external-browser-render
+                  <div class="absolute bottom-3 left-3 flex items-center gap-1.5">
+                    <span class="rounded bg-background-base/90 px-2 py-1 text-11-regular text-text-weak shadow">
+                      external-browser-render
+                    </span>
+                    <button
+                      type="button"
+                      data-testid="preview-open-in-browser"
+                      class="rounded bg-background-base/90 px-2 py-1 text-11-medium text-text-strong shadow hover:bg-surface-raised-base-hover"
+                      title="Hand this URL to the Agent Browser tab for full interaction"
+                      onClick={() => void openInAgentBrowser(url())}
+                    >
+                      Open in Browser
+                    </button>
                   </div>
                 </Show>
               </div>
