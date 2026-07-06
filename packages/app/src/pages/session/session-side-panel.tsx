@@ -69,15 +69,16 @@ const MOBILE_PANEL_SHELL_MIN_HEIGHT_CLASS = "max-md:min-h-[calc(100svh-5rem)]"
 // The Resources tab is a sectioned CLI-resources dashboard. Section is shared at
 // module scope so open/focus paths (mentions, workspace_tabs, top bar) can deep
 // link to a section without threading props through the tab switch.
-export type ResourcesSection = "system" | "opencode" | "codex" | "claude" | "antigravity"
+export type ResourcesSection = "overview" | "system" | "opencode" | "codex" | "claude" | "antigravity"
 const RESOURCES_SECTIONS: { id: ResourcesSection; label: string }[] = [
-  { id: "system", label: "System" },
+  { id: "overview", label: "Overview" },
   { id: "opencode", label: "Providers" },
   { id: "codex", label: "Codex" },
   { id: "claude", label: "Claude Code" },
   { id: "antigravity", label: "Antigravity" },
+  { id: "system", label: "System" },
 ]
-const [resourcesSection, setResourcesSection] = createSignal<ResourcesSection>("system")
+const [resourcesSection, setResourcesSection] = createSignal<ResourcesSection>("overview")
 function sectionForRawTab(raw: string | undefined): ResourcesSection | undefined {
   if (!raw) return undefined
   const n = raw.toLowerCase()
@@ -85,7 +86,9 @@ function sectionForRawTab(raw: string | undefined): ResourcesSection | undefined
   if (n.includes("claude")) return "claude"
   if (n.includes("antigravity") || n.includes("agy")) return "antigravity"
   if (n.includes("provider")) return "opencode"
-  if (n.includes("resource") || n.includes("cpu") || n.includes("server_status") || n.includes("system")) return "system"
+  if (n.includes("cpu") || n.includes("server_status") || n.includes("system")) return "system"
+  // Generic "@resources" / opening the tab lands on the cohesive Overview.
+  if (n.includes("resource")) return "overview"
   return undefined
 }
 const MOBILE_PANEL_TABS_MIN_HEIGHT_CLASS = "max-md:min-h-[calc(100svh-6rem)]"
@@ -4034,6 +4037,7 @@ function ResourcesTabContent() {
     const d = data()
     const collect = (s: any) => (Array.isArray(s?.warnings) ? s.warnings : [])
     return {
+      overview: [],
       system: [],
       opencode: collect(d?.opencode),
       codex: collect(d?.codex),
@@ -4081,6 +4085,9 @@ function ResourcesTabContent() {
         </Show>
         <div data-testid="resources-section-active" data-section={section()}>
           <Switch>
+            <Match when={section() === "overview"}>
+              <ResourcesOverviewSection data={data()} onView={(s) => setResourcesSection(s)} />
+            </Match>
             <Match when={section() === "system"}>
               <div class="flex flex-col gap-3" data-testid="resources-system">
                 <div class="grid gap-3 xl:grid-cols-2">
@@ -4111,6 +4118,94 @@ function ResourcesTabContent() {
         <ResourcesToolsState section={section()} data={data()} warnings={sectionWarnings()} />
       </div>
     </TabChrome>
+  )
+}
+
+function ResourcesOverviewSection(props: { data?: any; onView: (s: ResourcesSection) => void }) {
+  const lanes = () => (Array.isArray(props.data?.lanes) ? props.data.lanes : [])
+  return (
+    <div class="flex flex-col gap-3" data-testid="resources-overview">
+      <div class="rounded-md border border-border-weaker-base bg-background-stronger px-3 py-2 text-11-regular text-text-weak">
+        Connected CLI &amp; provider resources on this workspace. Codex Multi-Auth is a custom terminal sidecar; OpenCode
+        Providers is the native model catalog; Claude Code and Antigravity are separate CLIs with their own auth. No
+        tokens or secret values are shown.
+      </div>
+      <Show when={lanes().length > 0} fallback={<div class="text-12-regular text-text-weak">Loading resources…</div>}>
+        <div class="grid gap-3 sm:grid-cols-2" data-testid="resources-overview-cards">
+          <For each={lanes()}>{(lane: any) => <OverviewLaneCard lane={lane} onView={props.onView} />}</For>
+        </div>
+      </Show>
+      <StatusRow label="Last checked" value={props.data?.checkedAt} />
+    </div>
+  )
+}
+
+function OverviewLaneCard(props: { lane: any; onView: (s: ResourcesSection) => void }) {
+  const lane = () => props.lane
+  const status = () => String(lane().status ?? "unknown")
+  const statusColor = () => {
+    switch (status()) {
+      case "connected":
+        return { dot: "bg-green-500", chip: "bg-green-500/15 text-green-200" }
+      case "needs-setup":
+      case "needs-auth":
+        return { dot: "bg-orange-400", chip: "bg-orange-500/15 text-orange-100" }
+      default:
+        return { dot: "bg-text-disabled", chip: "bg-background-base text-text-weak" }
+    }
+  }
+  return (
+    <div
+      class="flex flex-col gap-2 rounded-lg border border-border-weaker-base bg-background-stronger p-3"
+      data-testid="resources-overview-card"
+      data-lane={lane().id}
+      data-status={status()}
+    >
+      <div class="flex items-start justify-between gap-2">
+        <div class="flex min-w-0 items-center gap-2">
+          <span class={`mt-0.5 h-2 w-2 shrink-0 rounded-full ${statusColor().dot}`} />
+          <div class="min-w-0">
+            <div class="truncate text-13-medium text-text-strong">{lane().label}</div>
+            <div class="text-10-regular uppercase tracking-wide text-text-weak">{lane().source}</div>
+          </div>
+        </div>
+        <span class={`shrink-0 rounded-full px-2 py-0.5 text-10-medium uppercase tracking-wide ${statusColor().chip}`}>
+          {status().replaceAll("-", " ")}
+        </span>
+      </div>
+      <div class="text-11-regular text-text-weak">{lane().detail}</div>
+      <Show when={lane().active}>
+        <div class="text-11-regular text-text-weak">
+          active: <span class="text-text-strong">{lane().active}</span>
+        </div>
+      </Show>
+      <Show when={lane().version || lane().path}>
+        <div class="truncate text-10-regular text-text-weak">
+          {lane().version ? `${lane().version} · ` : ""}
+          {lane().path}
+        </div>
+      </Show>
+      <Show when={lane().note}>
+        <div class="text-10-regular text-text-weak/80">{lane().note}</div>
+      </Show>
+      <div class="mt-1 flex items-center justify-between gap-2">
+        <Show
+          when={Array.isArray(lane().actions) && lane().actions.length > 0}
+          fallback={<span class="text-10-regular text-text-weak">no actions</span>}
+        >
+          <span class="truncate text-10-regular text-text-weak">{lane().actions.slice(0, 3).join(" · ")}</span>
+        </Show>
+        <button
+          type="button"
+          data-testid="resources-overview-view"
+          data-section={lane().section}
+          class="shrink-0 rounded-md border border-border-weaker-base bg-background-base px-2.5 py-1 text-11-medium text-text-strong transition hover:bg-surface-raised-base-hover"
+          onClick={() => props.onView(lane().section as ResourcesSection)}
+        >
+          View
+        </button>
+      </div>
+    </div>
   )
 }
 

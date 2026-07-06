@@ -453,19 +453,124 @@ async function buildStatus() {
     probeAntigravity().catch((error) => ({ installed: false, warnings: [cleanError(error)] })),
   ])
   const codex = probeCodex()
+  const systemSection = { source: "resource_status", ...system }
+  const lanes = buildLanes({ checkedAt, system: systemSection, opencode, codex, claude, antigravity })
   return {
     ok: true as const,
     checkedAt,
-    system: { source: "resource_status", ...system },
+    lanes,
+    system: systemSection,
     opencode,
     codex,
     claude,
     antigravity,
-    sections: ["system", "opencode", "codex", "claude", "antigravity"] as CliResourceSection[],
+    sections: ["overview", "system", "opencode", "codex", "claude", "antigravity"],
     tools: TOOLS,
     actions: ACTIONS,
     safety: SAFETY_NOTES,
   }
+}
+
+// A compact, redacted per-lane summary so the Overview UI and the LLM share one
+// cohesive "connected resources" view. Only safe fields (status, source, paths,
+// versions, active provider/account) — never tokens or secret values.
+function buildLanes(input: {
+  checkedAt: string
+  system: any
+  opencode: any
+  codex: any
+  claude: any
+  antigravity: any
+}) {
+  const { checkedAt, system, opencode, codex, claude, antigravity } = input
+  const codexStatus = !codex?.configured ? "needs-setup" : codex?.runtimeReady ? "connected" : "needs-setup"
+  const antigravityStatus = !antigravity?.installed
+    ? "unavailable"
+    : antigravity?.auth?.state && antigravity.auth.state !== "unknown"
+      ? "connected"
+      : "needs-auth"
+  return [
+    {
+      id: "codex",
+      label: "Codex Multi-Auth",
+      section: "codex",
+      source: "terminal-sidecar",
+      status: codexStatus,
+      detail: codex?.configured
+        ? `${codex.accountCount} account(s) · rotation ${codex.rotationStrategy ?? "unknown"}`
+        : "no accounts authorized",
+      active: codex?.activeAccount ?? null,
+      version: null,
+      path: "server-local multi-auth profile store",
+      lastChecked: checkedAt,
+      actions: ["set active", "force account", "clear force", "authenticate", "runtime proof"],
+      note: "Custom sidecar; base OpenAI is hidden from the model picker while this is ready.",
+    },
+    {
+      id: "opencode",
+      label: "OpenCode Providers",
+      section: "opencode",
+      source: "api·config",
+      status: opencode?.installed ? "connected" : "unavailable",
+      detail: opencode?.catalogAvailable
+        ? `${opencode.connectedCount ?? 0} connected · ${opencode.availableCount ?? 0} available`
+        : opencode?.installed
+          ? `${opencode.providerCount ?? 0} credentialed (catalog unavailable)`
+          : "opencode not found",
+      active: null,
+      version: null,
+      path: opencode?.binary ?? null,
+      lastChecked: checkedAt,
+      actions: ["view"],
+      note: "Native provider catalog + auth.json; managed in Settings.",
+    },
+    {
+      id: "claude",
+      label: "Claude Code",
+      section: "claude",
+      source: "cli",
+      status: claude?.installed ? "connected" : "unavailable",
+      detail: claude?.installed
+        ? `settings ${claude.settings?.userSettings ?? "unknown"} · telemetry ${claude.telemetry?.configured ? "configured" : "off"}`
+        : "not installed",
+      active: null,
+      version: claude?.version ?? null,
+      path: claude?.binary ?? null,
+      lastChecked: checkedAt,
+      actions: claude?.installed ? ["run claude doctor"] : [],
+      note: "Separate CLI with its own auth/session store; not an OpenCode provider.",
+    },
+    {
+      id: "antigravity",
+      label: "Antigravity",
+      section: "antigravity",
+      source: "cli",
+      status: antigravityStatus,
+      detail: antigravity?.installed
+        ? `agy · models ${antigravity.modelsAvailable === true ? "available" : antigravity.modelsAvailable === false ? "missing" : "unknown"}`
+        : "not installed (agy)",
+      active: null,
+      version: null,
+      path: antigravity?.binary ?? null,
+      lastChecked: checkedAt,
+      actions: antigravity?.installed ? ["check models"] : [],
+      note: "Keyring/SSH auth; tokens never read. Separate CLI, not an OpenCode provider.",
+    },
+    {
+      id: "system",
+      label: "System",
+      section: "system",
+      source: "metrics",
+      status: system?.server?.online ? "connected" : "unknown",
+      detail: system?.server?.hostname ? `server ${system.server.hostname}` : "CPU/RAM/storage metrics",
+      active: null,
+      version: null,
+      path: null,
+      lastChecked: checkedAt,
+      actions: ["view"],
+      note: "CT100 + Mac resource metrics.",
+    },
+  ]
 }
 
 export async function collectCliResourcesStatus(force = false) {
