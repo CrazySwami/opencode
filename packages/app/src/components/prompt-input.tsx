@@ -97,6 +97,9 @@ type OpenDesignBridgePromptState = {
   activeCanvasTab?: string
   fileCount?: number
   updatedAt?: string
+  // The embedded Open Design build advertises whether it accepts inbound
+  // prompts from the OpenCode composer (bridge handshake).
+  acceptsPrompts?: boolean
 }
 
 const OPEN_DESIGN_BRIDGE_EVENT = "opencode:open-design-bridge-state"
@@ -1631,7 +1634,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       ) {
         return
       }
-      void handleSubmit(event)
+      void handleComposerSubmit(event)
     }
   }
 
@@ -1686,10 +1689,42 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     restoreFocus()
   }
 
+  // When the embedded Open Design build advertises the inbound prompt bridge,
+  // the composer drives the active Open Design chat instead of the OpenCode LLM,
+  // so the two chats are not redundant.
+  const designBridgeActive = createMemo(() => {
+    const state = designModeBridge()
+    return !!state && state.acceptsPrompts === true && store.mode !== "shell"
+  })
+
+  const composerText = () =>
+    prompt
+      .current()
+      .map((part: any) => ("content" in part ? part.content : ""))
+      .join("")
+
+  const submitToOpenDesign = () => {
+    const text = composerText().trim()
+    if (!text || typeof window === "undefined") return false
+    window.dispatchEvent(new CustomEvent("opencode:open-design-submit", { detail: { prompt: text } }))
+    prompt.reset()
+    openDesignPanel()
+    return true
+  }
+
+  const handleComposerSubmit = (event: Event) => {
+    if (designBridgeActive()) {
+      event.preventDefault()
+      submitToOpenDesign()
+      return
+    }
+    return handleSubmit(event)
+  }
+
   const designPlaceholder = () => {
     if (store.mode === "shell") return placeholder()
     const title = designModeTitle()
-    if (title) return `Design Mode: ${title}`
+    if (title) return designBridgeActive() ? `Message Open Design: ${title}` : `Design Mode: ${title}`
     return "Ask anything, / for commands, @ for context..."
   }
 
@@ -1758,7 +1793,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
           <div class="flex flex-col gap-3">
             <DockShellForm
               data-component={newSession() ? "session-new-composer" : "session-composer"}
-              onSubmit={handleSubmit}
+              onSubmit={handleComposerSubmit}
               classList={{
                 "group/prompt-input min-h-[96px] w-full rounded-xl bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]": true,
                 "ring-1 ring-blue-400/45 shadow-[0_0_0_1px_rgba(96,165,250,0.24),0_18px_48px_rgba(37,99,235,0.20)]":
@@ -1967,7 +2002,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         </Match>
         <Match when>
           <DockShellForm
-            onSubmit={handleSubmit}
+            onSubmit={handleComposerSubmit}
             classList={{
               "group/prompt-input": true,
               "focus-within:shadow-xs-border": true,

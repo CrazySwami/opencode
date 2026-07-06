@@ -2087,6 +2087,7 @@ function OpenDesignTabContent(
   const status = createPolledJson<any>(() => "/experimental/open-design/status")
   const [frameKey, setFrameKey] = createSignal(Date.now())
   const [localBridgeState, setLocalBridgeState] = createSignal<any>({ mode: "dashboard", active: false })
+  let odFrameRef: HTMLIFrameElement | undefined
   const bridgeState = createMemo(() => props.bridgeState?.() ?? localBridgeState())
   const launchUrl = createMemo(() => {
     if (status.data()?.proxyReady === false) return undefined
@@ -2134,6 +2135,9 @@ function OpenDesignTabContent(
       if (!data || typeof data !== "object" || data.type !== "opendesign:bridge-state") return
       const next = {
         ...(data.payload ?? {}),
+        // Whether this Open Design build accepts inbound prompts from the
+        // OpenCode composer (bridge handshake).
+        acceptsPrompts: data.capabilities?.acceptsPrompts === true,
         origin: event.origin,
         receivedAt: new Date().toISOString(),
       }
@@ -2142,6 +2146,21 @@ function OpenDesignTabContent(
     }
     window.addEventListener("message", onMessage)
     onCleanup(() => window.removeEventListener("message", onMessage))
+  })
+
+  // Forward a design prompt from the OpenCode composer into the embedded Open
+  // Design chat so the two chats are not redundant.
+  createEffect(() => {
+    const onSubmit = (event: Event) => {
+      const prompt = (event as CustomEvent<{ prompt?: unknown }>).detail?.prompt
+      if (typeof prompt !== "string" || !prompt.trim()) return
+      odFrameRef?.contentWindow?.postMessage(
+        { type: "opencode:open-design-command", command: "submit-prompt", version: 1, payload: { prompt: prompt.trim() } },
+        window.location.origin,
+      )
+    }
+    window.addEventListener("opencode:open-design-submit", onSubmit as EventListener)
+    onCleanup(() => window.removeEventListener("opencode:open-design-submit", onSubmit as EventListener))
   })
 
   // Leaving the Open Design tab clears Design Mode so the composer and other
@@ -2282,6 +2301,7 @@ function OpenDesignTabContent(
             }
           >
             <iframe
+              ref={(el) => (odFrameRef = el)}
               src={frameUrl() ?? "about:blank"}
               title="Open Design"
               class="absolute inset-0 block h-full w-full border-0 bg-white"
