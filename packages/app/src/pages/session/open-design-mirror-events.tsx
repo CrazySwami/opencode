@@ -243,8 +243,35 @@ function FormCard(props: { form: QuestionForm; onAnswer?: (a: ODAnswer) => void 
                   <For each={q.options}>{(opt) => <option value={opt.value} title={opt.description}>{opt.label}</option>}</For>
                 </select>
               </Match>
+              <Match when={q.type === "direction-cards" && q.options}>
+                {/* direction-cards → visual cards showing label + mood/description */}
+                <div class="grid grid-cols-2 gap-1.5">
+                  <For each={q.options}>
+                    {(opt) => (
+                      <button
+                        type="button"
+                        disabled={sent()}
+                        class="flex flex-col items-start gap-0.5 rounded-lg border p-2 text-left transition-colors disabled:opacity-60"
+                        classList={{ "border-v2-border-border-base hover:bg-v2-background-bg-base": !isOn(q, opt.value) }}
+                        style={isOn(q, opt.value) ? { "border-color": OD_ACCENT, background: `${OD_ACCENT}14` } : undefined}
+                        onClick={() => setSingle(q, opt.value)}
+                      >
+                        <span
+                          class="text-[12px] font-[560] text-v2-text-text-base"
+                          style={isOn(q, opt.value) ? { color: OD_ACCENT } : undefined}
+                        >
+                          {opt.label}
+                        </span>
+                        <Show when={opt.description}>
+                          <span class="text-[10px] leading-[13px] text-v2-text-text-muted">{opt.description}</span>
+                        </Show>
+                      </button>
+                    )}
+                  </For>
+                </div>
+              </Match>
               <Match when={q.options}>
-                {/* radio / checkbox / direction-cards → option chips */}
+                {/* radio / checkbox → option chips */}
                 <div class="flex flex-wrap gap-1">
                   <For each={q.options}>
                     {(opt) => (
@@ -352,8 +379,31 @@ export function ODEventItem(props: { event: ODEvent; onAnswer?: (a: ODAnswer) =>
           }
           if (n.includes("plugin")) return <Chip icon="PLUGIN" label={firstString(asRecord(t.input), "name", "title", "id") ?? t.name} />
           if (/asset|attach|upload|file/.test(n)) return <Chip icon="ASSET" label={firstString(asRecord(t.input), "name", "path", "filename", "title") ?? t.name} tone="#8b5cf6" />
-          if (/media|model|aspect|image|video|generate/.test(n))
-            return <Chip icon="MEDIA" label={firstString(asRecord(t.input), "model", "aspectRatio", "aspect", "prompt", "name") ?? t.name} tone="#0ea5e9" />
+          if (/media|model|aspect|image|video|generate/.test(n)) {
+            const r = asRecord(t.input)
+            const model = firstString(r, "model", "name")
+            const aspect = firstString(r, "aspectRatio", "aspect", "ratio")
+            const mediaPrompt = firstString(r, "prompt")
+            return (
+              <div class="flex flex-col gap-1 rounded-md border border-v2-border-border-base bg-v2-background-bg-base/60 px-2 py-1.5">
+                <div class="flex flex-wrap items-center gap-1.5 text-[11px]">
+                  <span class="rounded bg-[#0ea5e9]/15 px-1.5 py-0.5 font-[560] text-[#0ea5e9]">MEDIA</span>
+                  <Show when={model}>
+                    <span class="rounded bg-v2-background-bg-layer-02 px-1.5 py-0.5 text-v2-text-text-muted">model · {model}</span>
+                  </Show>
+                  <Show when={aspect}>
+                    <span class="rounded bg-v2-background-bg-layer-02 px-1.5 py-0.5 text-v2-text-text-muted">aspect · {aspect}</span>
+                  </Show>
+                  <Show when={!model && !aspect}>
+                    <span class="text-v2-text-text-muted">{t.name}</span>
+                  </Show>
+                </div>
+                <Show when={mediaPrompt}>
+                  <span class="line-clamp-2 text-[11px] text-v2-text-text-muted">{mediaPrompt}</span>
+                </Show>
+              </div>
+            )
+          }
           return (
             <Collapsible label={t.name}>
               <pre class="mt-0.5 max-h-40 overflow-auto rounded-md bg-v2-background-bg-base p-1.5 text-[10px] text-v2-text-text-muted">
