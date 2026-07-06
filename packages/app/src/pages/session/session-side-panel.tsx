@@ -2148,19 +2148,34 @@ function OpenDesignTabContent(
     onCleanup(() => window.removeEventListener("message", onMessage))
   })
 
-  // Forward a design prompt from the OpenCode composer into the embedded Open
-  // Design chat so the two chats are not redundant.
+  // Forward composer bridge actions (submit prompt / new chat / switch chat)
+  // from the OpenCode composer into the embedded Open Design chat.
   createEffect(() => {
-    const onSubmit = (event: Event) => {
-      const prompt = (event as CustomEvent<{ prompt?: unknown }>).detail?.prompt
-      if (typeof prompt !== "string" || !prompt.trim()) return
+    const postCommand = (command: string, payload: Record<string, unknown>) => {
       odFrameRef?.contentWindow?.postMessage(
-        { type: "opencode:open-design-command", command: "submit-prompt", version: 1, payload: { prompt: prompt.trim() } },
+        { type: "opencode:open-design-command", command, version: 1, payload },
         window.location.origin,
       )
     }
+    const onSubmit = (event: Event) => {
+      const prompt = (event as CustomEvent<{ prompt?: unknown }>).detail?.prompt
+      if (typeof prompt !== "string" || !prompt.trim()) return
+      postCommand("submit-prompt", { prompt: prompt.trim() })
+    }
+    const onNewChat = () => postCommand("new-conversation", {})
+    const onSwitchChat = (event: Event) => {
+      const chatId = (event as CustomEvent<{ chatId?: unknown }>).detail?.chatId
+      if (typeof chatId !== "string" || !chatId) return
+      postCommand("switch-conversation", { chatId })
+    }
     window.addEventListener("opencode:open-design-submit", onSubmit as EventListener)
-    onCleanup(() => window.removeEventListener("opencode:open-design-submit", onSubmit as EventListener))
+    window.addEventListener("opencode:open-design-new-chat", onNewChat as EventListener)
+    window.addEventListener("opencode:open-design-switch-chat", onSwitchChat as EventListener)
+    onCleanup(() => {
+      window.removeEventListener("opencode:open-design-submit", onSubmit as EventListener)
+      window.removeEventListener("opencode:open-design-new-chat", onNewChat as EventListener)
+      window.removeEventListener("opencode:open-design-switch-chat", onSwitchChat as EventListener)
+    })
   })
 
   // Leaving the Open Design tab clears Design Mode so the composer and other
