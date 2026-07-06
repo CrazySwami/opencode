@@ -4,7 +4,7 @@ import { Dialog } from "@opencode-ai/ui/dialog"
 import { IconButton } from "@opencode-ai/ui/icon-button"
 import { ProviderIcon } from "@opencode-ai/ui/provider-icon"
 import { Spinner } from "@opencode-ai/ui/spinner"
-import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js"
+import { createMemo, createSignal, For, Index, onCleanup, onMount, Show } from "solid-js"
 
 type CodexAccount = {
   alias?: string
@@ -289,22 +289,23 @@ export function DialogCodexMultiAuthProvider() {
               when={accounts().length > 0}
               fallback={<div class="px-3 py-4 text-14-regular text-text-weak">No Codex multi-auth accounts have been added yet.</div>}
             >
-              <For each={accounts()}>
-                {(account) => {
-                  const alias = () => account.alias ?? ""
+              <Index each={accounts()}>
+                {(accountItem) => {
+                  const account = accountItem
+                  const alias = () => account().alias ?? ""
                   return (
                     <div class="border-b border-border-weaker-base px-3 py-3 last:border-b-0">
                       <div class="flex flex-wrap items-start justify-between gap-3">
                         <div class="min-w-0">
                           <div class="truncate text-14-medium text-text-strong">{alias() || "Codex account"}</div>
-                          <div class="truncate text-12-regular text-text-weak">{account.email ?? "email not reported"}</div>
-                          <div class="truncate text-11-regular text-text-weak">{account.accountId ?? account.source ?? "account id hidden"}</div>
+                          <div class="truncate text-12-regular text-text-weak">{account().email ?? "email not reported"}</div>
+                          <div class="truncate text-11-regular text-text-weak">{account().accountId ?? account().source ?? "account id hidden"}</div>
                         </div>
                         <div class="flex flex-wrap justify-end gap-2">
                           <span class="rounded bg-background-stronger px-2 py-1 text-11-regular text-text-weak">
-                            {account.enabled === false ? "disabled" : "enabled"}
+                            {account().enabled === false ? "disabled" : "enabled"}
                           </span>
-                          <Show when={account.active}>
+                          <Show when={account().active}>
                             <span class="rounded bg-green-500/10 px-2 py-1 text-11-regular text-green-200">active</span>
                           </Show>
                           <Show when={status()?.forcedAccount === alias()}>
@@ -313,14 +314,14 @@ export function DialogCodexMultiAuthProvider() {
                         </div>
                       </div>
                       <div class="mt-3 flex flex-wrap gap-2">
-                        <Button size="small" variant="secondary" disabled={!alias() || account.active || pending() === `active:${alias()}`} onClick={() => void accountAction({ action: "set-active", alias: alias() }, `active:${alias()}`)}>
+                        <Button size="small" variant="secondary" disabled={!alias() || account().active || pending() === `active:${alias()}`} onClick={() => void accountAction({ action: "set-active", alias: alias() }, `active:${alias()}`)}>
                           Set active
                         </Button>
                         <Button size="small" variant="secondary" disabled={!alias() || pending() === `force:${alias()}`} onClick={() => void accountAction({ action: "force-account", alias: alias(), durationMinutes: 120 }, `force:${alias()}`)}>
                           Force 2h
                         </Button>
-                        <Button size="small" variant="ghost" disabled={!alias() || pending() === `enabled:${alias()}`} onClick={() => void accountAction({ action: "set-enabled", alias: alias(), enabled: account.enabled === false }, `enabled:${alias()}`)}>
-                          {account.enabled === false ? "Enable" : "Disable"}
+                        <Button size="small" variant="ghost" disabled={!alias() || pending() === `enabled:${alias()}`} onClick={() => void accountAction({ action: "set-enabled", alias: alias(), enabled: account().enabled === false }, `enabled:${alias()}`)}>
+                          {account().enabled === false ? "Enable" : "Disable"}
                         </Button>
                         <Button
                           size="small"
@@ -337,7 +338,7 @@ export function DialogCodexMultiAuthProvider() {
                     </div>
                   )
                 }}
-              </For>
+              </Index>
             </Show>
           </div>
 

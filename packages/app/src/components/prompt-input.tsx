@@ -2368,8 +2368,11 @@ type CodexMultiAuthStatus = {
   ok?: boolean
   configured?: boolean
   accountCount?: number
+  accounts?: CodexMultiAuthAccount[]
   accountsConfigured?: boolean
   activeAccount?: string | null
+  forcedAccount?: string | null
+  forcedUntil?: string | null
   rotationStrategy?: string | null
   sendRouting?: string | null
   runtimeReady?: boolean
@@ -2382,6 +2385,19 @@ type CodexMultiAuthStatus = {
   output?: string
   limitsOutput?: string
   error?: string
+}
+
+type CodexMultiAuthAccount = {
+  alias?: string
+  email?: string
+  label?: string
+  enabled?: boolean
+  active?: boolean
+  reauthNeeded?: boolean
+  disabledReason?: string | null
+  planType?: string | null
+  usageCount?: number
+  lastUsed?: string | null
 }
 
 function readAccountCount(status: CodexMultiAuthStatus | undefined) {
@@ -2407,17 +2423,23 @@ function CodexMultiAuthChip(props: {
 }) {
   const [popoverOpen, setPopoverOpen] = createSignal(false)
   const [tick, setTick] = createSignal(0)
+  const [pendingAction, setPendingAction] = createSignal<string | undefined>()
+  const [actionError, setActionError] = createSignal<string | undefined>()
+  const [actionNote, setActionNote] = createSignal<string | undefined>()
   const [status, actions] = createResource(tick, async () => {
-    const response = await fetch("/experimental/workspace-suite/status", { cache: "no-store" })
+    const response = await fetch("/experimental/codex-multi-auth/status", { cache: "no-store" })
     if (!response.ok) throw new Error(`status ${response.status}`)
     const body = await response.json()
-    return (body?.codexAccounts ?? body) as CodexMultiAuthStatus
+    return body as CodexMultiAuthStatus
   })
 
   const timer = window.setInterval(() => setTick((value) => value + 1), 20_000)
   onCleanup(() => window.clearInterval(timer))
 
   const accountCount = createMemo(() => readAccountCount(status()))
+  const accountList = createMemo(() => status()?.accounts ?? [])
+  const activeAlias = createMemo(() => status()?.activeAccount ?? accountList().find((account) => account.active)?.alias)
+  const forcedAlias = createMemo(() => status()?.forcedAccount)
   const sendBlocked = createMemo(() => status()?.sendBlocked !== false)
   const runtimeReady = createMemo(() => status()?.runtimeReady === true)
   const usage = createMemo(() => readUsageSummary(status()))
@@ -2431,8 +2453,12 @@ function CodexMultiAuthChip(props: {
     if (status.loading) return "checking"
     if (status.error || status()?.error) return "status error"
     if (sendBlocked() && accountCount() > 0) return "runtime blocked"
-    if (accountCount() === 1) return "1 account"
-    return `${accountCount()} accounts`
+    const count = accountCount() === 1 ? "1 account" : `${accountCount()} accounts`
+    // Show which lane/account a send would use: the forced account wins over
+    // the rotation-active one.
+    const alias = forcedAlias() ?? activeAlias()
+    if (alias) return `${forcedAlias() ? "forced " : ""}${alias} · ${count}`
+    return count
   })
   const tooltip = createMemo(() => {
     const accountLine = accountCount() === 1 ? "1 account configured" : `${accountCount()} accounts configured`
@@ -2447,6 +2473,46 @@ function CodexMultiAuthChip(props: {
     const warning = status()?.warning ? `\n${status()?.warning}` : ""
     return `${mode}\n${accountLine}${usageLine}${strategy}${routing}${warning}\nClick to open the Codex accounts panel.`
   })
+
+  const runAccountAction = async (payload: Record<string, unknown>, pendingLabel: string, successLabel: string) => {
+    setPendingAction(pendingLabel)
+    setActionError(undefined)
+    setActionNote(undefined)
+    try {
+      const response = await fetch("/experimental/codex-multi-auth/account", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok || body?.ok === false) throw new Error(body?.error ?? "Could not update Codex account")
+      const nextStatus = body?.status ?? body
+      if (nextStatus?.ok !== false) actions.mutate(nextStatus as CodexMultiAuthStatus)
+      setActionNote(successLabel)
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setPendingAction(undefined)
+    }
+  }
+
+  const setActive = (alias: string) =>
+    runAccountAction({ action: "set-active", alias }, `set-active:${alias}`, `Active account set to ${alias}`)
+  const forceAccount = (alias: string) =>
+    runAccountAction(
+      { action: "force-account", alias, durationMinutes: 120 },
+      `force-account:${alias}`,
+      `Forced ${alias} for 2 hours`,
+    )
+  const clearForce = () => runAccountAction({ action: "clear-force" }, "clear-force", "Forced account cleared")
+
+  const accountStatusLabel = (account: CodexMultiAuthAccount) => {
+    if (account.reauthNeeded) return "re-auth needed"
+    if (forcedAlias() === account.alias) return "forced"
+    if (account.active || activeAlias() === account.alias) return "active"
+    if (account.enabled === false) return "disabled"
+    return "ready"
+  }
 
   return (
     <KobaltePopover
@@ -2465,10 +2531,12 @@ function CodexMultiAuthChip(props: {
         variant="ghost"
         size="normal"
         data-action="prompt-codex-account"
+        data-codex-active={activeAlias() ?? ""}
+        data-codex-forced={forcedAlias() ?? ""}
         title={tooltip()}
-        class="min-w-0 max-w-[190px] justify-start gap-1.5 rounded-md px-2 text-[12px] font-[440] leading-5 text-v2-text-text-faint"
+        class="min-w-0 max-w-[230px] justify-start gap-1.5 rounded-md px-2 text-[12px] font-[440] leading-5 text-v2-text-text-faint"
         classList={{
-          "text-v2-text-text-base bg-v2-surface-surface-highlight": props.active,
+          "text-v2-text-text-base bg-v2-background-bg-layer-02": props.active,
           "opacity-70": !props.active && accountCount() === 0,
         }}
       >
@@ -2479,48 +2547,162 @@ function CodexMultiAuthChip(props: {
         <span class="truncate text-v2-text-text-muted">{detail()}</span>
       </KobaltePopover.Trigger>
       <KobaltePopover.Portal>
-        <KobaltePopover.Content class="z-50 w-[320px] rounded-lg border border-border-base bg-surface-raised-stronger-non-alpha p-3 text-[12px] leading-5 text-v2-text-text-base shadow-[var(--v2-elevation-floating)] outline-none">
+        <KobaltePopover.Content class="z-50 w-[390px] rounded-xl border border-v2-border-border-base bg-v2-background-bg-layer-01 p-3 text-[12px] leading-5 text-v2-text-text-base shadow-[var(--v2-elevation-floating)] outline-none">
           <KobaltePopover.Title class="mb-2 flex items-center gap-2 text-[13px] font-[560]">
             <span class="flex size-5 items-center justify-center rounded bg-orange-500/20 text-[10px] font-semibold text-orange-300">
               CA
             </span>
-            Codex Multi-Auth
+            <span class="min-w-0 flex-1 truncate">Codex Multi-Auth</span>
+            <span class="rounded-md bg-v2-background-bg-layer-02 px-2 py-0.5 text-[11px] font-[450] text-v2-text-text-muted">
+              {accountCount()} accounts
+            </span>
           </KobaltePopover.Title>
           <div class="space-y-2 text-v2-text-text-muted">
-            <div class="flex items-center justify-between gap-3">
-              <span>Accounts</span>
-              <span class="text-v2-text-text-base">{accountCount()}</span>
+            <div class="grid gap-1.5">
+              <Show
+                when={accountList().length > 0}
+                fallback={
+                  <div class="rounded-lg border border-v2-border-border-base bg-v2-background-bg-base px-3 py-2 text-v2-text-text-muted">
+                    No Codex accounts are configured yet.
+                  </div>
+                }
+              >
+                {accountList().map((account) => {
+                  const alias = account.alias ?? ""
+                  const accountActive = () => account.active || activeAlias() === alias
+                  const accountForced = () => forcedAlias() === alias
+                  const disabled = () => account.enabled === false || account.reauthNeeded === true
+                  const pending = (action: string) => pendingAction() === `${action}:${alias}`
+                  return (
+                    <div
+                      data-codex-account={alias}
+                      class="rounded-lg border border-v2-border-border-base bg-v2-background-bg-base px-2.5 py-2"
+                      classList={{
+                        "border-green-500/30 bg-green-500/5": accountActive(),
+                        "border-orange-500/30 bg-orange-500/5": accountForced(),
+                        "opacity-70": disabled(),
+                      }}
+                    >
+                      <div class="flex items-start gap-2">
+                        <span
+                          class="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md text-[10px] font-semibold"
+                          classList={{
+                            "bg-green-500/15 text-green-200": accountActive(),
+                            "bg-orange-500/15 text-orange-200": accountForced(),
+                            "bg-v2-background-bg-layer-02 text-v2-text-text-muted": !accountActive() && !accountForced(),
+                          }}
+                        >
+                          {(alias || "CA").slice(0, 2).toUpperCase()}
+                        </span>
+                        <div class="min-w-0 flex-1">
+                          <div class="flex min-w-0 items-center gap-2">
+                            <span class="truncate text-[12px] font-[560] text-v2-text-text-base">{alias || "account"}</span>
+                            <span class="shrink-0 rounded-full bg-v2-background-bg-layer-02 px-1.5 py-0.5 text-[10px] text-v2-text-text-muted">
+                              {accountStatusLabel(account)}
+                            </span>
+                            <Show when={account.planType}>
+                              {(plan) => (
+                                <span class="shrink-0 rounded-full bg-v2-background-bg-layer-02 px-1.5 py-0.5 text-[10px] text-v2-text-text-muted">
+                                  {plan()}
+                                </span>
+                              )}
+                            </Show>
+                          </div>
+                          <div class="truncate text-[11px] text-v2-text-text-muted">{account.email ?? account.label ?? "email not reported"}</div>
+                        </div>
+                      </div>
+                      <div class="mt-2 flex flex-wrap justify-end gap-1.5">
+                        <Show when={!accountActive() && !disabled()}>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="normal"
+                            data-action="codex-popup-set-active"
+                            data-account-alias={alias}
+                            class="h-6 px-2 text-[11px]"
+                            disabled={!!pendingAction()}
+                            onClick={(event: MouseEvent) => {
+                              event.stopPropagation()
+                              void setActive(alias)
+                            }}
+                          >
+                            {pending("set-active") ? "Setting..." : "Set active"}
+                          </Button>
+                        </Show>
+                        <Show when={!accountForced() && !disabled()}>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="normal"
+                            data-action="codex-popup-force"
+                            data-account-alias={alias}
+                            class="h-6 px-2 text-[11px]"
+                            disabled={!!pendingAction()}
+                            onClick={(event: MouseEvent) => {
+                              event.stopPropagation()
+                              void forceAccount(alias)
+                            }}
+                          >
+                            {pending("force-account") ? "Forcing..." : "Force 2h"}
+                          </Button>
+                        </Show>
+                        <Show when={accountForced()}>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="normal"
+                            data-action="codex-popup-clear-force"
+                            data-account-alias={alias}
+                            class="h-6 px-2 text-[11px]"
+                            disabled={!!pendingAction()}
+                            onClick={(event: MouseEvent) => {
+                              event.stopPropagation()
+                              void clearForce()
+                            }}
+                          >
+                            {pendingAction() === "clear-force" ? "Clearing..." : "Clear force"}
+                          </Button>
+                        </Show>
+                      </div>
+                    </div>
+                  )
+                })}
+              </Show>
             </div>
-            <div class="flex items-center justify-between gap-3">
-              <span>Routing</span>
-              <span class="max-w-[190px] truncate text-v2-text-text-base">{status()?.sendRouting ?? "unknown"}</span>
-            </div>
-            <div class="flex items-center justify-between gap-3">
-              <span>Status</span>
-              <span class="max-w-[190px] truncate text-v2-text-text-base">
-                {status.loading
-                  ? "checking"
-                  : sendBlocked()
-                    ? "runtime blocked"
-                    : (status()?.statusPhase ?? status()?.loginAttempt ?? "ready")}
-              </span>
+            <div class="grid grid-cols-2 gap-2 rounded-lg border border-v2-border-border-base bg-v2-background-bg-base px-2.5 py-2">
+              <div>
+                <div class="text-[10px] uppercase tracking-wide text-v2-text-text-faint">Routing</div>
+                <div class="truncate text-v2-text-text-base">{status()?.rotationStrategy ?? "auto"}</div>
+              </div>
+              <div>
+                <div class="text-[10px] uppercase tracking-wide text-v2-text-text-faint">Status</div>
+                <div class="truncate text-v2-text-text-base">
+                  {status.loading ? "checking" : sendBlocked() ? "runtime blocked" : (status()?.statusPhase ?? "ready")}
+                </div>
+              </div>
             </div>
             <Show when={usage()}>
               {(line) => (
-                <div class="rounded-md border border-border-weaker-base bg-background-stronger px-2 py-1 text-v2-text-text-base">
+                <div class="rounded-lg border border-v2-border-border-base bg-v2-background-bg-base px-2 py-1 text-v2-text-text-base">
                   {line()}
                 </div>
               )}
             </Show>
             <Show when={props.active && sendBlocked()}>
-              <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-2 py-1 text-orange-200">
+              <div class="rounded-lg border border-orange-500/20 bg-orange-500/10 px-2 py-1 text-orange-200">
                 This lane is selected, but sends are blocked until the multi-auth runtime adapter is verified.
                 <Show when={status()?.sendBlockReason}>{(reason) => <span> {reason()}</span>}</Show>
               </div>
             </Show>
+            <Show when={actionNote()}>
+              {(note) => <div class="rounded-lg border border-green-500/20 bg-green-500/10 px-2 py-1 text-green-200">{note()}</div>}
+            </Show>
+            <Show when={actionError()}>
+              {(error) => <div class="rounded-lg border border-red-500/25 bg-red-500/10 px-2 py-1 text-red-200">{error()}</div>}
+            </Show>
             <Show when={status()?.warning}>
               {(warning) => (
-                <div class="rounded-md border border-border-weaker-base bg-background-stronger px-2 py-1 text-v2-text-text-muted">
+                <div class="rounded-lg border border-v2-border-border-base bg-v2-background-bg-base px-2 py-1 text-v2-text-text-muted">
                   {warning()}
                 </div>
               )}
