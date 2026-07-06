@@ -54,7 +54,6 @@ const PANEL_BROWSER_TAB = "panel://browser" satisfies WorkspacePanelTabID
 const PANEL_PREVIEW_TAB = "panel://preview" satisfies WorkspacePanelTabID
 const PANEL_OPEN_DESIGN_TAB = "panel://open-design" satisfies WorkspacePanelTabID
 const PANEL_MAC_VIEW_TAB = "panel://mac-view" satisfies WorkspacePanelTabID
-const PANEL_ACCOUNTS_TAB = "panel://accounts" satisfies WorkspacePanelTabID
 const PANEL_ROUTINES_TAB = "panel://routines" satisfies WorkspacePanelTabID
 const PANEL_ENVIRONMENT_TAB = "panel://environment" satisfies WorkspacePanelTabID
 const PANEL_RESOURCES_TAB = "panel://resources" satisfies WorkspacePanelTabID
@@ -66,6 +65,29 @@ const FILE_BROWSER_STATE_KEY = "opencode:workspace-suite:file-browser"
 const PREVIEW_STATE_KEY = "opencode:workspace-suite:preview"
 const PANEL_TABS = new Set([...WORKSPACE_PANEL_TAB_IDS, PANEL_QUEUE_TAB])
 const MOBILE_PANEL_SHELL_MIN_HEIGHT_CLASS = "max-md:min-h-[calc(100svh-5rem)]"
+
+// The Resources tab is a sectioned CLI-resources dashboard. Section is shared at
+// module scope so open/focus paths (mentions, workspace_tabs, top bar) can deep
+// link to a section without threading props through the tab switch.
+export type ResourcesSection = "system" | "opencode" | "codex" | "claude" | "antigravity"
+const RESOURCES_SECTIONS: { id: ResourcesSection; label: string }[] = [
+  { id: "system", label: "System" },
+  { id: "opencode", label: "Providers" },
+  { id: "codex", label: "Codex" },
+  { id: "claude", label: "Claude Code" },
+  { id: "antigravity", label: "Antigravity" },
+]
+const [resourcesSection, setResourcesSection] = createSignal<ResourcesSection>("system")
+function sectionForRawTab(raw: string | undefined): ResourcesSection | undefined {
+  if (!raw) return undefined
+  const n = raw.toLowerCase()
+  if (n.includes("accounts") || n.includes("codex") || n.includes("multi_auth") || n.includes("multi-auth")) return "codex"
+  if (n.includes("claude")) return "claude"
+  if (n.includes("antigravity") || n.includes("agy")) return "antigravity"
+  if (n.includes("provider")) return "opencode"
+  if (n.includes("resource") || n.includes("cpu") || n.includes("server_status") || n.includes("system")) return "system"
+  return undefined
+}
 const MOBILE_PANEL_TABS_MIN_HEIGHT_CLASS = "max-md:min-h-[calc(100svh-6rem)]"
 const MOBILE_PANEL_CONTENT_MIN_HEIGHT_CLASS = "max-md:min-h-[calc(100svh-8rem)]"
 const MOBILE_PANEL_BODY_MIN_HEIGHT_CLASS = "max-md:min-h-[calc(100svh-9rem)]"
@@ -2446,7 +2468,7 @@ function MacViewTabContent() {
   )
 }
 
-function AccountsTabContent() {
+function CodexResourcesSection() {
   const status = createPolledJson<any>(() => "/experimental/workspace-suite/status", 30000, 5000)
   const codexStatus = createPolledJson<any>(() => "/experimental/codex-multi-auth/status", 8000, 8000)
   const workspace = createPolledJson<any>(() => "/__workspace-index", 15000, 6000)
@@ -2633,16 +2655,7 @@ function AccountsTabContent() {
   }
 
   return (
-    <TabChrome
-      title="Accounts"
-      iconTab={PANEL_ACCOUNTS_TAB}
-      onRefresh={() => {
-        void status.refresh()
-        void codexStatus.refresh()
-        void workspace.refresh()
-      }}
-    >
-      <div class="flex flex-col gap-3">
+      <div class="flex flex-col gap-3" data-testid="resources-codex">
         <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
           <div class="mb-2 flex items-center justify-between gap-3">
             <div>
@@ -3098,7 +3111,6 @@ function AccountsTabContent() {
           </div>
         </div>
       </div>
-    </TabChrome>
   )
 }
 
@@ -4014,29 +4026,355 @@ function formatShortDate(value?: string) {
 }
 
 function ResourcesTabContent() {
-  const resources = createPolledJson<any>(() => "/experimental/resources/status", 15000)
+  const cli = createPolledJson<any>(() => "/experimental/cli-resources/status", 15000, 12000)
+  const section = () => resourcesSection()
+  const data = () => cli.data()
+  const systemData = createMemo(() => data()?.system ?? {})
+  const sectionWarnings = createMemo(() => {
+    const d = data()
+    const collect = (s: any) => (Array.isArray(s?.warnings) ? s.warnings : [])
+    return {
+      system: [],
+      opencode: collect(d?.opencode),
+      codex: collect(d?.codex),
+      claude: collect(d?.claude),
+      antigravity: collect(d?.antigravity),
+    } as Record<ResourcesSection, string[]>
+  })
 
   return (
-    <TabChrome title="Resources" iconTab={PANEL_RESOURCES_TAB} onRefresh={resources.refresh}>
+    <TabChrome title="Resources" iconTab={PANEL_RESOURCES_TAB} onRefresh={() => void cli.refresh()}>
       <div class="flex flex-col gap-3">
-        <Show when={resources.error()}>
+        <div class="flex flex-wrap gap-1.5" data-testid="resources-section-selector" role="tablist">
+          <For each={RESOURCES_SECTIONS}>
+            {(item) => {
+              const active = () => section() === item.id
+              const warnCount = () => (sectionWarnings()[item.id] ?? []).length
+              return (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={active()}
+                  data-testid={`resources-section-${item.id}`}
+                  class="rounded-md border px-2.5 py-1.5 text-11-medium transition"
+                  classList={{
+                    "border-[#f97316]/50 bg-[#f97316]/10 text-text-strong": active(),
+                    "border-border-weaker-base bg-background-stronger text-text-weak hover:text-text-strong": !active(),
+                  }}
+                  onClick={() => setResourcesSection(item.id)}
+                >
+                  {item.label}
+                  <Show when={warnCount() > 0}>
+                    <span class="ml-1 rounded-full bg-orange-500/20 px-1 text-10-medium text-orange-100">{warnCount()}</span>
+                  </Show>
+                </button>
+              )
+            }}
+          </For>
+        </div>
+        <Show when={cli.error()}>
           {(error) => (
-            <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">
-              {error()}
+            <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-12-regular text-orange-100">
+              CLI resources status failed: {error()}
             </div>
           )}
         </Show>
-        <div class="grid gap-3 xl:grid-cols-2">
-          <ResourceHostCard title="Server" status={resources.data()?.server} />
-          <ResourceHostCard title="MacBook" status={resources.data()?.mac} />
+        <div data-testid="resources-section-active" data-section={section()}>
+          <Switch>
+            <Match when={section() === "system"}>
+              <div class="flex flex-col gap-3" data-testid="resources-system">
+                <div class="grid gap-3 xl:grid-cols-2">
+                  <ResourceHostCard title="Server" status={systemData()?.server} />
+                  <ResourceHostCard title="MacBook" status={systemData()?.mac} />
+                </div>
+                <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">
+                  Server metrics are local to CT100. Mac metrics require SSH from CT100 to the Mac; Mac View can still be
+                  live through the separate ScreenCaptureKit/Tailscale feed.
+                </div>
+                <StatusRow label="Last checked" value={data()?.checkedAt} />
+              </div>
+            </Match>
+            <Match when={section() === "opencode"}>
+              <OpenCodeProvidersSection data={data()?.opencode} />
+            </Match>
+            <Match when={section() === "codex"}>
+              <CodexResourcesSection />
+            </Match>
+            <Match when={section() === "claude"}>
+              <ClaudeResourcesSection data={data()?.claude} />
+            </Match>
+            <Match when={section() === "antigravity"}>
+              <AntigravityResourcesSection data={data()?.antigravity} />
+            </Match>
+          </Switch>
         </div>
-        <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">
-          Server metrics are local to CT100. Mac metrics require SSH from CT100 to the Mac; Mac View can still be live
-          through the separate ScreenCaptureKit/Tailscale feed.
-        </div>
-        <StatusRow label="Last checked" value={resources.data()?.checkedAt} />
+        <ResourcesToolsState section={section()} data={data()} warnings={sectionWarnings()} />
       </div>
     </TabChrome>
+  )
+}
+
+function OpenCodeProvidersSection(props: { data?: any }) {
+  const d = () => props.data ?? {}
+  const providers = () => (Array.isArray(d().providers) ? d().providers : [])
+  return (
+    <div class="flex flex-col gap-3" data-testid="resources-opencode">
+      <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+        <div class="mb-2 flex items-center justify-between gap-3">
+          <div class="text-12-regular text-text-weak">OpenCode providers</div>
+          <span class="rounded bg-background-base px-2 py-1 text-11-regular text-text-strong">
+            {d().installed ? `${providers().length} connected` : "opencode not found"}
+          </span>
+        </div>
+        <Show
+          when={providers().length > 0}
+          fallback={<div class="text-12-regular text-text-weak">No providers reported.</div>}
+        >
+          <div class="flex flex-col gap-2" data-testid="resources-provider-list">
+            <For each={providers()}>
+              {(p: any) => (
+                <div
+                  class="flex items-center justify-between gap-3 rounded-md border border-border-weaker-base bg-background-base px-3 py-2"
+                  data-testid="resources-provider-row"
+                >
+                  <div class="min-w-0">
+                    <div class="truncate text-13-medium text-text-strong">{p.name}</div>
+                    <div class="text-11-regular text-text-weak">
+                      auth: {p.authMethod}
+                      {p.visible === false ? " · hidden" : p.visible === true ? " · visible" : ""}
+                    </div>
+                  </div>
+                  <span class="shrink-0 rounded-full bg-green-500/15 px-2 py-0.5 text-10-medium uppercase tracking-wide text-green-200">
+                    connected
+                  </span>
+                </div>
+              )}
+            </For>
+          </div>
+        </Show>
+      </div>
+      <div class="flex flex-col gap-2 rounded-md border border-border-weaker-base bg-background-stronger p-3">
+        <StatusRow label="Auth source" value={d().authPath ?? "unknown"} />
+        <StatusRow label="Auth file present" value={d().authFileExists ? "yes" : "no"} />
+        <StatusRow label="Config source" value={d().configPath ?? "default (opencode.json / opencode.jsonc)"} />
+      </div>
+      <Show when={(d().warnings ?? []).length > 0}>
+        <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-11-regular text-orange-100">
+          {(d().warnings ?? []).join("; ")}
+        </div>
+      </Show>
+      <div class="rounded bg-background-base px-3 py-2 text-11-regular text-text-weak">
+        Provider credentials live in auth.json and are never read here. Deep connect/manage stays in Settings.
+      </div>
+    </div>
+  )
+}
+
+function ClaudeResourcesSection(props: { data?: any }) {
+  const d = () => props.data ?? {}
+  const [running, setRunning] = createSignal(false)
+  const [result, setResult] = createSignal<any>()
+  const runDoctor = async () => {
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm("Run `claude doctor --help`? This spawns the Claude Code CLI (safe, no config printed).")
+    )
+      return
+    setRunning(true)
+    setResult(undefined)
+    try {
+      const res = await fetch("/experimental/cli-resources/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ probe: "claude-doctor" }),
+      })
+      setResult(await res.json())
+    } catch (error) {
+      setResult({ ok: false, error: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setRunning(false)
+    }
+  }
+  return (
+    <div class="flex flex-col gap-3" data-testid="resources-claude">
+      <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+        <div class="mb-2 flex items-center justify-between gap-3">
+          <div class="text-12-regular text-text-weak">Claude Code CLI</div>
+          <span
+            class="rounded bg-background-base px-2 py-1 text-11-regular"
+            classList={{ "text-text-strong": d().installed, "text-text-weak": !d().installed }}
+          >
+            {d().installed ? "installed" : "not installed"}
+          </span>
+        </div>
+        <div class="grid gap-2 sm:grid-cols-2">
+          <StatusPill label="Binary" value={d().binary ?? "not found"} active={!!d().installed} />
+          <StatusPill label="Version" value={d().version ?? "unknown"} active={!!d().version} />
+          <StatusPill label="User settings" value={d().settings?.userSettings ?? "unknown"} active={d().settings?.userSettings === "present"} />
+          <StatusPill label="User config" value={d().settings?.userConfig ?? "unknown"} active={d().settings?.userConfig === "present"} />
+          <StatusPill label="Project settings" value={d().settings?.projectSettings ?? "unknown"} />
+          <StatusPill
+            label="Telemetry"
+            value={d().telemetry?.configured ? (d().telemetry?.enabled ? "enabled" : "configured") : "not configured"}
+            active={!!d().telemetry?.configured}
+          />
+        </div>
+      </div>
+      <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+        <div class="mb-2 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            class="rounded-md border border-border-weaker-base bg-background-base px-3 py-1.5 text-12-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60"
+            disabled={running() || !d().installed}
+            onClick={() => void runDoctor()}
+            data-testid="resources-claude-doctor"
+          >
+            {running() ? "Running..." : "Run claude doctor"}
+          </button>
+          <span class="text-11-regular text-text-weak">Approval-gated. Spawns the CLI; no tokens or config contents are shown.</span>
+        </div>
+        <Show when={result()}>
+          {(r) => (
+            <pre class="max-h-52 overflow-auto whitespace-pre-wrap break-words rounded bg-background-base p-2 text-11-regular text-text-weak">
+              {r().output ?? r().error ?? "no output"}
+            </pre>
+          )}
+        </Show>
+      </div>
+      <Show when={(d().warnings ?? []).length > 0}>
+        <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-11-regular text-orange-100">
+          {(d().warnings ?? []).join("; ")}
+        </div>
+      </Show>
+      <div class="rounded bg-background-base px-3 py-2 text-11-regular text-text-weak">
+        Claude Code is a separate CLI with its own auth/session store (~/.claude, ~/.claude.json). It is not an OpenCode
+        model provider. Settings contents and tokens are never read.
+      </div>
+    </div>
+  )
+}
+
+function AntigravityResourcesSection(props: { data?: any }) {
+  const d = () => props.data ?? {}
+  const [running, setRunning] = createSignal(false)
+  const [result, setResult] = createSignal<any>()
+  const runModels = async () => {
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm("Run `agy models`? This may require Antigravity auth (keyring or SSH URL). Auth material is never shown.")
+    )
+      return
+    setRunning(true)
+    setResult(undefined)
+    try {
+      const res = await fetch("/experimental/cli-resources/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ probe: "antigravity-models" }),
+      })
+      setResult(await res.json())
+    } catch (error) {
+      setResult({ ok: false, error: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setRunning(false)
+    }
+  }
+  return (
+    <div class="flex flex-col gap-3" data-testid="resources-antigravity">
+      <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+        <div class="mb-2 flex items-center justify-between gap-3">
+          <div class="text-12-regular text-text-weak">Antigravity CLI (agy)</div>
+          <span
+            class="rounded bg-background-base px-2 py-1 text-11-regular"
+            classList={{ "text-text-strong": d().installed, "text-text-weak": !d().installed }}
+          >
+            {d().installed ? "installed" : "not installed"}
+          </span>
+        </div>
+        <div class="grid gap-2 sm:grid-cols-2">
+          <StatusPill label="Command" value={d().commandName ?? "agy"} active={!!d().installed} />
+          <StatusPill label="Binary" value={d().binary ?? "not found"} active={!!d().installed} />
+          <StatusPill label="Models command" value={d().modelsAvailable === null ? "unknown" : d().modelsAvailable ? "available" : "missing"} active={d().modelsAvailable === true} />
+          <StatusPill label="Plugins command" value={d().pluginsAvailable === null ? "unknown" : d().pluginsAvailable ? "available" : "missing"} active={d().pluginsAvailable === true} />
+          <StatusPill label="Auth" value={d().auth?.state ?? "unknown"} />
+        </div>
+        <Show when={Array.isArray(d().subcommands) && d().subcommands.length > 0}>
+          <div class="mt-2 flex flex-wrap gap-1.5">
+            <For each={d().subcommands}>
+              {(sub: string) => <span class="rounded bg-background-base px-2 py-1 text-11-regular text-text-strong">{sub}</span>}
+            </For>
+          </div>
+        </Show>
+      </div>
+      <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+        <div class="mb-2 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            class="rounded-md border border-border-weaker-base bg-background-base px-3 py-1.5 text-12-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60"
+            disabled={running() || !d().installed}
+            onClick={() => void runModels()}
+            data-testid="resources-antigravity-models"
+          >
+            {running() ? "Checking..." : "Check models (agy models)"}
+          </button>
+          <span class="text-11-regular text-text-weak">Approval-gated. May trigger auth; the URL/token is intentionally withheld.</span>
+        </div>
+        <Show when={result()}>
+          {(r) => (
+            <div
+              class="rounded-md border px-3 py-2 text-11-regular"
+              classList={{
+                "border-orange-500/20 bg-orange-500/10 text-orange-100": r().needsAuth === true || r().ok === false,
+                "border-border-weaker-base bg-background-base text-text-weak": r().needsAuth !== true && r().ok !== false,
+              }}
+            >
+              <pre class="max-h-52 overflow-auto whitespace-pre-wrap break-words">{r().output ?? r().error ?? "no output"}</pre>
+            </div>
+          )}
+        </Show>
+      </div>
+      <Show when={(d().warnings ?? []).length > 0}>
+        <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-11-regular text-orange-100">
+          {(d().warnings ?? []).join("; ")}
+        </div>
+      </Show>
+      <div class="rounded bg-background-base px-3 py-2 text-11-regular text-text-weak">
+        Antigravity is a separate CLI (command: agy). Auth uses the system keyring or an SSH authorization URL; tokens are
+        never read or displayed. It is not an OpenCode model provider.
+      </div>
+    </div>
+  )
+}
+
+function ResourcesToolsState(props: {
+  section: ResourcesSection
+  data?: any
+  warnings: Record<ResourcesSection, string[]>
+}) {
+  const allWarnings = createMemo(() =>
+    Object.entries(props.warnings).flatMap(([key, list]) => (list ?? []).map((warning) => `${key}: ${warning}`)),
+  )
+  const tools = () => props.data?.tools ?? ["cli_resources", "resource_status", "account_status", "workspace_tabs"]
+  return (
+    <details class="rounded-md border border-border-weaker-base bg-background-stronger p-3" data-testid="resources-tools-state">
+      <summary class="cursor-pointer text-12-medium text-text-strong">Tools &amp; state (what the model sees)</summary>
+      <div class="mt-2 flex flex-col gap-2 text-11-regular text-text-weak">
+        <div>
+          Active section: <span class="text-text-strong" data-testid="resources-active-section-label">{props.section}</span>
+        </div>
+        <div>Tools: {tools().map((tool: string) => `@${tool}`).join("  ")}</div>
+        <div>Actions: {(props.data?.actions ?? []).join(", ") || "refresh, attach_to_chat"}</div>
+        <div>
+          Warnings:{" "}
+          <span data-testid="resources-warnings">{allWarnings().length ? allWarnings().join(" · ") : "none"}</span>
+        </div>
+        <div class="flex flex-col gap-1">
+          <For each={props.data?.safety ?? []}>
+            {(note: string) => <div class="rounded bg-background-base px-2 py-1">{note}</div>}
+          </For>
+        </div>
+      </div>
+    </details>
   )
 }
 
@@ -5208,6 +5546,8 @@ export function SessionSidePanel(props: {
 
   const openPanelTab = (tab: string) => {
     const nextTab = canonicalPanelTab(tab)
+    const detectedSection = sectionForRawTab(tab)
+    if (detectedSection && nextTab === PANEL_RESOURCES_TAB) setResourcesSection(detectedSection)
     setPanelMenuOpen(false)
     openReviewPanel()
     if (nextTab === PANEL_TERMINAL_TAB && view().terminal.opened()) view().terminal.close()
@@ -5400,6 +5740,9 @@ export function SessionSidePanel(props: {
     const action = clientAction?.action ?? pending?.action
     const tab = clientAction?.tab ?? pending?.tab
     if (!actionID || !action) return
+    const requestedSection = sectionForRawTab(clientAction?.requestedTab ?? pending?.requestedTab ?? tab)
+    if (requestedSection && typeof tab === "string" && canonicalPanelTab(tab) === PANEL_RESOURCES_TAB)
+      setResourcesSection(requestedSection)
     try {
       if (action === "close" && typeof tab === "string") {
         closePanelTab(canonicalPanelTab(tab))
@@ -5462,6 +5805,10 @@ export function SessionSidePanel(props: {
       if (action === "close") {
         tabs().close(tab)
       } else if (isPanelTab(tab)) {
+        const requestedSection = sectionForRawTab(
+          typeof detail.requestedTab === "string" ? detail.requestedTab : tab,
+        )
+        if (requestedSection && canonicalPanelTab(tab) === PANEL_RESOURCES_TAB) setResourcesSection(requestedSection)
         openPanelTab(tab)
         if (tab === PANEL_BROWSER_TAB && typeof detail.url === "string") {
           setBrowserLaunch({ url: detail.url, nonce: Date.now() })
@@ -5482,6 +5829,18 @@ export function SessionSidePanel(props: {
 
     window.addEventListener("opencode:workspace-tab-action", handleWorkspaceTabAction)
     onCleanup(() => window.removeEventListener("opencode:workspace-tab-action", handleWorkspaceTabAction))
+  })
+
+  createEffect(() => {
+    const handleResourcesSection = (event: Event) => {
+      const detail = (event as CustomEvent<any>).detail ?? {}
+      const section =
+        typeof detail.section === "string" ? (detail.section as ResourcesSection) : sectionForRawTab(detail.raw)
+      if (section) setResourcesSection(section)
+      openPanelTab(PANEL_RESOURCES_TAB)
+    }
+    window.addEventListener("opencode:resources-section", handleResourcesSection as EventListener)
+    onCleanup(() => window.removeEventListener("opencode:resources-section", handleResourcesSection as EventListener))
   })
 
   const [store, setStore] = createStore({
@@ -5783,15 +6142,6 @@ export function SessionSidePanel(props: {
                       >
                         <Show when={activePanelTab() === PANEL_MAC_VIEW_TAB}>
                           <MacViewTabContent />
-                        </Show>
-                      </Tabs.Content>
-
-                      <Tabs.Content
-                        value={PANEL_ACCOUNTS_TAB}
-                        class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
-                      >
-                        <Show when={activePanelTab() === PANEL_ACCOUNTS_TAB}>
-                          <AccountsTabContent />
                         </Show>
                       </Tabs.Content>
 

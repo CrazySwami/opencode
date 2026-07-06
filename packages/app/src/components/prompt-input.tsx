@@ -298,6 +298,42 @@ const WORKSPACE_TOOL_MENTIONS = WORKSPACE_PANEL_TABS.map((tab) =>
   }),
 )
 
+// The Resources tab has sub-sections (Claude Code, Antigravity, OpenCode
+// providers) that are not standalone tabs. Expose them as mentions that focus
+// the Resources tab on the matching section.
+const RESOURCES_SECTION_MENTIONS = [
+  optionForToolMention({
+    id: "claude_code",
+    name: "Claude Code",
+    description: "Claude Code CLI status (installed, settings, telemetry) in the Resources tab.",
+  }),
+  optionForToolMention({
+    id: "antigravity",
+    name: "Antigravity",
+    description: "Antigravity (agy) CLI status and subcommands in the Resources tab.",
+  }),
+  optionForToolMention({
+    id: "opencode_provider",
+    name: "OpenCode Providers",
+    description: "OpenCode native provider/auth status in the Resources tab.",
+  }),
+]
+
+const RESOURCES_SECTION_BY_MENTION: Record<string, string> = {
+  codex: "codex",
+  accounts: "codex",
+  account_status: "codex",
+  multi_auth: "codex",
+  claude_code: "claude",
+  antigravity: "antigravity",
+  agy: "antigravity",
+  opencode_provider: "opencode",
+  resources: "system",
+  resource_status: "system",
+  cpu: "system",
+  server_status: "system",
+}
+
 const uniqueToolMentions = (items: AtOption[]) => {
   const seen = new Set<string>()
   return items.filter((item) => {
@@ -804,6 +840,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         uniqueToolMentions([
           ...SWAMI_TOOL_MENTIONS,
           ...WORKSPACE_TOOL_MENTIONS,
+          ...RESOURCES_SECTION_MENTIONS,
           ...(response.data ?? []).map((id) => optionForToolMention({ id })),
         ]),
       )
@@ -820,6 +857,12 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         props.controls.session.reviewPanel.open()
         void props.controls.session.tabs.open(panelTab)
         props.controls.session.tabs.setActive(panelTab)
+        if (panelTab === "panel://resources") {
+          const section = RESOURCES_SECTION_BY_MENTION[option.id]
+          if (section && typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("opencode:resources-section", { detail: { section } }))
+          }
+        }
       }
       addPart({
         type: "tool",
@@ -1671,9 +1714,12 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     () => props.controls.model.selection.current()?.provider?.id === CODEX_MULTI_AUTH_PROVIDER_ID,
   )
   const openCodexAccountsPanel = () => {
-    const tab = "panel://accounts"
+    const tab = "panel://resources"
     props.controls.session.tabs.open(tab)
     props.controls.session.tabs.setActive(tab)
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("opencode:resources-section", { detail: { section: "codex" } }))
+    }
   }
 
   const newSession = () => props.variant === "new-session"

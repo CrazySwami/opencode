@@ -105,6 +105,10 @@ function summarizeCodexAccount(alias: string, value: unknown, activeAlias: strin
   }
 }
 
+export function codexResourceStatus() {
+  return codexStatus()
+}
+
 function codexStatus() {
   const store = codexMultiAuthGuardStorePath()
   const data = readJsonObject(store)

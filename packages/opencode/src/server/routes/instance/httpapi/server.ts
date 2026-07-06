@@ -137,6 +137,7 @@ import { schemaErrorLayer } from "./middleware/schema-error"
 import { captureBrowserScreenshot, runBrowserAction, sessionPaths, type BrowserActionInput } from "@/tool/browser"
 import { readPreviewSurfaceState, runPreviewAction, writePreviewSurfaceState } from "@/tool/preview"
 import { collectResourceStatus } from "@/tool/resource-status"
+import { collectCliResourcesStatus, runCliResourceAction } from "@/tool/cli-resources"
 import { createRoutineDraft, routineLogs, routinesAction, routinesStatus } from "@/tool/routines"
 import { publishAppleBridgeEvent } from "@/tool/ios-bridge-events"
 import {
@@ -2553,6 +2554,33 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
         const target = url.searchParams.get("target")
         const safeTarget = target === "server" || target === "mac" || target === "all" ? target : "all"
         return HttpServerResponse.jsonUnsafe(await collectResourceStatus(safeTarget))
+      }),
+    )
+
+    yield* router.add("GET", "/experimental/cli-resources/status", (request) =>
+      Effect.promise(async () => {
+        const url = new URL(request.url, "http://localhost")
+        const force = url.searchParams.get("force") === "1"
+        return HttpServerResponse.setHeader(
+          HttpServerResponse.jsonUnsafe(await collectCliResourcesStatus(force)),
+          "cache-control",
+          "private, no-store",
+        )
+      }),
+    )
+
+    yield* router.add("POST", "/experimental/cli-resources/run", (request) =>
+      Effect.gen(function* () {
+        const raw = yield* Effect.orDie(request.text)
+        const body = raw ? JSON.parse(raw) : {}
+        const probe = typeof body?.probe === "string" ? body.probe : ""
+        return yield* Effect.promise(async () =>
+          HttpServerResponse.setHeader(
+            HttpServerResponse.jsonUnsafe(await runCliResourceAction(probe)),
+            "cache-control",
+            "private, no-store",
+          ),
+        )
       }),
     )
 
