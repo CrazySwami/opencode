@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect"
 import { execFile } from "node:child_process"
-import { existsSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { promisify } from "node:util"
@@ -98,6 +98,84 @@ async function runBounded(cmd: string, args: string[], extraEnv?: Record<string,
 // OpenCode providers (native provider/auth catalog, redacted).
 // ---------------------------------------------------------------------------
 
+// The instance's own /provider route is the authoritative catalog (ids, display
+// names, per-provider default model, model counts, connected/visible state). Its
+// raw payload DOES carry secrets (Provider.Info.key and options.apiKey), so we
+// only ever read a strict whitelist of non-secret fields from it.
+const PROVIDER_CATALOG_URL = process.env.OPENCODE_CLI_RESOURCES_PROVIDER_URL || "http://127.0.0.1:8299/provider"
+
+// Display-name fallback for credentialed providers that are hidden from the
+// catalog (e.g. base OpenAI while Codex Multi-Auth is ready), so the id alone
+// is not shown.
+const KNOWN_PROVIDER_NAMES: Record<string, string> = {
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  "zai-coding-plan": "Z.AI Coding Plan",
+  google: "Google",
+  "amazon-bedrock": "Amazon Bedrock",
+  openrouter: "OpenRouter",
+}
+
+// Read auth.json structure only: provider id -> auth method. Never token values.
+function readAuthMethods(): Record<string, string> {
+  try {
+    const raw = JSON.parse(readFileSyncSafe(path.join(home(), ".local/share/opencode/auth.json")))
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {}
+    const out: Record<string, string> = {}
+    for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+      const type = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>).type : undefined
+      out[id] = typeof type === "string" ? type : "unknown"
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+function readFileSyncSafe(file: string): string {
+  return readFileSync(file, "utf8")
+}
+
+type ProviderCatalog = {
+  connected: string[]
+  default: Record<string, string>
+  byId: Record<string, { name?: string; source?: string; modelCount: number }>
+  availableCount: number
+}
+
+async function fetchProviderCatalog(): Promise<ProviderCatalog | null> {
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 5_000)
+    const res = await fetch(PROVIDER_CATALOG_URL, { signal: controller.signal }).finally(() => clearTimeout(timer))
+    if (!res.ok) return null
+    const body = (await res.json()) as { all?: unknown[]; default?: Record<string, string>; connected?: string[] }
+    const all = Array.isArray(body.all) ? body.all : []
+    const byId: ProviderCatalog["byId"] = {}
+    for (const raw of all) {
+      if (!raw || typeof raw !== "object") continue
+      const info = raw as Record<string, unknown>
+      const id = typeof info.id === "string" ? info.id : undefined
+      if (!id) continue
+      // Whitelist only: id, name, source, model COUNT. Never key/options/models/env.
+      const models = info.models && typeof info.models === "object" && !Array.isArray(info.models) ? info.models : {}
+      byId[id] = {
+        name: typeof info.name === "string" ? info.name : undefined,
+        source: typeof info.source === "string" ? info.source : undefined,
+        modelCount: Object.keys(models as Record<string, unknown>).length,
+      }
+    }
+    return {
+      connected: Array.isArray(body.connected) ? body.connected.filter((x): x is string => typeof x === "string") : [],
+      default: body.default && typeof body.default === "object" ? body.default : {},
+      byId,
+      availableCount: all.length,
+    }
+  } catch {
+    return null
+  }
+}
+
 async function probeOpenCode() {
   const binary = resolveBinary(["/usr/bin/opencode", "/usr/local/bin/opencode", path.join(home(), ".local/bin/opencode")])
   const authPathDefault = "~/.local/share/opencode/auth.json"
@@ -120,44 +198,111 @@ async function probeOpenCode() {
       note: "OpenCode provider credentials live in auth.json and are never read here.",
     }
   }
-  const result = await runBounded(binary, ["auth", "list"])
   const warnings: string[] = []
+  const authMethods = readAuthMethods()
+  const catalog = await fetchProviderCatalog()
+
+  type ProviderEntry = {
+    id: string
+    name: string
+    source: string | null
+    authMethod: string
+    credentialed: boolean
+    connected: boolean
+    visible: boolean | null
+    hiddenReason?: string
+    defaultModel: string | null
+    modelCount: number | null
+  }
+
+  if (catalog) {
+    // Merge the runtime catalog (visible in the model picker) with credentialed
+    // providers from auth.json. A credentialed provider that is not in the
+    // catalog's connected list is hidden (e.g. base OpenAI while Codex
+    // Multi-Auth is ready).
+    const connectedSet = new Set(catalog.connected)
+    const ids = new Set<string>([...catalog.connected, ...Object.keys(authMethods)])
+    const providers: ProviderEntry[] = [...ids].map((id) => {
+      const meta = catalog.byId[id]
+      const credentialed = id in authMethods
+      const connected = connectedSet.has(id)
+      const hidden = credentialed && !connected
+      const authMethod = authMethods[id] ?? (id === "codex-multi-auth" ? "oauth" : connected ? "managed" : "unknown")
+      return {
+        id,
+        name: meta?.name ?? KNOWN_PROVIDER_NAMES[id] ?? id,
+        source: meta?.source ?? null,
+        authMethod,
+        credentialed,
+        connected,
+        visible: hidden ? false : connected ? true : null,
+        ...(hidden ? { hiddenReason: id === "openai" ? "Hidden from the model picker while Codex Multi-Auth is ready" : "Credentialed but not in the active model picker" } : {}),
+        defaultModel: catalog.default[id] ?? null,
+        modelCount: meta ? meta.modelCount : null,
+      }
+    })
+    // Connected/visible first, then hidden, then the rest.
+    providers.sort((a, b) => Number(b.connected) - Number(a.connected) || Number(b.credentialed) - Number(a.credentialed))
+    return {
+      installed: true,
+      binary,
+      catalogAvailable: true,
+      providers,
+      providerCount: providers.length,
+      connectedCount: catalog.connected.length,
+      availableCount: catalog.availableCount,
+      authPath: authPathDefault,
+      authFileExists,
+      configPath: configPath ? configPath.replace(home(), "~") : null,
+      warnings,
+      note: "Enriched from the instance provider catalog. Only ids, display names, auth methods, default model ids, and model counts are shown; auth.json/options/key values are never read.",
+    }
+  }
+
+  // Fallback: no catalog available — parse the redacted `opencode auth list` and
+  // keep discoverable-but-unavailable fields as null (unknown), not guessed.
+  const result = await runBounded(binary, ["auth", "list"])
   let authPath = authPathDefault
-  const providers: Array<{ name: string; authMethod: string; connected: true; visible: boolean | null }> = []
+  const providers: ProviderEntry[] = []
   if (result.ok || result.stdout) {
     const lines = stripAnsi(result.stdout).split(/\r?\n/)
     for (const rawLine of lines) {
       const line = rawLine.trim()
       const credMatch = line.match(/Credentials\s+(\S+)/)
       if (credMatch?.[1]) authPath = credMatch[1]
-      // Provider rows are rendered as "●  <Name>  <method>" with the method in a
-      // dim color. After ANSI stripping the method is the trailing token.
       const bulletMatch = line.match(/^[│|]?\s*[●•*]\s+(.+)$/)
       if (!bulletMatch?.[1]) continue
       const rest = bulletMatch[1].trim()
       if (/^credentials$/i.test(rest) || /credential(s)?$/i.test(rest)) continue
       const methodMatch = rest.match(/^(.*?)\s+(api|oauth|wellknown|apikey|api key)\s*$/i)
-      if (methodMatch) {
-        providers.push({ name: methodMatch[1].trim(), authMethod: methodMatch[2].toLowerCase(), connected: true, visible: null })
-      } else {
-        const parts = rest.split(/\s{1,}/)
-        const method = parts.length > 1 ? parts[parts.length - 1] : "unknown"
-        const name = parts.length > 1 ? parts.slice(0, -1).join(" ") : rest
-        providers.push({ name: name.trim(), authMethod: method.toLowerCase(), connected: true, visible: null })
-      }
+      const name = methodMatch ? methodMatch[1].trim() : rest
+      const method = methodMatch ? methodMatch[2].toLowerCase() : "unknown"
+      providers.push({
+        id: name,
+        name,
+        source: null,
+        authMethod: method,
+        credentialed: true,
+        connected: true,
+        visible: null,
+        defaultModel: null,
+        modelCount: null,
+      })
     }
+    warnings.push("Provider catalog unavailable; default model and model counts are unknown.")
   }
   if (!result.ok) warnings.push(result.timedOut ? "opencode auth list timed out" : "opencode auth list failed")
   return {
     installed: true,
     binary,
+    catalogAvailable: false,
     providers,
     providerCount: providers.length,
     authPath,
     authFileExists,
     configPath: configPath ? configPath.replace(home(), "~") : null,
     warnings,
-    note: "Provider names and auth methods only; auth.json values are never read.",
+    note: "Provider catalog unavailable; showing credentialed providers only. Values marked unknown are not guessed.",
   }
 }
 

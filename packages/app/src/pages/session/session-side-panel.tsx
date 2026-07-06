@@ -4123,7 +4123,11 @@ function OpenCodeProvidersSection(props: { data?: any }) {
         <div class="mb-2 flex items-center justify-between gap-3">
           <div class="text-12-regular text-text-weak">OpenCode providers</div>
           <span class="rounded bg-background-base px-2 py-1 text-11-regular text-text-strong">
-            {d().installed ? `${providers().length} connected` : "opencode not found"}
+            {!d().installed
+              ? "opencode not found"
+              : d().catalogAvailable
+                ? `${d().connectedCount ?? providers().filter((p: any) => p.connected).length} connected · ${d().availableCount ?? "?"} available`
+                : `${providers().length} credentialed`}
           </span>
         </div>
         <Show
@@ -4134,19 +4138,49 @@ function OpenCodeProvidersSection(props: { data?: any }) {
             <For each={providers()}>
               {(p: any) => (
                 <div
-                  class="flex items-center justify-between gap-3 rounded-md border border-border-weaker-base bg-background-base px-3 py-2"
+                  class="rounded-md border border-border-weaker-base bg-background-base px-3 py-2"
                   data-testid="resources-provider-row"
+                  data-provider-id={p.id}
                 >
-                  <div class="min-w-0">
-                    <div class="truncate text-13-medium text-text-strong">{p.name}</div>
-                    <div class="text-11-regular text-text-weak">
-                      auth: {p.authMethod}
-                      {p.visible === false ? " · hidden" : p.visible === true ? " · visible" : ""}
+                  <div class="flex items-start justify-between gap-3">
+                    <div class="min-w-0">
+                      <div class="flex flex-wrap items-center gap-1.5">
+                        <span class="truncate text-13-medium text-text-strong">{p.name}</span>
+                        <span class="rounded bg-background-stronger px-1.5 py-0.5 text-10-regular text-text-weak">{p.id}</span>
+                      </div>
+                      <div class="mt-0.5 text-11-regular text-text-weak">
+                        auth: {p.authMethod}
+                        {p.source ? ` · ${p.source}` : ""}
+                        {typeof p.modelCount === "number" ? ` · ${p.modelCount} models` : " · models unknown"}
+                      </div>
+                      <div class="mt-0.5 text-11-regular text-text-weak">
+                        default model: <span class="text-text-strong">{p.defaultModel ?? "unknown"}</span>
+                      </div>
+                      <Show when={p.hiddenReason}>
+                        <div class="mt-0.5 text-10-regular text-orange-200/80">{p.hiddenReason}</div>
+                      </Show>
+                    </div>
+                    <div class="flex shrink-0 flex-col items-end gap-1">
+                      <span
+                        class="rounded-full px-2 py-0.5 text-10-medium uppercase tracking-wide"
+                        classList={{
+                          "bg-green-500/15 text-green-200": p.connected,
+                          "bg-background-stronger text-text-weak": !p.connected,
+                        }}
+                      >
+                        {p.connected ? "connected" : p.credentialed ? "credentialed" : "available"}
+                      </span>
+                      <span
+                        class="rounded-full px-2 py-0.5 text-10-regular"
+                        classList={{
+                          "bg-background-stronger text-text-weak": p.visible !== false,
+                          "bg-orange-500/15 text-orange-100": p.visible === false,
+                        }}
+                      >
+                        {p.visible === false ? "hidden" : p.visible === true ? "visible" : "visibility unknown"}
+                      </span>
                     </div>
                   </div>
-                  <span class="shrink-0 rounded-full bg-green-500/15 px-2 py-0.5 text-10-medium uppercase tracking-wide text-green-200">
-                    connected
-                  </span>
                 </div>
               )}
             </For>
@@ -4154,6 +4188,7 @@ function OpenCodeProvidersSection(props: { data?: any }) {
         </Show>
       </div>
       <div class="flex flex-col gap-2 rounded-md border border-border-weaker-base bg-background-stronger p-3">
+        <StatusRow label="Catalog" value={d().catalogAvailable ? "live (instance provider catalog)" : "unavailable — values shown as unknown"} />
         <StatusRow label="Auth source" value={d().authPath ?? "unknown"} />
         <StatusRow label="Auth file present" value={d().authFileExists ? "yes" : "no"} />
         <StatusRow label="Config source" value={d().configPath ?? "default (opencode.json / opencode.jsonc)"} />
@@ -5836,8 +5871,11 @@ export function SessionSidePanel(props: {
       const detail = (event as CustomEvent<any>).detail ?? {}
       const section =
         typeof detail.section === "string" ? (detail.section as ResourcesSection) : sectionForRawTab(detail.raw)
-      if (section) setResourcesSection(section)
+      // Open the tab first: openPanelTab("panel://resources") defaults the section
+      // to "system" (via sectionForRawTab), so an explicit section must be applied
+      // after, or it would be clobbered.
       openPanelTab(PANEL_RESOURCES_TAB)
+      if (section) setResourcesSection(section)
     }
     window.addEventListener("opencode:resources-section", handleResourcesSection as EventListener)
     onCleanup(() => window.removeEventListener("opencode:resources-section", handleResourcesSection as EventListener))
