@@ -15,6 +15,7 @@ type BridgeState = {
   projectId?: string
   projectName?: string
   activeConversationId?: string | null
+  conversations?: { id: string; title?: string | null }[]
   chatId?: string | null
   chatName?: string | null
 } | undefined
@@ -54,7 +55,7 @@ function findLeftTimelineRect(): DOMRect | null {
   if (!composer) return null
   const c = composer.getBoundingClientRect()
   if (c.width === 0) return null
-  const scrollables = Array.from(document.querySelectorAll("[data-scrollable]")) as HTMLElement[]
+  const scrollables = Array.from(document.querySelectorAll(".scroll-view__viewport")) as HTMLElement[]
   let best: DOMRect | null = null
   for (const el of scrollables) {
     // Never anchor to the mirror's own scroll body.
@@ -93,10 +94,43 @@ export function OpenDesignMirror() {
   })
 
   const projectId = createMemo(() => bridge()?.projectId)
-  const conversationId = createMemo(() => bridge()?.activeConversationId ?? bridge()?.chatId ?? undefined)
+  const conversationId = createMemo(() => bridge()?.activeConversationId ?? bridge()?.chatId ?? bridge()?.conversations?.[0]?.id ?? undefined)
   const projectName = createMemo(() => bridge()?.projectName ?? "Open Design")
   const chatName = createMemo(() => bridge()?.chatName ?? undefined)
-  const shouldShow = createMemo(() => !!bridge()?.active && !!projectId() && !!conversationId())
+  const shouldShow = createMemo(() => !!bridge()?.active && !!projectId())
+  // Resolve the conversation to mirror: prefer the bridge's, else fetch the
+  // project's most-recent conversation via the proxy (fresh projects have no
+  // conversation in the bridge for a moment).
+  const [resolvedCid, setResolvedCid] = createSignal<string | undefined>(undefined)
+  createEffect(() => {
+    const pid = projectId()
+    const known = conversationId()
+    if (!shouldShow() || !pid) {
+      setResolvedCid(undefined)
+      return
+    }
+    if (known) {
+      setResolvedCid(known)
+      return
+    }
+    let stop = false
+    ;(async () => {
+      try {
+        const res = await fetch(`/experimental/open-design/proxy/api/projects/${encodeURIComponent(pid)}/conversations`)
+        if (!res.ok) return
+        const json = (await res.json()) as { conversations?: { id: string; updatedAt?: number }[] }
+        const list = Array.isArray(json?.conversations) ? json.conversations : []
+        if (stop || list.length === 0) return
+        const latest = [...list].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))[0]
+        setResolvedCid(latest?.id)
+      } catch {
+        /* transient; the poll effect stays idle until resolved */
+      }
+    })()
+    onCleanup(() => {
+      stop = true
+    })
+  })
 
   // Keep the overlay aligned to the left message region while shown.
   createEffect(() => {
@@ -135,7 +169,7 @@ export function OpenDesignMirror() {
   // Poll OD's persisted conversation (read-only) through the CT100 proxy.
   createEffect(() => {
     const pid = projectId()
-    const cid = conversationId()
+    const cid = resolvedCid()
     if (!shouldShow() || !pid || !cid) {
       setMessages([])
       setLoadState("idle")
