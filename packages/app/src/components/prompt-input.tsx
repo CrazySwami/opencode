@@ -2670,12 +2670,24 @@ function CodexMultiAuthChip(props: {
   const [pendingAction, setPendingAction] = createSignal<string | undefined>()
   const [actionError, setActionError] = createSignal<string | undefined>()
   const [actionNote, setActionNote] = createSignal<string | undefined>()
-  const [status, actions] = createResource(tick, async () => {
-    const response = await fetch("/experimental/codex-multi-auth/status", { cache: "no-store" })
-    if (!response.ok) throw new Error(`status ${response.status}`)
-    const body = await response.json()
-    return body as CodexMultiAuthStatus
-  })
+  // This chip polls every 20s. A thrown resource error propagates to the app
+  // error boundary and crashes the WHOLE app to "Something went wrong" — which
+  // happened on every transient 502 during a server restart. Never throw here:
+  // keep the last-known status through blips and refresh on the next tick.
+  const [status, actions] = createResource<CodexMultiAuthStatus | undefined, number>(
+    tick,
+    async (_tick, info) => {
+      const previous = info.value as CodexMultiAuthStatus | undefined
+      try {
+        const response = await fetch("/experimental/codex-multi-auth/status", { cache: "no-store" })
+        if (!response.ok) return previous
+        const body = await response.json()
+        return body as CodexMultiAuthStatus
+      } catch {
+        return previous
+      }
+    },
+  )
 
   const timer = window.setInterval(() => setTick((value) => value + 1), 20_000)
   onCleanup(() => window.clearInterval(timer))
