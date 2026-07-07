@@ -11,7 +11,7 @@ import {
 import * as Socket from "effect/unstable/socket/Socket"
 import { execFile, spawn } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
-import { mkdir as mkdirP, readFile as readFileP, writeFile as writeFileP } from "node:fs/promises"
+import { mkdir as mkdirP, readdir as readdirP, readFile as readFileP, stat as statP, writeFile as writeFileP } from "node:fs/promises"
 import { createRemoteJWKSet, jwtVerify } from "jose"
 import path from "node:path"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -677,34 +677,36 @@ const fileViewerRoute = HttpRouter.use((router) =>
         if (!fileViewerAllowed(directory))
           return HttpServerResponse.text("Directory is outside allowed roots", { status: 403 })
 
-        const stat = safeStat(directory)
+        const stat = await safeStatAsync(directory)
         if (!stat?.isDirectory()) return HttpServerResponse.text("Directory not found", { status: 404 })
 
         const skipped: Array<{ name: string; reason: string }> = []
-        const entries = readdirSync(directory, { withFileTypes: true })
-          .flatMap((entry) => {
-            if (entry.name === "." || entry.name === "..") return []
+        const rawEntries = await readdirP(directory, { withFileTypes: true })
+        const mapped = await Promise.all(
+          rawEntries.map(async (entry) => {
+            if (entry.name === "." || entry.name === "..") return null
             const file = path.join(directory, entry.name)
-            const fileStat = safeStat(file)
+            const fileStat = await safeStatAsync(file)
             if (!fileStat) {
               skipped.push({ name: entry.name, reason: "unreadable" })
-              return []
+              return null
             }
             const isDirectory = entry.isDirectory()
             const contentType = isDirectory ? null : contentTypeForFile(file)
-            return [
-              {
-                name: entry.name,
-                path: file,
-                kind: isDirectory ? "directory" : fileKind(contentType ?? ""),
-                contentType,
-                size: isDirectory ? null : fileStat.size,
-                mtime: fileStat.mtime.toISOString(),
-                browseURL: isDirectory ? `/experimental/files/browse?path=${encodeURIComponent(file)}` : null,
-                url: isDirectory ? null : `/experimental/files/view?path=${encodeURIComponent(file)}`,
-              },
-            ]
-          })
+            return {
+              name: entry.name,
+              path: file,
+              kind: isDirectory ? "directory" : fileKind(contentType ?? ""),
+              contentType,
+              size: isDirectory ? null : fileStat.size,
+              mtime: fileStat.mtime.toISOString(),
+              browseURL: isDirectory ? `/experimental/files/browse?path=${encodeURIComponent(file)}` : null,
+              url: isDirectory ? null : `/experimental/files/view?path=${encodeURIComponent(file)}`,
+            }
+          }),
+        )
+        const entries = mapped
+          .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
           .sort((a, b) => {
             if (a.kind === "directory" && b.kind !== "directory") return -1
             if (a.kind !== "directory" && b.kind === "directory") return 1
@@ -2920,6 +2922,14 @@ function fileViewerRoots() {
 function fileViewerAllowed(file: string) {
   const resolved = path.resolve(file)
   return fileViewerRoots().some((root) => resolved === root || resolved.startsWith(root + path.sep))
+}
+
+async function safeStatAsync(file: string) {
+  try {
+    return await statP(file)
+  } catch {
+    return undefined
+  }
 }
 
 function safeStat(file: string) {
