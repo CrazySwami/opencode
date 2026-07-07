@@ -182,6 +182,9 @@ export const PREVIEW_AGENT_BRIDGE_SOURCE = `(() => {
   };
 
   window.addEventListener("message", async (ev) => {
+    // Only the embedding parent may drive the bridge — popups opened from the
+    // previewed app hold window.opener and must not read snapshots or inject input.
+    if (ev.source !== window.parent) return;
     const data = ev.data;
     if (!data || data.type !== "opencode:ui-command") return;
     const result = await handle(data.command);
@@ -288,6 +291,8 @@ export function attachPreviewAgentBridge(
     dispose: () => {
       iframe.removeEventListener("load", onLoad)
       window.removeEventListener("message", onMessage)
+      // Settle in-flight sends so callers never hang on a disposed driver.
+      for (const resolve of pending.values()) resolve({ ok: false, error: "disposed" })
       pending.clear()
     },
   }

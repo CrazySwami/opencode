@@ -1373,23 +1373,9 @@ function PreviewTabContent(props: { sessionID?: string }) {
   const [humanRequest, setHumanRequest] = createSignal<string | undefined>(undefined)
   onCleanup(() => previewDriver?.dispose())
   const [lastPreviewStateAt, setLastPreviewStateAt] = createSignal<string | undefined>()
-  const [externalMode, setExternalMode] = createSignal<"idle" | "loading" | "ready" | "failed">("idle")
-  const [externalError, setExternalError] = createSignal<string | undefined>()
-  const [externalKey, setExternalKey] = createSignal(Date.now())
-  const [externalViewport, setExternalViewport] = createSignal({ width: 1920, height: 1400 })
-  let externalImageRef: HTMLImageElement | undefined
-  let externalRetries = 0
   const currentKind = createMemo(() => previewURLKind(currentURL()))
-  const externalStreamURL = createMemo(() =>
-    props.sessionID
-      ? `/experimental/browser/${encodeURIComponent(props.sessionID)}/screenshot?t=${externalKey()}`
-      : `/experimental/browser/live/stream?t=${externalKey()}`,
-  )
   const previewStateURL = createMemo(() =>
     props.sessionID ? `/experimental/preview/${encodeURIComponent(props.sessionID)}/state` : undefined,
-  )
-  const previewActionURL = createMemo(() =>
-    props.sessionID ? `/experimental/preview/${encodeURIComponent(props.sessionID)}/action` : undefined,
   )
 
   const syncPreviewState = async () => {
@@ -1454,80 +1440,6 @@ function PreviewTabContent(props: { sessionID?: string }) {
     )
   }
 
-  const runExternalInput = async (body: Record<string, unknown>) => {
-    const actionURL = previewActionURL()
-    if (!actionURL) throw new Error("Preview actions require an active session.")
-    const response = await fetch(actionURL, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    })
-    const result = await response.json().catch(() => ({}))
-    if (!response.ok || result?.ok === false) throw new Error(result?.error ?? "External preview action failed")
-    setExternalKey(Date.now())
-  }
-
-  const refreshExternalViewport = async () => {
-    const response = await fetch("/experimental/browser/live/status", { cache: "no-store" }).catch(() => undefined)
-    if (!response?.ok) return
-    const body = await response.json().catch(() => undefined)
-    setExternalViewport(liveBrowserViewportFromStatus(body))
-  }
-
-  const externalPointForEvent = (event: MouseEvent) => {
-    const image = externalImageRef
-    if (!image) return
-    const rect = image.getBoundingClientRect()
-    const viewport = externalViewport()
-    const width = image.naturalWidth || viewport.width
-    const height = image.naturalHeight || viewport.height
-    return {
-      x: Math.round(((event.clientX - rect.left) / rect.width) * width),
-      y: Math.round(((event.clientY - rect.top) / rect.height) * height),
-    }
-  }
-
-  const handleExternalClick: JSX.EventHandler<HTMLDivElement, MouseEvent> = (event) => {
-    event.currentTarget.focus()
-    const point = externalPointForEvent(event)
-    if (!point) return
-    void runExternalInput({ action: "click", ...point }).catch((error) => {
-      setExternalError(error instanceof Error ? error.message : String(error))
-      setExternalMode("failed")
-    })
-  }
-
-  const handleExternalWheel: JSX.EventHandler<HTMLDivElement, WheelEvent> = (event) => {
-    event.preventDefault()
-    void runExternalInput({ action: "scroll", deltaX: event.deltaX, deltaY: event.deltaY }).catch((error) => {
-      setExternalError(error instanceof Error ? error.message : String(error))
-      setExternalMode("failed")
-    })
-  }
-
-  const handleExternalKeyDown: JSX.EventHandler<HTMLDivElement, KeyboardEvent> = (event) => {
-    if (event.metaKey || event.ctrlKey || event.altKey) return
-    if (event.key.length === 1) {
-      event.preventDefault()
-      void runExternalInput({ action: "type", text: event.key }).catch((error) => {
-        setExternalError(error instanceof Error ? error.message : String(error))
-        setExternalMode("failed")
-      })
-      return
-    }
-    if (
-      !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Backspace", "Delete", "Enter", "Escape", "Tab"].includes(
-        event.key,
-      )
-    )
-      return
-    event.preventDefault()
-    void runExternalInput({ action: "key", key: event.key }).catch((error) => {
-      setExternalError(error instanceof Error ? error.message : String(error))
-      setExternalMode("failed")
-    })
-  }
-
   createEffect(() => writePreviewState({ url: currentURL() || address() }))
 
   void syncPreviewState()
@@ -1547,17 +1459,6 @@ function PreviewTabContent(props: { sessionID?: string }) {
     window.addEventListener("opencode:preview-open", onPreviewOpen as EventListener)
     onCleanup(() => window.removeEventListener("opencode:preview-open", onPreviewOpen as EventListener))
   }
-
-  // Layer-2 Preview no longer auto-renders public URLs through the server
-  // Chromium (that booted a heavy browser on every external URL). External URLs
-  // show an "open externally / on-demand Agent Browser" state instead. The
-  // Chromium relay handlers above remain only for the explicit Agent Browser
-  // escape hatch; nothing auto-spawns a browser here.
-  createEffect(() => {
-    currentURL()
-    setExternalMode("idle")
-    setExternalError(undefined)
-  })
 
   const openAddress = () => {
     const next = normalizePreviewURL(address())

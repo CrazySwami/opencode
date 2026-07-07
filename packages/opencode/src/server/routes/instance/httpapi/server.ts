@@ -3850,7 +3850,7 @@ async function saveLiveBrowserScreenshot(
     source: await currentLiveBrowserURL().catch(() => null),
     image: name,
   }
-  writeFileSync(path.join(paths.artifactDir, `${name}.json`), JSON.stringify(meta, null, 2))
+  await writeFileP(path.join(paths.artifactDir, `${name}.json`), JSON.stringify(meta, null, 2))
 
   return {
     ok: true,
