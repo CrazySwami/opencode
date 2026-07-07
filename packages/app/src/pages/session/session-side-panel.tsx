@@ -41,6 +41,7 @@ import {
 import { setSessionHandoff } from "@/pages/session/handoff"
 import { useSessionLayout } from "@/pages/session/session-layout"
 import { OpenDesignMirror } from "@/pages/session/open-design-mirror"
+import { attachPreviewAgentBridge, type PreviewAgentDriver } from "@/pages/session/preview-agent-bridge"
 import {
   WORKSPACE_PANEL_TAB_BY_ID,
   WORKSPACE_PANEL_TAB_IDS,
@@ -1365,6 +1366,12 @@ function PreviewTabContent(props: { sessionID?: string }) {
   const initial = readPreviewState().url ?? ""
   const [address, setAddress] = createSignal(initial)
   const [currentURL, setCurrentURL] = createSignal(initial)
+  // Layer-1 agent bridge: injected into the (same-origin) preview so the agent or
+  // a human can read/click/type the app with a visible cursor.
+  let previewDriver: PreviewAgentDriver | undefined
+  const [bridgeReady, setBridgeReady] = createSignal(false)
+  const [humanRequest, setHumanRequest] = createSignal<string | undefined>(undefined)
+  onCleanup(() => previewDriver?.dispose())
   const [lastPreviewStateAt, setLastPreviewStateAt] = createSignal<string | undefined>()
   const [externalMode, setExternalMode] = createSignal<"idle" | "loading" | "ready" | "failed">("idle")
   const [externalError, setExternalError] = createSignal<string | undefined>()
@@ -1659,12 +1666,48 @@ function PreviewTabContent(props: { sessionID?: string }) {
           >
             <>
               <iframe
+                ref={(el) => {
+                  previewDriver?.dispose()
+                  setBridgeReady(false)
+                  setHumanRequest(undefined)
+                  previewDriver = attachPreviewAgentBridge(el, {
+                    onReady: () => setBridgeReady(true),
+                    onRequestHuman: (reason) => setHumanRequest(reason || "The agent needs you to complete a step here"),
+                  })
+                }}
                 src={previewIframeSrc(url(), currentKind())}
                 title="Preview"
                 class="absolute inset-0 block h-full w-full border-0 bg-white"
                 sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-downloads"
                 allow="clipboard-read; clipboard-write"
               />
+              {/* request_human: agent hit a step it shouldn't automate (sign-in/OAuth/
+                  captcha). You act directly in the preview (it's your app), then Resume. */}
+              <Show when={humanRequest()}>
+                {(reason) => (
+                  <div class="absolute inset-x-3 top-3 flex items-center gap-2 rounded-lg border border-[#f97316]/40 bg-[#f97316]/10 px-3 py-2 text-12-regular text-text-strong shadow">
+                    <span class="inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-[#f97316] text-[9px] font-semibold text-white">
+                      !
+                    </span>
+                    <span class="min-w-0 flex-1 truncate">{reason()}</span>
+                    <button
+                      type="button"
+                      class="shrink-0 rounded-md border border-border-weaker-base px-2 py-1 text-11-medium text-text-strong hover:bg-surface-raised-base-hover"
+                      onClick={() => setHumanRequest(undefined)}
+                    >
+                      Resume
+                    </button>
+                  </div>
+                )}
+              </Show>
+              <Show when={bridgeReady()}>
+                <div
+                  class="absolute bottom-3 right-3 rounded bg-background-base/90 px-2 py-1 text-11-regular text-[#f97316] shadow"
+                  title="Agent UI bridge active — read/click/type available in this preview"
+                >
+                  UI bridge ●
+                </div>
+              </Show>
               <Show when={currentKind() === "local"}>
                 <div class="absolute bottom-3 left-3 rounded bg-background-base/90 px-2 py-1 text-11-regular text-text-weak shadow">
                   proxied via CT100
