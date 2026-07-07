@@ -1407,10 +1407,10 @@ function PreviewTabContent(props: { sessionID?: string }) {
     // Expose how the Preview surface is rendering this URL so the preview tool
     // and workspace_tabs state explain embed mode and its limits to the LLM.
     const kind = previewURLKind(url)
-    const renderMode = kind === "external" ? "external-browser-render" : kind === "invalid" ? "invalid" : "iframe"
+    const renderMode = kind === "external" ? "not-embedded" : kind === "invalid" ? "invalid" : "iframe"
     const embedNote =
       kind === "external"
-        ? "Public URL: direct iframe embedding is blocked by CSP/X-Frame policies, so Preview renders via the server Chromium screenshot stream with click/type/scroll relay. For login-heavy or heavy interaction use the Browser tab."
+        ? "Public URL: iframe embedding is blocked by CSP/X-Frame and it can't share the user's session, so Preview does NOT render it (no server browser is spawned). Open it externally, or use the on-demand Agent Browser (the browser tool) for real interaction."
         : kind === "local"
           ? "CT100-local URL proxied through /experimental/preview/proxy for same-origin embedding."
           : "Same-origin URL embedded directly in an iframe."
@@ -1541,25 +1541,15 @@ function PreviewTabContent(props: { sessionID?: string }) {
     onCleanup(() => window.removeEventListener("opencode:preview-open", onPreviewOpen as EventListener))
   }
 
+  // Layer-2 Preview no longer auto-renders public URLs through the server
+  // Chromium (that booted a heavy browser on every external URL). External URLs
+  // show an "open externally / on-demand Agent Browser" state instead. The
+  // Chromium relay handlers above remain only for the explicit Agent Browser
+  // escape hatch; nothing auto-spawns a browser here.
   createEffect(() => {
-    const url = currentURL()
-    if (!url || currentKind() !== "external") {
-      setExternalMode("idle")
-      setExternalError(undefined)
-      return
-    }
-    setExternalMode("loading")
+    currentURL()
+    setExternalMode("idle")
     setExternalError(undefined)
-    externalRetries = 0
-    void refreshExternalViewport()
-    runExternalInput({ action: "goto", url })
-      .then(() => {
-        setExternalMode("ready")
-      })
-      .catch((error) => {
-        setExternalError(error instanceof Error ? error.message : String(error))
-        setExternalMode("failed")
-      })
   })
 
   const openAddress = () => {
@@ -1636,86 +1626,34 @@ function PreviewTabContent(props: { sessionID?: string }) {
           <Show
             when={currentKind() !== "external"}
             fallback={
-              <div
-                class="absolute inset-0 overflow-auto bg-background-base outline-none"
-                tabIndex={0}
-                onClick={handleExternalClick}
-                onWheel={handleExternalWheel}
-                onKeyDown={handleExternalKeyDown}
-              >
-                <Show
-                  when={externalMode() !== "failed"}
-                  fallback={
-                    <div class="flex size-full items-center justify-center p-6 text-center">
-                      <div class="max-w-md rounded-lg border border-border-weaker-base bg-background-base p-5 text-13-regular text-text-weak">
-                        <div class="mb-2 text-14-medium text-text-strong">External preview failed</div>
-                        <div>{externalError() ?? "The Chromium preview renderer could not open this URL."}</div>
-                        <div class="mt-2 text-11-regular text-text-weak/80">
-                          Public sites often block embedding (CSP/X-Frame). Use the Agent Browser for full interaction.
-                        </div>
-                        <div class="mt-4 flex justify-center gap-2">
-                          <button
-                            type="button"
-                            data-testid="preview-open-in-browser"
-                            class="rounded-md border border-[#f97316]/40 bg-[#f97316]/10 px-3 py-1.5 text-12-medium text-text-strong hover:bg-[#f97316]/20"
-                            onClick={() => void openInAgentBrowser(url())}
-                          >
-                            Open in Browser
-                          </button>
-                          <button
-                            type="button"
-                            class="rounded-md border border-border-weaker-base px-3 py-1.5 text-12-regular text-text-strong hover:bg-surface-raised-base-hover"
-                            onClick={() => window.open(url(), "_blank", "noopener,noreferrer")}
-                          >
-                            Open external
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  }
-                >
-                  <Show when={externalMode() === "loading"}>
-                    <div class="absolute inset-0 z-10 flex items-center justify-center bg-background-base/70 text-12-regular text-text-weak">
-                      Opening external site in Chromium preview...
-                    </div>
-                  </Show>
-                  <img
-                    ref={(el) => (externalImageRef = el)}
-                    src={externalStreamURL()}
-                    alt="External site preview"
-                    class="block w-full select-none bg-white object-contain"
-                    style={{ "aspect-ratio": `${externalViewport().width} / ${externalViewport().height}` }}
-                    onLoad={() => {
-                      externalRetries = 0
-                      setExternalMode("ready")
-                    }}
-                    onError={() => {
-                      // The first request boots the per-session Chromium, which
-                      // can take a few seconds — retry before declaring failure.
-                      if (externalRetries < 3) {
-                        externalRetries += 1
-                        window.setTimeout(() => setExternalKey(Date.now()), 1800)
-                        return
-                      }
-                      setExternalError("Chromium preview stream is unavailable.")
-                      setExternalMode("failed")
-                    }}
-                  />
-                  <div class="absolute bottom-3 left-3 flex items-center gap-1.5">
-                    <span class="rounded bg-background-base/90 px-2 py-1 text-11-regular text-text-weak shadow">
-                      external-browser-render
-                    </span>
+              <div class="flex size-full items-center justify-center p-6 text-center">
+                <div class="max-w-md rounded-lg border border-border-weaker-base bg-background-base p-5 text-13-regular text-text-weak">
+                  <div class="mb-2 text-14-medium text-text-strong">Public URL — not embedded here</div>
+                  <div>
+                    Preview embeds your own app (local / same-origin) in an iframe, where your
+                    logins persist. Public sites block iframe embedding (CSP/X-Frame) and don’t
+                    share your session — so Preview no longer renders them via a server browser.
+                    Open the site in your own browser, or hand it to the on-demand Agent Browser.
+                  </div>
+                  <div class="mt-4 flex justify-center gap-2">
+                    <button
+                      type="button"
+                      class="rounded-md border border-border-weaker-base px-3 py-1.5 text-12-medium text-text-strong hover:bg-surface-raised-base-hover"
+                      onClick={() => window.open(url(), "_blank", "noopener,noreferrer")}
+                    >
+                      Open in your browser ↗
+                    </button>
                     <button
                       type="button"
                       data-testid="preview-open-in-browser"
-                      class="rounded bg-background-base/90 px-2 py-1 text-11-medium text-text-strong shadow hover:bg-surface-raised-base-hover"
-                      title="Hand this URL to the Agent Browser tab for full interaction"
+                      class="rounded-md border border-[#f97316]/40 bg-[#f97316]/10 px-3 py-1.5 text-12-medium text-text-strong hover:bg-[#f97316]/20"
+                      title="Spin up the on-demand Agent Browser (heavier) for this URL"
                       onClick={() => void openInAgentBrowser(url())}
                     >
-                      Open in Browser
+                      Open in Agent Browser
                     </button>
                   </div>
-                </Show>
+                </div>
               </div>
             }
           >
