@@ -754,16 +754,16 @@ const fileViewerRoute = HttpRouter.use((router) =>
         const requested = path.resolve(url.searchParams.get("path") || fileBrowserDefaultPath())
         if (!fileViewerAllowed(requested))
           return HttpServerResponse.text("Directory is outside allowed roots", { status: 403 })
-        const rootStat = safeStat(requested)
+        const rootStat = await safeStatAsync(requested)
         const root = rootStat?.isDirectory() ? requested : parentDirectory(requested) || requested
         const cap = Math.min(Math.max(1, Number(url.searchParams.get("limit")) || 200), 500)
         const skip = new Set(["node_modules", ".git", ".next", "dist", "build", ".cache", ".turbo", ".venv"])
         const results: Array<Record<string, unknown>> = []
-        const walk = (dir: string, depth: number) => {
+        const walk = async (dir: string, depth: number): Promise<void> => {
           if (results.length >= cap || depth > 6) return
           let entries: import("node:fs").Dirent[]
           try {
-            entries = readdirSync(dir, { withFileTypes: true })
+            entries = await readdirP(dir, { withFileTypes: true })
           } catch {
             return
           }
@@ -773,7 +773,7 @@ const fileViewerRoute = HttpRouter.use((router) =>
             const entryPath = path.join(dir, entry.name)
             const isDirectory = entry.isDirectory()
             if (entry.name.toLowerCase().includes(query)) {
-              const stat = safeStat(entryPath)
+              const stat = await safeStatAsync(entryPath)
               const contentType = isDirectory ? null : contentTypeForFile(entryPath)
               results.push({
                 name: entry.name,
@@ -786,10 +786,10 @@ const fileViewerRoute = HttpRouter.use((router) =>
                 url: isDirectory ? null : `/experimental/files/view?path=${encodeURIComponent(entryPath)}`,
               })
             }
-            if (isDirectory) walk(entryPath, depth + 1)
+            if (isDirectory) await walk(entryPath, depth + 1)
           }
         }
-        walk(root, 0)
+        await walk(root, 0)
         return HttpServerResponse.jsonUnsafe({
           ok: true,
           root,
@@ -803,13 +803,13 @@ const fileViewerRoute = HttpRouter.use((router) =>
     )
 
     yield* router.add("GET", "/experimental/project-metadata", (request) =>
-      Effect.promise(async () => HttpServerResponse.jsonUnsafe(resolveProjectMetadata(new URL(request.url, "http://localhost").searchParams.get("path")))),
+      Effect.promise(async () => HttpServerResponse.jsonUnsafe(await resolveProjectMetadata(new URL(request.url, "http://localhost").searchParams.get("path")))),
     )
 
     yield* router.add("GET", "/experimental/project-metadata/for-routine", (request) =>
       Effect.promise(async () =>
         HttpServerResponse.jsonUnsafe(
-          projectsReferencingRoutine(new URL(request.url, "http://localhost").searchParams.get("id")),
+          await projectsReferencingRoutine(new URL(request.url, "http://localhost").searchParams.get("id")),
         ),
       ),
     )
@@ -2813,7 +2813,7 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
         return HttpServerResponse.jsonUnsafe({
           browserSessionID: paths.browserSessionID,
           artifactDir: paths.artifactDir,
-          files: listArtifactFiles(paths.artifactDir).map((file) => ({
+          files: (await listArtifactFiles(paths.artifactDir)).map((file) => ({
             ...file,
             url: `/experimental/browser/${encodeURIComponent(sessionID)}/artifacts/${encodeURIComponent(file.name)}`,
           })),
@@ -2830,10 +2830,10 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
         if (!sessionID || !name) return HttpServerResponse.text("Missing artifact", { status: 400 })
         const file = resolveArtifactFile(sessionPaths(sessionID).artifactDir, name)
         if (!file) return HttpServerResponse.text("Invalid artifact", { status: 400 })
-        const stat = statSync(file, { throwIfNoEntry: false })
+        const stat = await safeStatAsync(file)
         if (!stat?.isFile()) return HttpServerResponse.text("Artifact not found", { status: 404 })
         return HttpServerResponse.setHeader(
-          HttpServerResponse.uint8Array(new Uint8Array(readFileSync(file)), { contentType: contentTypeForFile(name) }),
+          HttpServerResponse.uint8Array(new Uint8Array(await readFileP(file)), { contentType: contentTypeForFile(name) }),
           "cache-control",
           "no-store",
         )
@@ -2848,30 +2848,37 @@ function decodeParam(rawURL: string, pattern: RegExp) {
   return match?.[1] ? decodeURIComponent(match[1]) : undefined
 }
 
-function listArtifactFiles(
+async function listArtifactFiles(
   dir: string,
   root = dir,
-): Array<{ name: string; size: number; mtime: string; kind: string; contentType: string }> {
-  if (!existsSync(dir)) return []
-  return readdirSync(dir, { withFileTypes: true })
-    .flatMap((entry) => {
-      const file = path.join(dir, entry.name)
-      if (entry.isDirectory()) return listArtifactFiles(file, root)
-      const stat = statSync(file, { throwIfNoEntry: false })
-      if (!stat?.isFile()) return []
-      const relative = path.relative(root, file)
-      const contentType = contentTypeForFile(relative)
-      return [
-        {
-          name: relative,
-          size: stat.size,
-          mtime: stat.mtime.toISOString(),
-          kind: fileKind(contentType),
-          contentType,
-        },
-      ]
+): Promise<Array<{ name: string; size: number; mtime: string; kind: string; contentType: string }>> {
+  if (!(await safeStatAsync(dir))) return []
+  let entries: import("node:fs").Dirent[]
+  try {
+    entries = await readdirP(dir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const out: Array<{ name: string; size: number; mtime: string; kind: string; contentType: string }> = []
+  for (const entry of entries) {
+    const file = path.join(dir, entry.name)
+    if (entry.isDirectory()) {
+      out.push(...(await listArtifactFiles(file, root)))
+      continue
+    }
+    const stat = await safeStatAsync(file)
+    if (!stat?.isFile()) continue
+    const relative = path.relative(root, file)
+    const contentType = contentTypeForFile(relative)
+    out.push({
+      name: relative,
+      size: stat.size,
+      mtime: stat.mtime.toISOString(),
+      kind: fileKind(contentType),
+      contentType,
     })
-    .sort((a, b) => b.mtime.localeCompare(a.mtime))
+  }
+  return out.sort((a, b) => b.mtime.localeCompare(a.mtime))
 }
 
 function resolveArtifactFile(artifactDir: string, name: string) {
@@ -2959,7 +2966,7 @@ const PROJECT_METADATA_MAX_BYTES = 256 * 1024
 
 // Walk up from a path (within allowlisted roots) to find the nearest
 // .opencode/design/project.json. Read-only; returns present:false gracefully.
-function projectsReferencingRoutine(routineId: string | null) {
+async function projectsReferencingRoutine(routineId: string | null) {
   const id = String(routineId || "").trim()
   if (!id) return { ok: false, error: "routine id is required" }
   const reposRoot = process.env.OPENCODE_DEV_ROOT || "/home/dev/repos"
@@ -2967,17 +2974,17 @@ function projectsReferencingRoutine(routineId: string | null) {
   const projects: Array<{ repoRoot: string; name: string | null; metadataPath: string }> = []
   let dirs: import("node:fs").Dirent[]
   try {
-    dirs = readdirSync(reposRoot, { withFileTypes: true })
+    dirs = await readdirP(reposRoot, { withFileTypes: true })
   } catch {
     return { ok: true, id, projects: [] }
   }
   for (const dir of dirs) {
     if (!dir.isDirectory()) continue
     const candidate = path.join(reposRoot, dir.name, ".opencode", "design", "project.json")
-    const stat = safeStat(candidate)
+    const stat = await safeStatAsync(candidate)
     if (!stat?.isFile() || stat.size > 256 * 1024) continue
     try {
-      const metadata = JSON.parse(readFileSync(candidate, "utf8"))
+      const metadata = JSON.parse(await readFileP(candidate, "utf8"))
       const routines = Array.isArray(metadata?.routines) ? metadata.routines : []
       if (routines.some((r: any) => (typeof r === "string" ? r : r?.id) === id)) {
         projects.push({ repoRoot: path.join(reposRoot, dir.name), name: typeof metadata?.name === "string" ? metadata.name : null, metadataPath: candidate })
@@ -2989,22 +2996,22 @@ function projectsReferencingRoutine(routineId: string | null) {
   return { ok: true, id, projects }
 }
 
-function resolveProjectMetadata(requested: string | null) {
+async function resolveProjectMetadata(requested: string | null) {
   const start = path.resolve(requested || fileBrowserDefaultPath())
   if (!fileViewerAllowed(start)) return { ok: false, error: "Path is outside allowlisted roots" }
-  const startStat = safeStat(start)
+  const startStat = await safeStatAsync(start)
   let dir = startStat?.isDirectory() ? start : path.dirname(start)
   const searched: string[] = []
   for (let i = 0; i < 12; i++) {
     if (!fileViewerAllowed(dir)) break
     const candidate = path.join(dir, PROJECT_METADATA_REL)
     searched.push(candidate)
-    const stat = safeStat(candidate)
+    const stat = await safeStatAsync(candidate)
     if (stat?.isFile()) {
       if (stat.size > PROJECT_METADATA_MAX_BYTES)
         return { ok: true, present: false, repoRoot: dir, reason: "metadata file too large", metadataPath: candidate }
       try {
-        const metadata = JSON.parse(readFileSync(candidate, "utf8"))
+        const metadata = JSON.parse(await readFileP(candidate, "utf8"))
         return { ok: true, present: true, repoRoot: dir, metadataPath: candidate, metadata }
       } catch (error) {
         return { ok: true, present: false, repoRoot: dir, reason: `invalid json: ${(error as Error).message}`, metadataPath: candidate }
