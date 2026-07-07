@@ -11,6 +11,7 @@ import {
 import * as Socket from "effect/unstable/socket/Socket"
 import { execFile, spawn } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
+import { mkdir as mkdirP, readFile as readFileP, writeFile as writeFileP } from "node:fs/promises"
 import { createRemoteJWKSet, jwtVerify } from "jose"
 import path from "node:path"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -736,7 +737,7 @@ const fileViewerRoute = HttpRouter.use((router) =>
         if (!stat?.isFile()) return HttpServerResponse.text("File not found", { status: 404 })
 
         return HttpServerResponse.setHeader(
-          HttpServerResponse.uint8Array(new Uint8Array(readFileSync(file)), { contentType: contentTypeForFile(file) }),
+          HttpServerResponse.uint8Array(new Uint8Array(await readFileP(file)), { contentType: contentTypeForFile(file) }),
           "cache-control",
           "private, no-store",
         )
@@ -3645,8 +3646,8 @@ async function liveBrowserStatus(access?: Extract<LiveBrowserAccess, { ok: true 
 }
 
 async function ensureLiveBrowser(): Promise<{ ok: true; pid?: number } | { ok: false; error: string }> {
-  mkdirSync(liveBrowserProfile(), { recursive: true })
-  mkdirSync(liveBrowserArtifacts(), { recursive: true })
+  await mkdirP(liveBrowserProfile(), { recursive: true })
+  await mkdirP(liveBrowserArtifacts(), { recursive: true })
 
   const existing = await execText("pgrep", ["-f", `${liveBrowserProfile()}`]).catch(() => "")
   const pid = existing
@@ -3817,7 +3818,7 @@ async function saveLiveBrowserScreenshot(
 ) {
   await ensureLiveBrowser()
   const paths = sessionPaths(sessionID)
-  mkdirSync(paths.artifactDir, { recursive: true })
+  await mkdirP(paths.artifactDir, { recursive: true })
   const stamped = new Date().toISOString().replace(/[:.]/g, "-")
   const name = input.annotationDataURL ? `browser-annotation-${stamped}.png` : `browser-screenshot-${stamped}.png`
   const file = path.join(paths.artifactDir, name)
@@ -3825,10 +3826,10 @@ async function saveLiveBrowserScreenshot(
   if (input.annotationDataURL?.startsWith("data:image/")) {
     const base64 = input.annotationDataURL.split(",", 2)[1]
     if (!base64) throw new Error("Invalid annotation data URL")
-    writeFileSync(file, Buffer.from(base64, "base64"))
+    await writeFileP(file, Buffer.from(base64, "base64"))
   } else {
     const image = await captureLiveBrowserImage()
-    writeFileSync(file, image)
+    await writeFileP(file, image)
   }
 
   const meta = {
