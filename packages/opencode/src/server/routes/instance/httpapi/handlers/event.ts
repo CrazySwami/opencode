@@ -28,15 +28,24 @@ function eventResponse(events: EventV2.Interface) {
     const workspaceID = yield* InstanceState.workspaceID
     // Listener registration is eager, so events published after this point cannot
     // be lost while the HTTP body fiber is starting or emitting server.connected.
-    const queue = yield* Queue.unbounded<EventV2.Payload>()
-    const unsubscribe = yield* events.listen((event) => Effect.sync(() => Queue.offerUnsafe(queue, event)))
+    // Bounded per-connection queue. Previously this was Queue.unbounded fed EVERY
+    // event (filtered only downstream), so a stalled / half-open client (common
+    // behind Cloudflare or a backgrounded browser tab) never drained it and it
+    // grew without limit, retaining every event in memory — the activity-driven
+    // leak that grew opencode to ~4GB. Now: (1) filter in the listen callback so a
+    // connection only buffers events for its own directory/workspace, and (2) use a
+    // sliding queue so a dead consumer drops oldest events instead of ballooning.
+    const matchesInstance = (event: EventV2.Payload) =>
+      event.location?.directory === instance.directory &&
+      (event.location.workspaceID === undefined || event.location.workspaceID === workspaceID)
+    const queue = yield* Queue.sliding<EventV2.Payload>(4096)
+    const unsubscribe = yield* events.listen((event) =>
+      Effect.sync(() => {
+        if (matchesInstance(event)) Queue.offerUnsafe(queue, event)
+      }),
+    )
     yield* Effect.addFinalizer(() => unsubscribe)
     const stream = Stream.fromQueue(queue).pipe(
-      Stream.filter(
-        (event) =>
-          event.location?.directory === instance.directory &&
-          (event.location.workspaceID === undefined || event.location.workspaceID === workspaceID),
-      ),
       Stream.map((event) => ({ id: event.id, type: event.type, properties: event.data })),
     )
     const disposed = Stream.callback<{ id: string; type: string; properties: unknown }>((queue) => {
