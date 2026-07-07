@@ -169,6 +169,7 @@ export const WORKSPACE_PANEL_TABS: WorkspacePanelDefinition[] = [
   },
   {
     id: "panel://artifacts",
+    hidden: true,
     label: "Artifacts",
     icon: "photo",
     toolIDs: ["artifact", "workspace_tabs"],
