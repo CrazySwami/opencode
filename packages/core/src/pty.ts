@@ -208,6 +208,25 @@ export const layer = Layer.effect(
       const tmuxSession = shouldUseTmux(input, requestedCommand, requestedArgs)
         ? tmuxSessionName({ cwd, title })
         : undefined
+      // tmux persistence de-dupe: `tmux new-session -A` spawns a live attached
+      // tmux client process every time. Repeatedly opening the same terminal
+      // (tab reopen, reload, cross-client) otherwise accumulates orphaned
+      // clients under the service. If a running PTY already backs this tmux
+      // session, reuse it instead of spawning another client. The tmux server
+      // and shell state are untouched — explicit remove() still kills them.
+      if (tmuxSession) {
+        for (const existing of sessions.values()) {
+          if (existing.tmuxSession !== tmuxSession || existing.info.status !== "running") continue
+          let changed = false
+          if (input.title && existing.info.title !== input.title) {
+            existing.info.title = input.title
+            changed = true
+          }
+          yield* Effect.logInfo("reusing tmux-backed session", { id: existing.info.id, tmuxSession })
+          if (changed) yield* events.publish(Event.Updated, { info: existing.info })
+          return existing.info
+        }
+      }
       const command = tmuxSession ? TMUX_COMMAND : requestedCommand
       const args = tmuxSession ? ["new-session", "-A", "-s", tmuxSession, "-c", cwd] : requestedArgs
       const env = {

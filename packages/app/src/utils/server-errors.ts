@@ -44,9 +44,31 @@ function unwrapNamedError(error: unknown): unknown {
 
 export function isSessionNotFoundError(error: unknown, sessionID: string) {
   const unwrapped = unwrapNamedError(error)
-  if (typeof unwrapped !== "object" || unwrapped === null) return false
-  const value = unwrapped as Record<string, unknown>
-  return value._tag === "SessionNotFoundError" && value.sessionID === sessionID
+  if (typeof unwrapped === "object" && unwrapped !== null) {
+    const value = unwrapped as Record<string, unknown>
+    // Tagged form (SessionNotFoundError with an explicit sessionID).
+    if (value._tag === "SessionNotFoundError" && value.sessionID === sessionID) return true
+    // Actual server 404 form: { name: "NotFoundError", data: { message: "Session not found: <id>" } }.
+    const data = value.data
+    const message =
+      data && typeof data === "object" && !Array.isArray(data) ? (data as Record<string, unknown>).message : undefined
+    if (
+      value.name === "NotFoundError" &&
+      typeof message === "string" &&
+      /session not found/i.test(message) &&
+      message.includes(sessionID)
+    )
+      return true
+  }
+  // Plain Error("Session not found: <id>") thrown by the session loader.
+  if (
+    error instanceof Error &&
+    typeof error.message === "string" &&
+    /session not found/i.test(error.message) &&
+    error.message.includes(sessionID)
+  )
+    return true
+  return false
 }
 
 function isConfigInvalidErrorLike(error: unknown): error is ConfigInvalidError {

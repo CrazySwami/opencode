@@ -11,6 +11,7 @@ import { useServerSync } from "@/context/server-sync"
 import { DialogConnectProvider } from "../dialog-connect-provider"
 import { DialogSelectProvider } from "../dialog-select-provider"
 import { DialogCustomProvider } from "../dialog-custom-provider"
+import { DialogCodexMultiAuthProvider } from "../dialog-codex-multi-auth-provider"
 import { SettingsListV2 } from "./parts/list"
 import "./settings-v2.css"
 
@@ -162,18 +163,33 @@ export const SettingsProvidersV2: Component = () => {
                         <Tag>{type(item)}</Tag>
                       </div>
                     </div>
-                    <Show
-                      when={canDisconnect(item)}
-                      fallback={
-                        <span class="settings-v2-provider-env-hint">
-                          {language.t("settings.providers.connected.environmentDescription")}
-                        </span>
-                      }
-                    >
-                      <ButtonV2 size="normal" variant="ghost-muted" onClick={() => void disconnect(item.id, item.name)}>
-                        {language.t("common.disconnect")}
-                      </ButtonV2>
-                    </Show>
+                    <div class="flex items-center gap-2">
+                      <Show when={item.id === "codex-multi-auth"}>
+                        <ButtonV2
+                          size="normal"
+                          variant="neutral"
+                          onClick={() => {
+                            dialog.show(() => <DialogCodexMultiAuthProvider />)
+                          }}
+                        >
+                          Manage accounts
+                        </ButtonV2>
+                      </Show>
+                      <Show
+                        when={canDisconnect(item) && item.id !== "codex-multi-auth"}
+                        fallback={
+                          <Show when={item.id !== "codex-multi-auth"}>
+                            <span class="settings-v2-provider-env-hint">
+                              {language.t("settings.providers.connected.environmentDescription")}
+                            </span>
+                          </Show>
+                        }
+                      >
+                        <ButtonV2 size="normal" variant="ghost-muted" onClick={() => void disconnect(item.id, item.name)}>
+                          {language.t("common.disconnect")}
+                        </ButtonV2>
+                      </Show>
+                    </div>
                   </div>
                 )}
               </For>

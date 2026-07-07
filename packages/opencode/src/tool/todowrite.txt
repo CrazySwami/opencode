@@ -1,19 +1,19 @@
 Create and maintain a structured task list for the current coding session. Tracks progress, organizes multi-step work, and surfaces status to the user.
 
 ## When to use
-Use proactively when:
-- The task requires 3+ distinct steps or actions (not just 3 tool calls for a single conceptual step)
-- The work is non-trivial and benefits from planning
-- The user provides multiple tasks (numbered or comma-separated) or explicitly asks for a todo list
-- New instructions arrive - capture them as todos
-- You start a task - mark it `in_progress` (only one at a time) before working
-- You finish a task - mark it `completed` and add any follow-ups discovered during the work
+Use when it clearly improves execution:
+- The user explicitly asks for a todo list, checklist, plan tracking, or priority tracker
+- The task requires 3+ distinct implementation or verification phases that will take more than a few tool calls
+- The user provides multiple concrete tasks and expects progress tracking across them
+- You already have an active todo list for this session and need to update real progress
 
 ## When NOT to use
 Skip when:
 - The work is a single, straightforward task (or <3 trivial steps)
 - The request is purely informational or conversational
 - Tracking adds no organizational value
+- The user asks a simple context question such as "what folder is this", "where am I", "what is this error", or "how does this work"
+- You are only going to inspect one or two files/routes and answer
 
 ## States
 - `pending` - not started
@@ -41,4 +41,4 @@ Skip it:
 - "Add a comment to calculateTotal" -> single edit
 - "Run npm install and tell me what happened" -> one command
 
-When in doubt, use it.
+When in doubt, skip it. Do not show the todo dock for ordinary chat turns.

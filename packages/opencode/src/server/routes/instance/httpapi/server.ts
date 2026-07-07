@@ -11,6 +11,7 @@ import {
 import * as Socket from "effect/unstable/socket/Socket"
 import { execFile, spawn } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
+import { mkdir as mkdirP, readdir as readdirP, readFile as readFileP, stat as statP, writeFile as writeFileP } from "node:fs/promises"
 import { createRemoteJWKSet, jwtVerify } from "jose"
 import path from "node:path"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -77,8 +78,11 @@ import { SessionV2 } from "@opencode-ai/core/session"
 import * as SessionExecutionLocal from "@opencode-ai/core/session/execution/local"
 import {
   deleteWorkspaceEnvEntry,
+  importDotenvText,
   readWorkspaceEnvRegistryPublic,
   upsertWorkspaceEnvEntry,
+  validateDotenvText,
+  workspaceEnvPath,
   workspaceEnvPromptSummary,
 } from "@opencode-ai/core/workspace-env"
 import { lazy } from "@/util/lazy"
@@ -134,6 +138,7 @@ import { schemaErrorLayer } from "./middleware/schema-error"
 import { captureBrowserScreenshot, runBrowserAction, sessionPaths, type BrowserActionInput } from "@/tool/browser"
 import { readPreviewSurfaceState, runPreviewAction, writePreviewSurfaceState } from "@/tool/preview"
 import { collectResourceStatus } from "@/tool/resource-status"
+import { collectCliResourcesStatus, runCliResourceAction } from "@/tool/cli-resources"
 import { createRoutineDraft, routineLogs, routinesAction, routinesStatus } from "@/tool/routines"
 import { publishAppleBridgeEvent } from "@/tool/ios-bridge-events"
 import {
@@ -279,17 +284,31 @@ const browserPreviewRoute = HttpRouter.use((router) =>
         if (!sessionID) return HttpServerResponse.text("Missing session ID", { status: 400 })
 
         const raw = yield* Effect.orDie(request.text)
-        let body: { url?: string; action?: string; source?: string }
+        let body: {
+          url?: string
+          action?: string
+          source?: string
+          renderMode?: string
+          embedKind?: string
+          embedNote?: string
+        }
         try {
-          body = JSON.parse(raw || "{}") as { url?: string; action?: string; source?: string }
+          body = JSON.parse(raw || "{}") as typeof body
         } catch {
           return HttpServerResponse.text("Invalid JSON body", { status: 400 })
         }
 
+        const boundedText = (value: unknown, max = 300) =>
+          typeof value === "string" && value.length > 0 ? value.slice(0, max) : undefined
         const state = writePreviewSurfaceState(sessionID, {
           url: typeof body.url === "string" ? body.url : undefined,
           action: body.action === "navigate" ? "navigate" : undefined,
           source: body.source === "client" ? "client" : "unknown",
+          // Embed-mode metadata from the visible Preview so the preview tool /
+          // workspace_tabs state can explain how a URL is rendered and why.
+          renderMode: boundedText(body.renderMode, 40),
+          embedKind: boundedText(body.embedKind, 20),
+          embedNote: boundedText(body.embedNote),
         })
         return HttpServerResponse.jsonUnsafe(state)
       }),
@@ -403,6 +422,38 @@ const browserPreviewRoute = HttpRouter.use((router) =>
           return yield* HttpApiProxy.websocket(request, target)
         }
         return yield* Effect.promise(() => liveBrowserNoVNCProxyResponse(target))
+      }),
+    )
+
+    yield* router.add("GET", "/experimental/browser/optimized/*", (request) =>
+      Effect.gen(function* () {
+        const access = yield* Effect.promise(() => liveBrowserExposureAccess(request))
+        if (!access.ok) return liveBrowserExposureBlockedResponse("text", access)
+        const url = new URL(request.url, "http://localhost")
+        const pathPart = url.pathname.replace(/^\/experimental\/browser\/optimized\/?/, "")
+        const target = new URL(optimizedBrowserViewerURL() + "/" + pathPart)
+        target.search = url.search
+        return yield* Effect.promise(() => optimizedBrowserViewerProxyResponse({ method: "GET", target }))
+      }),
+    )
+
+    yield* router.add("POST", "/experimental/browser/optimized/*", (request) =>
+      Effect.gen(function* () {
+        const access = yield* Effect.promise(() => liveBrowserExposureAccess(request))
+        if (!access.ok) return liveBrowserExposureBlockedResponse("json", access)
+        const url = new URL(request.url, "http://localhost")
+        const pathPart = url.pathname.replace(/^\/experimental\/browser\/optimized\/?/, "")
+        const target = new URL(optimizedBrowserViewerURL() + "/" + pathPart)
+        target.search = url.search
+        const raw = yield* Effect.orDie(request.text)
+        return yield* Effect.promise(() =>
+          optimizedBrowserViewerProxyResponse({
+            method: "POST",
+            target,
+            body: raw || "{}",
+            contentType: request.headers["content-type"] || "application/json",
+          }),
+        )
       }),
     )
 
@@ -626,34 +677,36 @@ const fileViewerRoute = HttpRouter.use((router) =>
         if (!fileViewerAllowed(directory))
           return HttpServerResponse.text("Directory is outside allowed roots", { status: 403 })
 
-        const stat = safeStat(directory)
+        const stat = await safeStatAsync(directory)
         if (!stat?.isDirectory()) return HttpServerResponse.text("Directory not found", { status: 404 })
 
         const skipped: Array<{ name: string; reason: string }> = []
-        const entries = readdirSync(directory, { withFileTypes: true })
-          .flatMap((entry) => {
-            if (entry.name === "." || entry.name === "..") return []
+        const rawEntries = await readdirP(directory, { withFileTypes: true })
+        const mapped = await Promise.all(
+          rawEntries.map(async (entry) => {
+            if (entry.name === "." || entry.name === "..") return null
             const file = path.join(directory, entry.name)
-            const fileStat = safeStat(file)
+            const fileStat = await safeStatAsync(file)
             if (!fileStat) {
               skipped.push({ name: entry.name, reason: "unreadable" })
-              return []
+              return null
             }
             const isDirectory = entry.isDirectory()
             const contentType = isDirectory ? null : contentTypeForFile(file)
-            return [
-              {
-                name: entry.name,
-                path: file,
-                kind: isDirectory ? "directory" : fileKind(contentType ?? ""),
-                contentType,
-                size: isDirectory ? null : fileStat.size,
-                mtime: fileStat.mtime.toISOString(),
-                browseURL: isDirectory ? `/experimental/files/browse?path=${encodeURIComponent(file)}` : null,
-                url: isDirectory ? null : `/experimental/files/view?path=${encodeURIComponent(file)}`,
-              },
-            ]
-          })
+            return {
+              name: entry.name,
+              path: file,
+              kind: isDirectory ? "directory" : fileKind(contentType ?? ""),
+              contentType,
+              size: isDirectory ? null : fileStat.size,
+              mtime: fileStat.mtime.toISOString(),
+              browseURL: isDirectory ? `/experimental/files/browse?path=${encodeURIComponent(file)}` : null,
+              url: isDirectory ? null : `/experimental/files/view?path=${encodeURIComponent(file)}`,
+            }
+          }),
+        )
+        const entries = mapped
+          .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
           .sort((a, b) => {
             if (a.kind === "directory" && b.kind !== "directory") return -1
             if (a.kind !== "directory" && b.kind === "directory") return 1
@@ -686,11 +739,79 @@ const fileViewerRoute = HttpRouter.use((router) =>
         if (!stat?.isFile()) return HttpServerResponse.text("File not found", { status: 404 })
 
         return HttpServerResponse.setHeader(
-          HttpServerResponse.uint8Array(new Uint8Array(readFileSync(file)), { contentType: contentTypeForFile(file) }),
+          HttpServerResponse.uint8Array(new Uint8Array(await readFileP(file)), { contentType: contentTypeForFile(file) }),
           "cache-control",
           "private, no-store",
         )
       }),
+    )
+
+    yield* router.add("GET", "/experimental/files/search", (request) =>
+      Effect.promise(async () => {
+        const url = new URL(request.url, "http://localhost")
+        const query = (url.searchParams.get("query") || "").trim().toLowerCase()
+        if (!query) return HttpServerResponse.jsonUnsafe({ ok: false, error: "search requires a query" }, { status: 400 })
+        const requested = path.resolve(url.searchParams.get("path") || fileBrowserDefaultPath())
+        if (!fileViewerAllowed(requested))
+          return HttpServerResponse.text("Directory is outside allowed roots", { status: 403 })
+        const rootStat = await safeStatAsync(requested)
+        const root = rootStat?.isDirectory() ? requested : parentDirectory(requested) || requested
+        const cap = Math.min(Math.max(1, Number(url.searchParams.get("limit")) || 200), 500)
+        const skip = new Set(["node_modules", ".git", ".next", "dist", "build", ".cache", ".turbo", ".venv"])
+        const results: Array<Record<string, unknown>> = []
+        const walk = async (dir: string, depth: number): Promise<void> => {
+          if (results.length >= cap || depth > 6) return
+          let entries: import("node:fs").Dirent[]
+          try {
+            entries = await readdirP(dir, { withFileTypes: true })
+          } catch {
+            return
+          }
+          for (const entry of entries) {
+            if (results.length >= cap) return
+            if (skip.has(entry.name)) continue
+            const entryPath = path.join(dir, entry.name)
+            const isDirectory = entry.isDirectory()
+            if (entry.name.toLowerCase().includes(query)) {
+              const stat = await safeStatAsync(entryPath)
+              const contentType = isDirectory ? null : contentTypeForFile(entryPath)
+              results.push({
+                name: entry.name,
+                path: entryPath,
+                kind: isDirectory ? "directory" : fileKind(contentType ?? ""),
+                contentType,
+                size: isDirectory ? null : stat?.size ?? null,
+                mtime: stat ? stat.mtime.toISOString() : null,
+                browseURL: isDirectory ? `/experimental/files/browse?path=${encodeURIComponent(entryPath)}` : null,
+                url: isDirectory ? null : `/experimental/files/view?path=${encodeURIComponent(entryPath)}`,
+              })
+            }
+            if (isDirectory) await walk(entryPath, depth + 1)
+          }
+        }
+        await walk(root, 0)
+        return HttpServerResponse.jsonUnsafe({
+          ok: true,
+          root,
+          query,
+          truncated: results.length >= cap,
+          count: results.length,
+          roots: fileViewerRoots(),
+          entries: results,
+        })
+      }),
+    )
+
+    yield* router.add("GET", "/experimental/project-metadata", (request) =>
+      Effect.promise(async () => HttpServerResponse.jsonUnsafe(await resolveProjectMetadata(new URL(request.url, "http://localhost").searchParams.get("path")))),
+    )
+
+    yield* router.add("GET", "/experimental/project-metadata/for-routine", (request) =>
+      Effect.promise(async () =>
+        HttpServerResponse.jsonUnsafe(
+          await projectsReferencingRoutine(new URL(request.url, "http://localhost").searchParams.get("id")),
+        ),
+      ),
     )
   }),
 ).pipe(Layer.provide(authOnlyRouterLayer))
@@ -822,10 +943,13 @@ function codexAccountSummaryFromGuard(alias: string, value: unknown, activeAlias
     enabled: record.enabled !== false,
     active: alias === activeAlias,
     source: typeof record.source === "string" ? record.source : "opencode-multi-auth",
+    planType: typeof record.planType === "string" ? record.planType : null,
     usageCount: typeof record.usageCount === "number" ? record.usageCount : null,
     lastUsed: typeof record.lastUsed === "number" ? record.lastUsed : null,
     lastSeenAt: typeof record.lastSeenAt === "number" ? record.lastSeenAt : null,
     expiresAt: typeof record.expiresAt === "number" ? record.expiresAt : null,
+    reauthNeeded: record.reauthNeeded === true,
+    disabledReason: typeof record.disabledReason === "string" ? record.disabledReason : null,
   }
 }
 
@@ -839,7 +963,10 @@ function codexAccountSummaryFromLegacy(value: unknown, index: number, activeInde
     label: typeof record.accountLabel === "string" ? record.accountLabel : null,
     enabled: true,
     active: index === activeIndex,
+    reauthNeeded: false,
+    disabledReason: null,
     source: "legacy-oc-codex-multi-auth",
+    planType: null,
     usageCount: null,
     lastUsed: typeof record.lastUsed === "number" ? record.lastUsed : null,
     lastSeenAt: typeof record.addedAt === "number" ? record.addedAt : null,
@@ -1179,10 +1306,55 @@ function codexMultiAuthAccountAction(body: Record<string, unknown>) {
     clearCodexMultiAuthStatusCache()
     return { ok: true, action, status: readCodexMultiAuthFastAccountStatus() }
   }
+  if (action === "remove-account") {
+    if (!alias || !aliases.includes(alias)) return { ok: false, error: `Unknown Codex account alias: ${alias || "empty"}`, aliases }
+    const nextAccounts = { ...(accounts as Record<string, unknown>) }
+    delete nextAccounts[alias]
+    const remainingAliases = Object.keys(nextAccounts)
+    const nextActive =
+      data.activeAlias === alias
+        ? (remainingAliases[0] ?? null)
+        : typeof data.activeAlias === "string"
+          ? data.activeAlias
+          : (remainingAliases[0] ?? null)
+    const next = {
+      ...data,
+      accounts: nextAccounts,
+      activeAlias: nextActive,
+      forcedAlias: data.forcedAlias === alias ? null : data.forcedAlias,
+      forcedUntil: data.forcedAlias === alias ? null : data.forcedUntil,
+      forcedBy: data.forcedAlias === alias ? null : data.forcedBy,
+      lastAccountRemovedAt: Date.now(),
+    }
+    writeFileSync(store, JSON.stringify(next, null, 2))
+    clearCodexMultiAuthStatusCache()
+    return { ok: true, action, alias, status: readCodexMultiAuthFastAccountStatus() }
+  }
+  if (action === "set-enabled") {
+    if (!alias || !aliases.includes(alias)) return { ok: false, error: `Unknown Codex account alias: ${alias || "empty"}`, aliases }
+    const enabled = body.enabled !== false
+    const current = (accounts as Record<string, unknown>)[alias]
+    const currentRecord =
+      current && typeof current === "object" && !Array.isArray(current) ? (current as Record<string, unknown>) : {}
+    const next = {
+      ...data,
+      accounts: {
+        ...(accounts as Record<string, unknown>),
+        [alias]: {
+          ...currentRecord,
+          enabled,
+        },
+      },
+      lastAccountEnabledAt: Date.now(),
+    }
+    writeFileSync(store, JSON.stringify(next, null, 2))
+    clearCodexMultiAuthStatusCache()
+    return { ok: true, action, alias, enabled, status: readCodexMultiAuthFastAccountStatus() }
+  }
   return {
     ok: false,
     error: `Unsupported Codex account action: ${action}`,
-    supported: ["set-active", "set-rotation", "force-account", "clear-force"],
+    supported: ["set-active", "set-rotation", "force-account", "clear-force", "remove-account", "set-enabled"],
   }
 }
 
@@ -1229,7 +1401,8 @@ function sanitizeCodexMultiAuthLoginAttempt(value: Record<string, unknown>) {
   else delete sanitized.userCode
   if (output !== undefined) sanitized.output = redactCodexAuthOutput(output)
   if (error !== undefined) sanitized.error = redactCodexAuthOutput(error)
-  if (value.hasUserCode || parsed.code) sanitized.hasUserCode = true
+  if (phase === "waiting_for_device_approval" && userCode) sanitized.hasUserCode = true
+  else delete sanitized.hasUserCode
   return sanitized
 }
 
@@ -1289,16 +1462,19 @@ function redactCodexAuthOutput(value: string | undefined) {
 async function buildCodexMultiAuthStatus(): Promise<CodexMultiAuthStatusResult> {
   const rawLoginAttempt = normalizeCodexMultiAuthLoginAttempt(readCodexMultiAuthLoginAttempt())
   const fast = readCodexMultiAuthFastAccountStatus()
+  const rawLoginPhase = typeof rawLoginAttempt?.phase === "string" ? rawLoginAttempt.phase : null
   const loginAttempt =
     fast?.accountsConfigured === true &&
-    typeof rawLoginAttempt?.phase === "string" &&
-    rawLoginAttempt.phase.startsWith("failed")
+    rawLoginPhase &&
+    (rawLoginPhase.startsWith("failed") ||
+      rawLoginPhase === "account_written" ||
+      rawLoginPhase === "account_written_or_already_authorized")
       ? {
           ok: true,
           configured: true,
           background: false,
           phase: "account_written",
-          note: "A Codex multi-auth account is already configured. Older failed login attempts are hidden from the live Accounts panel.",
+          note: "A Codex multi-auth account is already configured. Older login attempts are hidden from the live Accounts panel.",
           updatedAt: new Date().toISOString(),
         }
       : rawLoginAttempt
@@ -2398,6 +2574,33 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
       }),
     )
 
+    yield* router.add("GET", "/experimental/cli-resources/status", (request) =>
+      Effect.promise(async () => {
+        const url = new URL(request.url, "http://localhost")
+        const force = url.searchParams.get("force") === "1"
+        return HttpServerResponse.setHeader(
+          HttpServerResponse.jsonUnsafe(await collectCliResourcesStatus(force)),
+          "cache-control",
+          "private, no-store",
+        )
+      }),
+    )
+
+    yield* router.add("POST", "/experimental/cli-resources/run", (request) =>
+      Effect.gen(function* () {
+        const raw = yield* Effect.orDie(request.text)
+        const body = raw ? JSON.parse(raw) : {}
+        const probe = typeof body?.probe === "string" ? body.probe : ""
+        return yield* Effect.promise(async () =>
+          HttpServerResponse.setHeader(
+            HttpServerResponse.jsonUnsafe(await runCliResourceAction(probe)),
+            "cache-control",
+            "private, no-store",
+          ),
+        )
+      }),
+    )
+
     yield* router.add("GET", "/experimental/routines/status", () =>
       Effect.promise(async () => HttpServerResponse.jsonUnsafe(await routinesStatus())),
     )
@@ -2610,7 +2813,7 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
         return HttpServerResponse.jsonUnsafe({
           browserSessionID: paths.browserSessionID,
           artifactDir: paths.artifactDir,
-          files: listArtifactFiles(paths.artifactDir).map((file) => ({
+          files: (await listArtifactFiles(paths.artifactDir)).map((file) => ({
             ...file,
             url: `/experimental/browser/${encodeURIComponent(sessionID)}/artifacts/${encodeURIComponent(file.name)}`,
           })),
@@ -2627,10 +2830,10 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
         if (!sessionID || !name) return HttpServerResponse.text("Missing artifact", { status: 400 })
         const file = resolveArtifactFile(sessionPaths(sessionID).artifactDir, name)
         if (!file) return HttpServerResponse.text("Invalid artifact", { status: 400 })
-        const stat = statSync(file, { throwIfNoEntry: false })
+        const stat = await safeStatAsync(file)
         if (!stat?.isFile()) return HttpServerResponse.text("Artifact not found", { status: 404 })
         return HttpServerResponse.setHeader(
-          HttpServerResponse.uint8Array(new Uint8Array(readFileSync(file)), { contentType: contentTypeForFile(name) }),
+          HttpServerResponse.uint8Array(new Uint8Array(await readFileP(file)), { contentType: contentTypeForFile(name) }),
           "cache-control",
           "no-store",
         )
@@ -2645,30 +2848,37 @@ function decodeParam(rawURL: string, pattern: RegExp) {
   return match?.[1] ? decodeURIComponent(match[1]) : undefined
 }
 
-function listArtifactFiles(
+async function listArtifactFiles(
   dir: string,
   root = dir,
-): Array<{ name: string; size: number; mtime: string; kind: string; contentType: string }> {
-  if (!existsSync(dir)) return []
-  return readdirSync(dir, { withFileTypes: true })
-    .flatMap((entry) => {
-      const file = path.join(dir, entry.name)
-      if (entry.isDirectory()) return listArtifactFiles(file, root)
-      const stat = statSync(file, { throwIfNoEntry: false })
-      if (!stat?.isFile()) return []
-      const relative = path.relative(root, file)
-      const contentType = contentTypeForFile(relative)
-      return [
-        {
-          name: relative,
-          size: stat.size,
-          mtime: stat.mtime.toISOString(),
-          kind: fileKind(contentType),
-          contentType,
-        },
-      ]
+): Promise<Array<{ name: string; size: number; mtime: string; kind: string; contentType: string }>> {
+  if (!(await safeStatAsync(dir))) return []
+  let entries: import("node:fs").Dirent[]
+  try {
+    entries = await readdirP(dir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const out: Array<{ name: string; size: number; mtime: string; kind: string; contentType: string }> = []
+  for (const entry of entries) {
+    const file = path.join(dir, entry.name)
+    if (entry.isDirectory()) {
+      out.push(...(await listArtifactFiles(file, root)))
+      continue
+    }
+    const stat = await safeStatAsync(file)
+    if (!stat?.isFile()) continue
+    const relative = path.relative(root, file)
+    const contentType = contentTypeForFile(relative)
+    out.push({
+      name: relative,
+      size: stat.size,
+      mtime: stat.mtime.toISOString(),
+      kind: fileKind(contentType),
+      contentType,
     })
-    .sort((a, b) => b.mtime.localeCompare(a.mtime))
+  }
+  return out.sort((a, b) => b.mtime.localeCompare(a.mtime))
 }
 
 function resolveArtifactFile(artifactDir: string, name: string) {
@@ -2721,6 +2931,14 @@ function fileViewerAllowed(file: string) {
   return fileViewerRoots().some((root) => resolved === root || resolved.startsWith(root + path.sep))
 }
 
+async function safeStatAsync(file: string) {
+  try {
+    return await statP(file)
+  } catch {
+    return undefined
+  }
+}
+
 function safeStat(file: string) {
   try {
     return statSync(file, { throwIfNoEntry: false })
@@ -2741,6 +2959,69 @@ function parentDirectory(directory: string) {
   const parent = path.dirname(directory)
   if (parent === directory) return null
   return fileViewerAllowed(parent) ? parent : null
+}
+
+const PROJECT_METADATA_REL = path.join(".opencode", "design", "project.json")
+const PROJECT_METADATA_MAX_BYTES = 256 * 1024
+
+// Walk up from a path (within allowlisted roots) to find the nearest
+// .opencode/design/project.json. Read-only; returns present:false gracefully.
+async function projectsReferencingRoutine(routineId: string | null) {
+  const id = String(routineId || "").trim()
+  if (!id) return { ok: false, error: "routine id is required" }
+  const reposRoot = process.env.OPENCODE_DEV_ROOT || "/home/dev/repos"
+  if (!fileViewerAllowed(reposRoot)) return { ok: true, id, projects: [] }
+  const projects: Array<{ repoRoot: string; name: string | null; metadataPath: string }> = []
+  let dirs: import("node:fs").Dirent[]
+  try {
+    dirs = await readdirP(reposRoot, { withFileTypes: true })
+  } catch {
+    return { ok: true, id, projects: [] }
+  }
+  for (const dir of dirs) {
+    if (!dir.isDirectory()) continue
+    const candidate = path.join(reposRoot, dir.name, ".opencode", "design", "project.json")
+    const stat = await safeStatAsync(candidate)
+    if (!stat?.isFile() || stat.size > 256 * 1024) continue
+    try {
+      const metadata = JSON.parse(await readFileP(candidate, "utf8"))
+      const routines = Array.isArray(metadata?.routines) ? metadata.routines : []
+      if (routines.some((r: any) => (typeof r === "string" ? r : r?.id) === id)) {
+        projects.push({ repoRoot: path.join(reposRoot, dir.name), name: typeof metadata?.name === "string" ? metadata.name : null, metadataPath: candidate })
+      }
+    } catch {
+      // skip unreadable/invalid metadata
+    }
+  }
+  return { ok: true, id, projects }
+}
+
+async function resolveProjectMetadata(requested: string | null) {
+  const start = path.resolve(requested || fileBrowserDefaultPath())
+  if (!fileViewerAllowed(start)) return { ok: false, error: "Path is outside allowlisted roots" }
+  const startStat = await safeStatAsync(start)
+  let dir = startStat?.isDirectory() ? start : path.dirname(start)
+  const searched: string[] = []
+  for (let i = 0; i < 12; i++) {
+    if (!fileViewerAllowed(dir)) break
+    const candidate = path.join(dir, PROJECT_METADATA_REL)
+    searched.push(candidate)
+    const stat = await safeStatAsync(candidate)
+    if (stat?.isFile()) {
+      if (stat.size > PROJECT_METADATA_MAX_BYTES)
+        return { ok: true, present: false, repoRoot: dir, reason: "metadata file too large", metadataPath: candidate }
+      try {
+        const metadata = JSON.parse(await readFileP(candidate, "utf8"))
+        return { ok: true, present: true, repoRoot: dir, metadataPath: candidate, metadata }
+      } catch (error) {
+        return { ok: true, present: false, repoRoot: dir, reason: `invalid json: ${(error as Error).message}`, metadataPath: candidate }
+      }
+    }
+    const parent = path.dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return { ok: true, present: false, repoRoot: startStat?.isDirectory() ? start : path.dirname(start), searched }
 }
 
 function fileKind(contentType: string) {
@@ -2788,6 +3069,44 @@ const liveBrowserArtifacts = () => path.join(liveBrowserHome(), "artifacts")
 const liveBrowserDebugPort = () => Number(process.env.OPENCODE_LIVE_BROWSER_DEBUG_PORT || 9224)
 const liveBrowserNoVNCURL = () =>
   (process.env.OPENCODE_LIVE_BROWSER_NOVNC_URL || "http://127.0.0.1:6080").replace(/\/+$/, "")
+
+const optimizedBrowserViewerURL = () =>
+  (process.env.OPENCODE_BROWSER_OPTIMIZED_VIEWER_URL || "http://127.0.0.1:7458").replace(/\/+$/, "")
+
+async function optimizedBrowserViewerHealthy() {
+  try {
+    const response = await fetch(`${optimizedBrowserViewerURL()}/api/state`, {
+      signal: AbortSignal.timeout(1200),
+    })
+    if (!response.ok) return false
+    const body = (await response.json().catch(() => null)) as { ok?: boolean } | null
+    return body?.ok === true
+  } catch {
+    return false
+  }
+}
+
+async function optimizedBrowserViewerProxyResponse(input: {
+  method: string
+  target: URL
+  body?: string
+  contentType?: string
+}) {
+  const response = await fetch(input.target, {
+    method: input.method,
+    headers: input.body ? { "content-type": input.contentType || "application/json" } : undefined,
+    body: input.body,
+  })
+  const contentType = response.headers.get("content-type") ?? "application/octet-stream"
+  if (!response.ok) {
+    return HttpServerResponse.text(await response.text(), { status: response.status, contentType })
+  }
+  return HttpServerResponse.setHeader(
+    HttpServerResponse.uint8Array(new Uint8Array(await response.arrayBuffer()), { contentType }),
+    "cache-control",
+    "no-store",
+  )
+}
 const liveBrowserExposureEnabled = () => process.env.OPENCODE_LIVE_BROWSER_EXPOSE !== "0"
 const liveBrowserStrictAccessRequired = () => process.env.OPENCODE_LIVE_BROWSER_REQUIRE_ACCESS === "1"
 const liveBrowserViewport = () => {
@@ -3296,6 +3615,15 @@ async function liveBrowserStatus(access?: Extract<LiveBrowserAccess, { ok: true 
     screenshotURL: "/experimental/browser/live/snapshot",
     streamURL: "/experimental/browser/live/stream",
     proxiedLiveURL: `/experimental/browser/novnc/opencode-lite.html?${defaultNoVNCParams.toString()}`,
+    optimizedViewer: (await optimizedBrowserViewerHealthy())
+      ? {
+          ok: true,
+          proxiedURL: `/experimental/browser/optimized/?vnc=${encodeURIComponent(
+            `/experimental/browser/novnc/opencode-lite.html?${defaultNoVNCParams.toString()}`,
+          )}`,
+          apiBase: "/experimental/browser/optimized/api",
+        }
+      : { ok: false },
     noVNC: {
       viewer: "opencode-lite",
       defaultMode: noVNCMode in noVNCModes ? noVNCMode : "fast",
@@ -3334,50 +3662,99 @@ async function liveBrowserStatus(access?: Extract<LiveBrowserAccess, { ok: true 
   }
 }
 
-async function ensureLiveBrowser(): Promise<{ ok: true; pid?: number } | { ok: false; error: string }> {
-  mkdirSync(liveBrowserProfile(), { recursive: true })
-  mkdirSync(liveBrowserArtifacts(), { recursive: true })
+type EnsureLiveBrowserResult = { ok: true; pid?: number } | { ok: false; error: string }
+let liveBrowserEnsureInFlight: Promise<EnsureLiveBrowserResult> | undefined
 
-  const existing = await execText("pgrep", ["-f", `${liveBrowserProfile()}`]).catch(() => "")
-  const pid = existing
-    .split(/\s+/)
-    .map((value) => Number(value))
-    .find((value) => Number.isFinite(value) && value > 0)
-  if (pid) {
-    await fitLiveBrowserWindow().catch(() => undefined)
-    return { ok: true, pid }
+// Launch the live Chrome in dev's OWN user-manager cgroup slice (out of
+// opencode.service's cgroup) with its own memory cap, so Chrome memory growth
+// can never push the shared cgroup into MemoryHigh throttling — the root cause of
+// the recurring event-loop-freeze wedge. Falls back to a direct detached spawn
+// (previous behavior, in opencode's cgroup) if systemd-run --user is unavailable,
+// so the browser never fails to launch.
+async function spawnLiveChrome(chrome: string, args: string[], display: string): Promise<number | undefined> {
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined
+  if (uid !== undefined) {
+    const launched = await new Promise<boolean>((resolve) => {
+      try {
+        const runner = spawn(
+          "systemd-run",
+          [
+            "--user",
+            "--collect",
+            "-p",
+            "MemoryHigh=4G",
+            "-p",
+            "MemoryMax=6G",
+            `--setenv=DISPLAY=${display}`,
+            "--",
+            chrome,
+            ...args,
+          ],
+          { stdio: "ignore", env: { ...process.env, DISPLAY: display, XDG_RUNTIME_DIR: `/run/user/${uid}` } },
+        )
+        runner.on("error", () => resolve(false))
+        runner.on("exit", (code) => resolve(code === 0))
+      } catch {
+        resolve(false)
+      }
+    })
+    if (launched) return undefined
   }
-
-  const chrome = process.env.OPENCODE_LIVE_BROWSER_BIN || "google-chrome"
-  const viewport = liveBrowserViewport()
-  const child = spawn(
-    chrome,
-    [
-      "--no-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-gpu",
-      "--no-first-run",
-      "--no-default-browser-check",
-      `--user-data-dir=${liveBrowserProfile()}`,
-      "--remote-debugging-address=127.0.0.1",
-      `--remote-debugging-port=${liveBrowserDebugPort()}`,
-      `--window-size=${viewport.width},${viewport.height}`,
-      "--start-maximized",
-      "about:blank",
-    ],
-    {
-      detached: true,
-      stdio: "ignore",
-      env: {
-        ...process.env,
-        DISPLAY: liveBrowserDisplay(),
-      },
-    },
-  )
+  const child = spawn(chrome, args, {
+    detached: true,
+    stdio: "ignore",
+    env: { ...process.env, DISPLAY: display },
+  })
   child.unref()
-  await delay(1200)
-  await fitLiveBrowserWindow().catch(() => undefined)
-  return { ok: true, pid: child.pid }
+  return child.pid
+}
+
+async function ensureLiveBrowser(): Promise<EnsureLiveBrowserResult> {
+  // Share one in-flight ensure across concurrent callers so two simultaneous
+  // browser ops can't both spawn Chrome (the pre-existing double-spawn race).
+  if (liveBrowserEnsureInFlight) return liveBrowserEnsureInFlight
+  const run = (async (): Promise<EnsureLiveBrowserResult> => {
+    await mkdirP(liveBrowserProfile(), { recursive: true })
+    await mkdirP(liveBrowserArtifacts(), { recursive: true })
+
+    const existing = await execText("pgrep", ["-f", `${liveBrowserProfile()}`]).catch(() => "")
+    const pid = existing
+      .split(/\s+/)
+      .map((value) => Number(value))
+      .find((value) => Number.isFinite(value) && value > 0)
+    if (pid) {
+      await fitLiveBrowserWindow().catch(() => undefined)
+      return { ok: true, pid }
+    }
+
+    const chrome = process.env.OPENCODE_LIVE_BROWSER_BIN || "google-chrome"
+    const viewport = liveBrowserViewport()
+    const spawnedPid = await spawnLiveChrome(
+      chrome,
+      [
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--no-first-run",
+        "--no-default-browser-check",
+        `--user-data-dir=${liveBrowserProfile()}`,
+        "--remote-debugging-address=127.0.0.1",
+        `--remote-debugging-port=${liveBrowserDebugPort()}`,
+        `--window-size=${viewport.width},${viewport.height}`,
+        "--start-maximized",
+        "about:blank",
+      ],
+      liveBrowserDisplay(),
+    )
+    await delay(1200)
+    await fitLiveBrowserWindow().catch(() => undefined)
+    return { ok: true, pid: spawnedPid }
+  })()
+  liveBrowserEnsureInFlight = run
+  void run.finally(() => {
+    if (liveBrowserEnsureInFlight === run) liveBrowserEnsureInFlight = undefined
+  })
+  return run
 }
 
 async function runLiveBrowserInput(input: LiveBrowserInput) {
@@ -3507,7 +3884,7 @@ async function saveLiveBrowserScreenshot(
 ) {
   await ensureLiveBrowser()
   const paths = sessionPaths(sessionID)
-  mkdirSync(paths.artifactDir, { recursive: true })
+  await mkdirP(paths.artifactDir, { recursive: true })
   const stamped = new Date().toISOString().replace(/[:.]/g, "-")
   const name = input.annotationDataURL ? `browser-annotation-${stamped}.png` : `browser-screenshot-${stamped}.png`
   const file = path.join(paths.artifactDir, name)
@@ -3515,10 +3892,10 @@ async function saveLiveBrowserScreenshot(
   if (input.annotationDataURL?.startsWith("data:image/")) {
     const base64 = input.annotationDataURL.split(",", 2)[1]
     if (!base64) throw new Error("Invalid annotation data URL")
-    writeFileSync(file, Buffer.from(base64, "base64"))
+    await writeFileP(file, Buffer.from(base64, "base64"))
   } else {
     const image = await captureLiveBrowserImage()
-    writeFileSync(file, image)
+    await writeFileP(file, image)
   }
 
   const meta = {
@@ -3529,7 +3906,7 @@ async function saveLiveBrowserScreenshot(
     source: await currentLiveBrowserURL().catch(() => null),
     image: name,
   }
-  writeFileSync(path.join(paths.artifactDir, `${name}.json`), JSON.stringify(meta, null, 2))
+  await writeFileP(path.join(paths.artifactDir, `${name}.json`), JSON.stringify(meta, null, 2))
 
   return {
     ok: true,
@@ -4012,6 +4389,14 @@ function workspaceEnvStatus() {
         workspaceEnvPromptSummary({ directory: "/home/dev/repos", cwd: "/home/dev/repos", surface: "bash" }) ?? null,
       inheritedBy: ["terminal", "bash"],
       plannedScopes: ["routines", "browser", "preview", "open_design"],
+      apply: {
+        // Enabled entries are injected into NEW OpenCode-launched terminals/bash
+        // processes at spawn time. Already-running processes (this opencode.service,
+        // open terminals, the live browser) keep the env they started with.
+        appliesTo: "new OpenCode-launched terminal/bash processes",
+        restartRequiredFor: ["opencode.service", "already-open terminals", "running project servers"],
+        note: "Saving a variable takes effect for newly launched processes immediately; restart a service or open a fresh terminal to pick up changes there.",
+      },
     },
   }
 }
@@ -4023,6 +4408,18 @@ function workspaceEnvAction(body: any) {
       const id = typeof body?.id === "string" ? body.id : ""
       if (!id) throw new Error("Missing env entry id")
       return { ok: true, action, ...deleteWorkspaceEnvEntry(id), registry: readWorkspaceEnvRegistryPublic() }
+    }
+    if (action === "validate") {
+      // No values returned - safe for chat/logs/artifacts.
+      return { ok: true, action, validation: validateDotenvText(typeof body?.dotenv === "string" ? body.dotenv : "") }
+    }
+    if (action === "import") {
+      if (typeof body?.dotenv !== "string" || !body.dotenv.trim()) throw new Error("Missing dotenv text")
+      const summary = importDotenvText(body.dotenv, {
+        scope: typeof body?.scope === "string" ? body.scope : undefined,
+        enabled: typeof body?.enabled === "boolean" ? body.enabled : undefined,
+      })
+      return { ok: summary.ok, action, summary, registry: readWorkspaceEnvRegistryPublic() }
     }
     if (action === "upsert") {
       const entry = upsertWorkspaceEnvEntry({
@@ -4165,6 +4562,28 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+function openDesignCodexAccount() {
+  const marker =
+    process.env.OPENCODE_OPEN_DESIGN_CODEX_MARKER ||
+    path.join(process.env.HOME || "/home/dev", ".local", "share", "opencode-open-design", "codex-account.json")
+  const parsed = readJsonObject(marker)
+  if (!parsed) return { bridged: false, note: "No Codex Multi-Auth account has been synced into Open Design yet." }
+  const degraded = parsed.degraded === true
+  const requestedActiveAlias = typeof parsed.requestedActiveAlias === "string" ? parsed.requestedActiveAlias : null
+  return {
+    bridged: true,
+    alias: typeof parsed.alias === "string" ? parsed.alias : null,
+    email: typeof parsed.email === "string" ? parsed.email : null,
+    forced: parsed.forced === true,
+    degraded,
+    requestedActiveAlias,
+    syncedAt: typeof parsed.syncedAt === "string" ? parsed.syncedAt : null,
+    note: degraded
+      ? `Open Design is authenticated as ${typeof parsed.email === "string" ? parsed.email : "an existing account"}, which may differ from the active Codex account${requestedActiveAlias ? ` (${requestedActiveAlias})` : ""}. Re-seed could not rotate the active token; it re-syncs on the next successful account switch.`
+      : "Open Design's Codex CLI authenticates as the active Codex Multi-Auth account (synced by opencode-open-design-codex-sync).",
+  }
+}
+
 async function openDesignStatus() {
   const { daemonURL, publicURL, token, proxyReady } = openDesignConfig()
   const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {}
@@ -4192,6 +4611,7 @@ async function openDesignStatus() {
   return {
     configured: health.ok === true,
     tokenConfigured: !!token,
+    codexAccount: openDesignCodexAccount(),
     daemonURL,
     publicURL,
     proxyURL: "/experimental/open-design/proxy/",

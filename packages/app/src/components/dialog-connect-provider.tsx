@@ -16,8 +16,11 @@ import { useServerSDK } from "@/context/server-sdk"
 import { useServerSync } from "@/context/server-sync"
 import { useLanguage } from "@/context/language"
 import { useProviders } from "@/hooks/use-providers"
+import { DialogCodexMultiAuthProvider } from "./dialog-codex-multi-auth-provider"
 
 export function DialogConnectProvider(props: { provider: string; directory?: Accessor<string | undefined> }) {
+  if (props.provider === "codex-multi-auth") return <DialogCodexMultiAuthProvider />
+
   const dialog = useDialog()
   const serverSync = useServerSync()
   const serverSDK = useServerSDK()

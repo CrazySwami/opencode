@@ -35,6 +35,7 @@ export type WorkspaceEnvRegistry = {
 
 export type WorkspaceEnvPublicEntry = Omit<WorkspaceEnvEntry, "value"> & {
   hasValue: boolean
+  maskedValue: string
   valuePreview?: string
 }
 
@@ -46,7 +47,20 @@ export type WorkspaceEnvPublicRegistry = Omit<WorkspaceEnvRegistry, "entries"> &
 
 const DEFAULT_SCOPE: WorkspaceEnvScope = "repos"
 const VALID_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
-const SECRET_NAME = /(KEY|TOKEN|SECRET|PASSWORD|PASS|PRIVATE|CREDENTIAL|COOKIE|AUTH|SESSION)/i
+// Names that indicate a secret. Intentionally broad: it is safer to over-flag a
+// var as secret (user can uncheck) than to leak plaintext in the polled status.
+const SECRET_NAME =
+  /(KEY|TOKEN|SECRET|PASSWORD|PASS|PRIVATE|CREDENTIAL|COOKIE|AUTH|SESSION|DSN|JWT|WEBHOOK|CERT|FINGERPRINT|SIGNING|SALT|BEARER|SSH|GPG|PGP|OTP|DATABASE_URL|CONNECTION_STRING|CONN_STR|(?:^|_)PAT(?:_|$)|(?:^|_)API(?:_|$))/i
+
+// A value that embeds credentials (e.g. postgres://user:pass@host) or is a long
+// high-entropy token is treated as secret regardless of the variable name.
+const CREDENTIAL_URL = /:\/\/[^/\s:@]+:[^/\s@]+@/
+function valueLooksSecret(value: string) {
+  if (!value) return false
+  if (CREDENTIAL_URL.test(value)) return true
+  // 40+ chars with no spaces and mixed classes -> likely a token/key.
+  return value.length >= 40 && !/\s/.test(value) && /[A-Za-z]/.test(value) && /[0-9]/.test(value)
+}
 
 export function workspaceEnvPath() {
   return (
@@ -93,6 +107,8 @@ export function upsertWorkspaceEnvEntry(input: {
   const registry = readWorkspaceEnvRegistry()
   const name = input.name.trim()
   if (!VALID_NAME.test(name)) throw new Error("Environment variable names must match /^[A-Za-z_][A-Za-z0-9_]*$/")
+  if (input.description && CREDENTIAL_URL.test(input.description))
+    throw new Error("Description must not contain credentials (found a user:pass@ URL). Put secrets in the value, not the description.")
   const now = new Date().toISOString()
   const existing = input.id
     ? registry.entries.find((entry) => entry.id === input.id)
@@ -105,7 +121,7 @@ export function upsertWorkspaceEnvEntry(input: {
     scope: normalizeScope(input.scope ?? existing?.scope ?? DEFAULT_SCOPE),
     target: normalizeOptionalString(input.target ?? existing?.target),
     enabled: input.enabled ?? existing?.enabled ?? true,
-    secret: input.secret ?? existing?.secret ?? SECRET_NAME.test(name),
+    secret: input.secret ?? existing?.secret ?? (SECRET_NAME.test(name) || valueLooksSecret(value)),
     description: normalizeOptionalString(input.description ?? existing?.description),
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
@@ -117,6 +133,95 @@ export function upsertWorkspaceEnvEntry(input: {
     entries: [...entries, entry].sort((a, b) => a.name.localeCompare(b.name)),
   })
   return redactEntry(entry)
+}
+
+export function isSecretLikeName(name: string) {
+  return SECRET_NAME.test(name)
+}
+
+type ParsedDotenvLine =
+  | { kind: "entry"; name: string; value: string; lineNumber: number }
+  | { kind: "blank" | "comment"; lineNumber: number }
+  | { kind: "malformed"; lineNumber: number; reason: string }
+
+function parseDotenvText(text: string): ParsedDotenvLine[] {
+  const out: ParsedDotenvLine[] = []
+  const lines = String(text ?? "").split(/\r?\n/)
+  lines.forEach((rawLine, index) => {
+    const lineNumber = index + 1
+    const line = rawLine.trim()
+    if (!line) return out.push({ kind: "blank", lineNumber })
+    if (line.startsWith("#")) return out.push({ kind: "comment", lineNumber })
+    const withoutExport = line.replace(/^export\s+/i, "")
+    const eq = withoutExport.indexOf("=")
+    if (eq <= 0) return out.push({ kind: "malformed", lineNumber, reason: "missing KEY=VALUE" })
+    const name = withoutExport.slice(0, eq).trim()
+    if (!VALID_NAME.test(name))
+      return out.push({ kind: "malformed", lineNumber, reason: "invalid variable name" })
+    let value = withoutExport.slice(eq + 1).trim()
+    if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))))
+      value = value.slice(1, -1)
+    out.push({ kind: "entry", name, value, lineNumber })
+  })
+  return out
+}
+
+// Validate WITHOUT returning any values (safe for chat/logs/artifacts).
+export function validateDotenvText(text: string) {
+  const parsed = parseDotenvText(text)
+  const entries = parsed.filter((l): l is Extract<ParsedDotenvLine, { kind: "entry" }> => l.kind === "entry")
+  const malformed = parsed
+    .filter((l): l is Extract<ParsedDotenvLine, { kind: "malformed" }> => l.kind === "malformed")
+    .map((l) => ({ lineNumber: l.lineNumber, reason: l.reason }))
+  const seen = new Map<string, number>()
+  const duplicates: string[] = []
+  for (const entry of entries) {
+    seen.set(entry.name, (seen.get(entry.name) ?? 0) + 1)
+    if (seen.get(entry.name) === 2) duplicates.push(entry.name)
+  }
+  return {
+    ok: malformed.length === 0,
+    total: entries.length,
+    keys: entries.map((e) => e.name),
+    duplicates,
+    malformed,
+    secretLike: entries.filter((e) => isSecretLikeName(e.name)).map((e) => e.name),
+  }
+}
+
+// Import dotenv text: last value wins for duplicate keys. Returns a
+// value-free summary.
+export function importDotenvText(text: string, options: { scope?: string; enabled?: boolean } = {}) {
+  const parsed = parseDotenvText(text)
+  const malformed = parsed
+    .filter((l): l is Extract<ParsedDotenvLine, { kind: "malformed" }> => l.kind === "malformed")
+    .map((l) => ({ lineNumber: l.lineNumber, reason: l.reason }))
+  // Atomic: never write a partial import. If any line is malformed, reject the
+  // whole paste before touching the registry.
+  if (malformed.length > 0) {
+    return { ok: false, created: 0, updated: 0, imported: 0, duplicateKeysCollapsed: 0, malformed, names: [] }
+  }
+  const entries = parsed.filter((l): l is Extract<ParsedDotenvLine, { kind: "entry" }> => l.kind === "entry")
+  const byName = new Map<string, string>()
+  for (const entry of entries) byName.set(entry.name, entry.value)
+  const before = readWorkspaceEnvRegistry()
+  const existingNames = new Set(before.entries.map((e) => e.name))
+  let created = 0
+  let updated = 0
+  for (const [name, value] of byName) {
+    if (existingNames.has(name)) updated++
+    else created++
+    upsertWorkspaceEnvEntry({ name, value, scope: options.scope, enabled: options.enabled })
+  }
+  return {
+    ok: malformed.length === 0,
+    created,
+    updated,
+    imported: byName.size,
+    duplicateKeysCollapsed: entries.length - byName.size,
+    malformed,
+    names: [...byName.keys()],
+  }
 }
 
 export function deleteWorkspaceEnvEntry(id: string) {
@@ -240,6 +345,10 @@ function redactEntry(entry: WorkspaceEnvEntry): WorkspaceEnvPublicEntry {
   return {
     ...rest,
     hasValue: entry.value.length > 0,
+    // Masked form never contains any characters of the value (safe for secrets
+    // and non-secrets alike). Full value is only offered via reveal, and only
+    // for non-secret entries.
+    maskedValue: entry.value.length === 0 ? "(empty)" : entry.secret ? "••••" : `•••• (${entry.value.length} chars)`,
     valuePreview: entry.secret ? undefined : entry.value,
   }
 }

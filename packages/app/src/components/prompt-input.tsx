@@ -6,6 +6,7 @@ import {
   on,
   Component,
   Show,
+  For,
   onCleanup,
   createMemo,
   createSignal,
@@ -97,7 +98,33 @@ type OpenDesignBridgePromptState = {
   activeCanvasTab?: string
   fileCount?: number
   updatedAt?: string
+  // The embedded Open Design build advertises whether it accepts inbound
+  // prompts from the OpenCode composer (bridge handshake).
+  acceptsPrompts?: boolean
+  // Full conversation list for the active project so the composer can switch or
+  // start chats, plus the model/provider the OD chat runs on.
+  conversations?: { id: string; title?: string | null }[]
+  activeConversationId?: string | null
+  model?: string | null
+  apiProtocol?: string | null
+  // Open Design chat slash-commands (if the OD build advertises them).
+  slashCommands?: { label: string; hint?: string | null }[]
+  // Open Design @-mention skills (project-scoped) for the composer.
+  mentionOptions?: { id: string; label: string; token: string }[]
+  // Available coding agents (+ models) and the active selection, so the composer
+  // can render a model/agent switcher that drives Open Design.
+  agentOptions?: { id: string; name: string; models: { id: string; label: string }[] }[]
+  activeAgentId?: string | null
+  activeAgentModel?: string | null
 }
+
+// Core Open Design chat commands, used when the OD build does not advertise its
+// own list. These route to the OD chat (the composer sends them into Open Design).
+const DEFAULT_OPEN_DESIGN_COMMANDS: { label: string; hint?: string | null }[] = [
+  { label: "/search", hint: "Web search inside Open Design" },
+  { label: "/mcp", hint: "Use a connected MCP server's tools" },
+  { label: "/pet", hint: "Toggle or adopt the Open Design pet" },
+]
 
 const OPEN_DESIGN_BRIDGE_EVENT = "opencode:open-design-bridge-state"
 
@@ -297,6 +324,42 @@ const WORKSPACE_TOOL_MENTIONS = WORKSPACE_PANEL_TABS.map((tab) =>
     icon: tab.icon,
   }),
 )
+
+// The Resources tab has sub-sections (Claude Code, Antigravity, OpenCode
+// providers) that are not standalone tabs. Expose them as mentions that focus
+// the Resources tab on the matching section.
+const RESOURCES_SECTION_MENTIONS = [
+  optionForToolMention({
+    id: "claude_code",
+    name: "Claude Code",
+    description: "Claude Code CLI status (installed, settings, telemetry) in the Resources tab.",
+  }),
+  optionForToolMention({
+    id: "antigravity",
+    name: "Antigravity",
+    description: "Antigravity (agy) CLI status and subcommands in the Resources tab.",
+  }),
+  optionForToolMention({
+    id: "opencode_provider",
+    name: "OpenCode Providers",
+    description: "OpenCode native provider/auth status in the Resources tab.",
+  }),
+]
+
+const RESOURCES_SECTION_BY_MENTION: Record<string, string> = {
+  codex: "codex",
+  accounts: "codex",
+  account_status: "codex",
+  multi_auth: "codex",
+  claude_code: "claude",
+  antigravity: "antigravity",
+  agy: "antigravity",
+  opencode_provider: "opencode",
+  resources: "system",
+  resource_status: "system",
+  cpu: "system",
+  server_status: "system",
+}
 
 const uniqueToolMentions = (items: AtOption[]) => {
   const seen = new Set<string>()
@@ -804,6 +867,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         uniqueToolMentions([
           ...SWAMI_TOOL_MENTIONS,
           ...WORKSPACE_TOOL_MENTIONS,
+          ...RESOURCES_SECTION_MENTIONS,
           ...(response.data ?? []).map((id) => optionForToolMention({ id })),
         ]),
       )
@@ -820,6 +884,12 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         props.controls.session.reviewPanel.open()
         void props.controls.session.tabs.open(panelTab)
         props.controls.session.tabs.setActive(panelTab)
+        if (panelTab === "panel://resources") {
+          const section = RESOURCES_SECTION_BY_MENTION[option.id]
+          if (section && typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("opencode:resources-section", { detail: { section } }))
+          }
+        }
       }
       addPart({
         type: "tool",
@@ -837,6 +907,50 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     }
   }
 
+  // --- Open Design bridge state (defined early so the `/` slash menu and `@`
+  // mention list can swap to Open Design's while in Design Mode). ---
+  const [openDesignBridgeState, setOpenDesignBridgeState] = createSignal<OpenDesignBridgePromptState | undefined>(
+    readOpenDesignBridgeState(),
+  )
+  if (typeof window !== "undefined") {
+    const syncOpenDesignBridgeState = (event: Event) => {
+      const detail = event instanceof CustomEvent ? event.detail : readOpenDesignBridgeState()
+      if (!detail || typeof detail !== "object") {
+        setOpenDesignBridgeState(undefined)
+        return
+      }
+      setOpenDesignBridgeState(detail as OpenDesignBridgePromptState)
+    }
+    window.addEventListener(OPEN_DESIGN_BRIDGE_EVENT, syncOpenDesignBridgeState)
+    onCleanup(() => window.removeEventListener(OPEN_DESIGN_BRIDGE_EVENT, syncOpenDesignBridgeState))
+  }
+  const designModeBridge = createMemo(() => {
+    const state = openDesignBridgeState()
+    if (!state?.active) return undefined
+    return state
+  })
+  // Manual exit from Design Mode: drop back to the OpenCode chat while an OD
+  // project is open, and re-enter. Resets when the OD project changes.
+  const [designExited, setDesignExited] = createSignal(false)
+  createEffect(
+    on(
+      () => designModeBridge()?.projectId,
+      () => setDesignExited(false),
+    ),
+  )
+  const designBridgeActive = createMemo(() => {
+    const state = designModeBridge()
+    return !designExited() && !!state && state.acceptsPrompts === true && store.mode !== "shell"
+  })
+  const designSlashCommands = createMemo(() => {
+    const list = designModeBridge()?.slashCommands
+    return Array.isArray(list) && list.length > 0 ? list : DEFAULT_OPEN_DESIGN_COMMANDS
+  })
+  const designMentionOptions = createMemo(() => {
+    const list = designModeBridge()?.mentionOptions
+    return Array.isArray(list) ? list : []
+  })
+
   const atKey = (x: AtOption | undefined) => {
     if (!x) return ""
     if (x.type === "agent") return `agent:${x.name}`
@@ -852,6 +966,15 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     onKeyDown: atOnKeyDown,
   } = useFilteredList<AtOption>({
     items: async (query) => {
+      // In Design Mode the `@` menu lists Open Design's project skills, not the
+      // OpenCode workspace. They map to agent-type options so selecting inserts
+      // the `@token` text that routes to the OD chat.
+      if (designBridgeActive()) {
+        const q = query.trim().toLowerCase()
+        return designMentionOptions()
+          .filter((m) => !q || m.label.toLowerCase().includes(q))
+          .map((m): AtOption => ({ type: "agent", name: m.label, display: m.label }))
+      }
       const agents = agentList()
       const tools = toolList() ?? []
       const open = recent()
@@ -886,6 +1009,20 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   })
 
   const slashCommands = createMemo<SlashCommand[]>(() => {
+    // In Design Mode the composer drives the Open Design chat, so the `/` menu
+    // must show Open Design's commands — not OpenCode's. They are inserted as
+    // text (custom type) so they route to OD on submit and never trigger an
+    // OpenCode command.
+    if (designBridgeActive()) {
+      return designSlashCommands().map((c) => ({
+        id: `design.${c.label}`,
+        trigger: c.label.replace(/^\//, ""),
+        title: c.label,
+        description: c.hint ?? undefined,
+        type: "custom" as const,
+      }))
+    }
+
     const builtin = command.options
       .filter((opt) => !opt.disabled && !opt.id.startsWith("suggested.") && opt.slash)
       .map((opt) => ({
@@ -1588,7 +1725,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       ) {
         return
       }
-      void handleSubmit(event)
+      void handleComposerSubmit(event)
     }
   }
 
@@ -1601,28 +1738,6 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     () => prompt.ready.promise,
     (p) => p,
   )
-
-  const [openDesignBridgeState, setOpenDesignBridgeState] = createSignal<OpenDesignBridgePromptState | undefined>(
-    readOpenDesignBridgeState(),
-  )
-  if (typeof window !== "undefined") {
-    const syncOpenDesignBridgeState = (event: Event) => {
-      const detail = event instanceof CustomEvent ? event.detail : readOpenDesignBridgeState()
-      if (!detail || typeof detail !== "object") {
-        setOpenDesignBridgeState(undefined)
-        return
-      }
-      setOpenDesignBridgeState(detail as OpenDesignBridgePromptState)
-    }
-    window.addEventListener(OPEN_DESIGN_BRIDGE_EVENT, syncOpenDesignBridgeState)
-    onCleanup(() => window.removeEventListener(OPEN_DESIGN_BRIDGE_EVENT, syncOpenDesignBridgeState))
-  }
-
-  const designModeBridge = createMemo(() => {
-    const state = openDesignBridgeState()
-    if (!state?.active) return undefined
-    return state
-  })
 
   const designModeTitle = createMemo(() => {
     const state = designModeBridge()
@@ -1643,10 +1758,80 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     restoreFocus()
   }
 
+  // The composer drives the active Open Design chat instead of the OpenCode LLM
+  // when in Design Mode, so the two chats are not redundant.
+  const composerText = () =>
+    prompt
+      .current()
+      .map((part: any) => ("content" in part ? part.content : ""))
+      .join("")
+
+  const submitToOpenDesign = () => {
+    const text = composerText().trim()
+    if (!text || typeof window === "undefined") return false
+    window.dispatchEvent(new CustomEvent("opencode:open-design-submit", { detail: { prompt: text } }))
+    prompt.reset()
+    openDesignPanel()
+    return true
+  }
+
+  const handleComposerSubmit = (event: Event) => {
+    if (designBridgeActive()) {
+      event.preventDefault()
+      submitToOpenDesign()
+      return
+    }
+    return handleSubmit(event)
+  }
+
+  const designConversations = createMemo(() => {
+    const list = designModeBridge()?.conversations
+    return Array.isArray(list) ? list : []
+  })
+  const designActiveChatId = createMemo(() => designModeBridge()?.activeConversationId ?? designModeBridge()?.chatId ?? null)
+  const designModelLabel = createMemo(() => {
+    const state = designModeBridge()
+    if (!state?.model) return undefined
+    return state.apiProtocol ? `${state.model} · ${state.apiProtocol}` : state.model
+  })
+  const switchDesignChat = (chatId: string) => {
+    if (!chatId || chatId === designActiveChatId() || typeof window === "undefined") return
+    window.dispatchEvent(new CustomEvent("opencode:open-design-switch-chat", { detail: { chatId } }))
+  }
+  const designAgentOptions = createMemo(() => {
+    const list = designModeBridge()?.agentOptions
+    return Array.isArray(list) ? list : []
+  })
+  // The active "agentId::modelId" value; model defaults to "default" when unset.
+  const designActiveModelValue = createMemo(() => {
+    const state = designModeBridge()
+    if (!state?.activeAgentId) return ""
+    return `${state.activeAgentId}::${state.activeAgentModel ?? "default"}`
+  })
+  const switchDesignModel = (value: string) => {
+    const [agentId, model] = value.split("::")
+    if (!agentId || typeof window === "undefined") return
+    window.dispatchEvent(
+      new CustomEvent("opencode:open-design-switch-model", { detail: { agentId, model: model ?? "" } }),
+    )
+  }
+  const newDesignChat = () => {
+    if (typeof window === "undefined") return
+    window.dispatchEvent(new CustomEvent("opencode:open-design-new-chat"))
+    openDesignPanel()
+  }
+  const designModelTooltip = createMemo(() => {
+    const state = designModeBridge()
+    if (!state?.model) return undefined
+    return `Open Design is running on ${state.model} (its active coding agent). Switch the agent/model here — it changes Open Design.`
+  })
+
   const designPlaceholder = () => {
     if (store.mode === "shell") return placeholder()
-    const title = designModeTitle()
-    if (title) return `Design Mode: ${title}`
+    if (designBridgeActive()) {
+      const title = designModeTitle()
+      if (title) return `Message Open Design: ${title}`
+    }
     return "Ask anything, / for commands, @ for context..."
   }
 
@@ -1671,9 +1856,12 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     () => props.controls.model.selection.current()?.provider?.id === CODEX_MULTI_AUTH_PROVIDER_ID,
   )
   const openCodexAccountsPanel = () => {
-    const tab = "panel://accounts"
+    const tab = "panel://resources"
     props.controls.session.tabs.open(tab)
     props.controls.session.tabs.setActive(tab)
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("opencode:resources-section", { detail: { section: "codex" } }))
+    }
   }
 
   const newSession = () => props.variant === "new-session"
@@ -1712,11 +1900,11 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
           <div class="flex flex-col gap-3">
             <DockShellForm
               data-component={newSession() ? "session-new-composer" : "session-composer"}
-              onSubmit={handleSubmit}
+              onSubmit={handleComposerSubmit}
               classList={{
                 "group/prompt-input min-h-[96px] w-full rounded-xl bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]": true,
-                "ring-1 ring-blue-400/45 shadow-[0_0_0_1px_rgba(96,165,250,0.24),0_18px_48px_rgba(37,99,235,0.20)]":
-                  !!designModeBridge(),
+                "ring-1 ring-[#f97316]/40 shadow-[0_0_0_1px_rgba(249,115,22,0.20),0_18px_48px_rgba(249,115,22,0.12)]":
+                  designBridgeActive(),
                 "border-icon-info-active border-dashed": store.draggingType !== null,
                 [props.class ?? ""]: !!props.class,
               }}
@@ -1729,29 +1917,131 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
               />
               <Show when={designModeBridge()}>
                 {(bridge) => (
-                  <button
-                    type="button"
-                    data-action="prompt-design-mode"
-                    class="mx-2 mt-2 flex max-w-[calc(100%-1rem)] items-center gap-2 rounded-lg border border-blue-400/25 bg-blue-500/10 px-2.5 py-1.5 text-left text-[12px] leading-4 text-blue-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] transition-colors hover:bg-blue-500/15"
-                    onClick={openDesignPanel}
-                    title="Open the active OpenDesign tab"
-                  >
-                    <span class="size-2 shrink-0 rounded-full bg-blue-400 shadow-[0_0_10px_rgba(96,165,250,0.8)]" />
-                    <span class="font-[520]">Design Mode</span>
-                    <span class="text-blue-300/70">/</span>
-                    <span class="min-w-0 truncate text-blue-100/90">
-                      {bridge().projectName ?? bridge().projectId ?? "OpenDesign"}
-                    </span>
-                    <Show when={bridge().chatName ?? bridge().chatId ?? (bridge().focusMode ? "Focus Mode" : undefined)}>
-                      {(chat) => (
-                        <>
-                          <span class="hidden text-blue-300/60 sm:inline">/</span>
-                          <span class="hidden min-w-0 truncate text-blue-200/75 sm:inline">{chat()}</span>
-                        </>
-                      )}
+                  <div class="mx-2 mt-2 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-0.5 rounded-lg border border-v2-border-border-base bg-v2-background-bg-layer-02 p-1 text-[12px] leading-4">
+                    <button
+                      type="button"
+                      data-action="prompt-design-mode"
+                      class="flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-v2-text-text-base transition-colors hover:bg-v2-background-bg-base"
+                      onClick={openDesignPanel}
+                      title="Open the Open Design tab"
+                    >
+                      <span class="flex size-[15px] shrink-0 items-center justify-center rounded bg-[#f97316]/15 text-[7px] font-semibold tracking-tight text-[#f97316]">
+                        OD
+                      </span>
+                      <span class="font-[560] text-v2-text-text-faint">Design</span>
+                      <span class="min-w-0 truncate">{bridge().projectName ?? bridge().projectId ?? "OpenDesign"}</span>
+                    </button>
+                    <Show when={designBridgeActive()}>
+                      <span class="mx-0.5 h-4 w-px shrink-0 bg-v2-border-border-base" />
+                      <Show
+                        when={designConversations().length > 0}
+                        fallback={
+                          <Show when={bridge().chatName ?? bridge().chatId}>
+                            {(chat) => (
+                              <span class="min-w-0 max-w-[140px] truncate rounded-md px-1.5 py-1 text-v2-text-text-muted">
+                                {chat()}
+                              </span>
+                            )}
+                          </Show>
+                        }
+                      >
+                        <select
+                          data-action="prompt-design-chat"
+                          class="max-w-[150px] cursor-pointer rounded-md bg-transparent px-1.5 py-1 text-v2-text-text-base outline-none transition-colors hover:bg-v2-background-bg-base"
+                          value={designActiveChatId() ?? ""}
+                          onChange={(event) => switchDesignChat(event.currentTarget.value)}
+                          title="Switch Open Design chat"
+                        >
+                          <For each={designConversations()}>
+                            {(conversation: { id: string; title?: string | null }) => (
+                              <option value={conversation.id}>{conversation.title || "Untitled chat"}</option>
+                            )}
+                          </For>
+                        </select>
+                      </Show>
+                      <button
+                        type="button"
+                        data-action="prompt-design-new-chat"
+                        class="flex size-6 shrink-0 items-center justify-center rounded-md text-v2-text-text-muted transition-colors hover:bg-v2-background-bg-base hover:text-v2-text-text-base"
+                        onClick={newDesignChat}
+                        title="Start a new Open Design chat"
+                        aria-label="Start a new Open Design chat"
+                      >
+                        <Icon name="plus-small" size="small" />
+                      </button>
+                      <span
+                        class="flex h-6 shrink-0 items-center rounded-md px-1.5 text-[11px] text-v2-text-text-faint"
+                        title="Type / in the composer for Open Design commands"
+                      >
+                        / commands
+                      </span>
+                      <Show
+                        when={designAgentOptions().length > 0}
+                        fallback={
+                          <Show when={designModelLabel()}>
+                            {(model) => (
+                              <span
+                                data-action="prompt-design-model"
+                                class="ml-auto min-w-0 max-w-[190px] truncate rounded-md bg-v2-background-bg-base px-1.5 py-1 text-[11px] text-v2-text-text-muted"
+                                title={designModelTooltip()}
+                              >
+                                {model()}
+                              </span>
+                            )}
+                          </Show>
+                        }
+                      >
+                        <select
+                          data-action="prompt-design-model"
+                          class="ml-auto max-w-[210px] cursor-pointer truncate rounded-md bg-v2-background-bg-base px-1.5 py-1 text-[11px] text-v2-text-text-muted outline-none transition-colors hover:text-v2-text-text-base"
+                          value={designActiveModelValue()}
+                          onChange={(event) => switchDesignModel(event.currentTarget.value)}
+                          title={designModelTooltip()}
+                        >
+                          <For each={designAgentOptions()}>
+                            {(agent: { id: string; name: string; models: { id: string; label: string }[] }) => (
+                              <For each={agent.models}>
+                                {(m: { id: string; label: string }) => (
+                                  <option value={`${agent.id}::${m.id}`}>
+                                    {agent.name} · {m.label}
+                                  </option>
+                                )}
+                              </For>
+                            )}
+                          </For>
+                        </select>
+                      </Show>
+                      <button
+                        type="button"
+                        data-action="prompt-design-exit"
+                        class="flex size-6 shrink-0 items-center justify-center rounded-md text-v2-text-text-muted transition-colors hover:bg-v2-background-bg-base hover:text-v2-text-text-base"
+                        classList={{ "ml-auto": !designModelLabel() }}
+                        onClick={() => setDesignExited(true)}
+                        title="Exit Design Mode — back to the OpenCode chat"
+                        aria-label="Exit Design Mode"
+                      >
+                        <Icon name="close-small" size="small" />
+                      </button>
                     </Show>
-                  </button>
+                  </div>
                 )}
+              </Show>
+              <Show when={designModeBridge()?.acceptsPrompts && designExited()}>
+                <button
+                  type="button"
+                  data-action="prompt-design-reenter"
+                  class="mx-2 mt-2 flex max-w-[calc(100%-1rem)] items-center gap-1.5 self-start rounded-lg border border-dashed border-v2-border-border-base bg-v2-background-bg-layer-02 px-2 py-1 text-[12px] leading-4 text-v2-text-text-muted transition-colors hover:text-v2-text-text-base"
+                  onClick={() => setDesignExited(false)}
+                  title="Re-enter Design Mode — send this chat to Open Design"
+                >
+                  <span class="flex size-[15px] shrink-0 items-center justify-center rounded bg-[#f97316]/15 text-[7px] font-semibold tracking-tight text-[#f97316]">
+                    OD
+                  </span>
+                  <span>Re-enter Design Mode</span>
+                  <span class="min-w-0 truncate text-v2-text-text-faint">
+                    {designModeBridge()?.projectName ?? "Open Design"}
+                  </span>
+                </button>
               </Show>
               <PromptContextItems
                 items={contextItems()}
@@ -1921,7 +2211,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         </Match>
         <Match when>
           <DockShellForm
-            onSubmit={handleSubmit}
+            onSubmit={handleComposerSubmit}
             classList={{
               "group/prompt-input": true,
               "focus-within:shadow-xs-border": true,
@@ -2322,8 +2612,11 @@ type CodexMultiAuthStatus = {
   ok?: boolean
   configured?: boolean
   accountCount?: number
+  accounts?: CodexMultiAuthAccount[]
   accountsConfigured?: boolean
   activeAccount?: string | null
+  forcedAccount?: string | null
+  forcedUntil?: string | null
   rotationStrategy?: string | null
   sendRouting?: string | null
   runtimeReady?: boolean
@@ -2336,6 +2629,19 @@ type CodexMultiAuthStatus = {
   output?: string
   limitsOutput?: string
   error?: string
+}
+
+type CodexMultiAuthAccount = {
+  alias?: string
+  email?: string
+  label?: string
+  enabled?: boolean
+  active?: boolean
+  reauthNeeded?: boolean
+  disabledReason?: string | null
+  planType?: string | null
+  usageCount?: number
+  lastUsed?: string | null
 }
 
 function readAccountCount(status: CodexMultiAuthStatus | undefined) {
@@ -2361,17 +2667,35 @@ function CodexMultiAuthChip(props: {
 }) {
   const [popoverOpen, setPopoverOpen] = createSignal(false)
   const [tick, setTick] = createSignal(0)
-  const [status, actions] = createResource(tick, async () => {
-    const response = await fetch("/experimental/workspace-suite/status", { cache: "no-store" })
-    if (!response.ok) throw new Error(`status ${response.status}`)
-    const body = await response.json()
-    return (body?.codexAccounts ?? body) as CodexMultiAuthStatus
-  })
+  const [pendingAction, setPendingAction] = createSignal<string | undefined>()
+  const [actionError, setActionError] = createSignal<string | undefined>()
+  const [actionNote, setActionNote] = createSignal<string | undefined>()
+  // This chip polls every 20s. A thrown resource error propagates to the app
+  // error boundary and crashes the WHOLE app to "Something went wrong" — which
+  // happened on every transient 502 during a server restart. Never throw here:
+  // keep the last-known status through blips and refresh on the next tick.
+  const [status, actions] = createResource<CodexMultiAuthStatus | undefined, number>(
+    tick,
+    async (_tick, info) => {
+      const previous = info.value as CodexMultiAuthStatus | undefined
+      try {
+        const response = await fetch("/experimental/codex-multi-auth/status", { cache: "no-store" })
+        if (!response.ok) return previous
+        const body = await response.json()
+        return body as CodexMultiAuthStatus
+      } catch {
+        return previous
+      }
+    },
+  )
 
   const timer = window.setInterval(() => setTick((value) => value + 1), 20_000)
   onCleanup(() => window.clearInterval(timer))
 
   const accountCount = createMemo(() => readAccountCount(status()))
+  const accountList = createMemo(() => status()?.accounts ?? [])
+  const activeAlias = createMemo(() => status()?.activeAccount ?? accountList().find((account) => account.active)?.alias)
+  const forcedAlias = createMemo(() => status()?.forcedAccount)
   const sendBlocked = createMemo(() => status()?.sendBlocked !== false)
   const runtimeReady = createMemo(() => status()?.runtimeReady === true)
   const usage = createMemo(() => readUsageSummary(status()))
@@ -2385,8 +2709,12 @@ function CodexMultiAuthChip(props: {
     if (status.loading) return "checking"
     if (status.error || status()?.error) return "status error"
     if (sendBlocked() && accountCount() > 0) return "runtime blocked"
-    if (accountCount() === 1) return "1 account"
-    return `${accountCount()} accounts`
+    const count = accountCount() === 1 ? "1 account" : `${accountCount()} accounts`
+    // Show which lane/account a send would use: the forced account wins over
+    // the rotation-active one.
+    const alias = forcedAlias() ?? activeAlias()
+    if (alias) return `${forcedAlias() ? "forced " : ""}${alias} · ${count}`
+    return count
   })
   const tooltip = createMemo(() => {
     const accountLine = accountCount() === 1 ? "1 account configured" : `${accountCount()} accounts configured`
@@ -2401,6 +2729,46 @@ function CodexMultiAuthChip(props: {
     const warning = status()?.warning ? `\n${status()?.warning}` : ""
     return `${mode}\n${accountLine}${usageLine}${strategy}${routing}${warning}\nClick to open the Codex accounts panel.`
   })
+
+  const runAccountAction = async (payload: Record<string, unknown>, pendingLabel: string, successLabel: string) => {
+    setPendingAction(pendingLabel)
+    setActionError(undefined)
+    setActionNote(undefined)
+    try {
+      const response = await fetch("/experimental/codex-multi-auth/account", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok || body?.ok === false) throw new Error(body?.error ?? "Could not update Codex account")
+      const nextStatus = body?.status ?? body
+      if (nextStatus?.ok !== false) actions.mutate(nextStatus as CodexMultiAuthStatus)
+      setActionNote(successLabel)
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setPendingAction(undefined)
+    }
+  }
+
+  const setActive = (alias: string) =>
+    runAccountAction({ action: "set-active", alias }, `set-active:${alias}`, `Active account set to ${alias}`)
+  const forceAccount = (alias: string) =>
+    runAccountAction(
+      { action: "force-account", alias, durationMinutes: 120 },
+      `force-account:${alias}`,
+      `Forced ${alias} for 2 hours`,
+    )
+  const clearForce = () => runAccountAction({ action: "clear-force" }, "clear-force", "Forced account cleared")
+
+  const accountStatusLabel = (account: CodexMultiAuthAccount) => {
+    if (account.reauthNeeded) return "re-auth needed"
+    if (forcedAlias() === account.alias) return "forced"
+    if (account.active || activeAlias() === account.alias) return "active"
+    if (account.enabled === false) return "disabled"
+    return "ready"
+  }
 
   return (
     <KobaltePopover
@@ -2419,10 +2787,12 @@ function CodexMultiAuthChip(props: {
         variant="ghost"
         size="normal"
         data-action="prompt-codex-account"
+        data-codex-active={activeAlias() ?? ""}
+        data-codex-forced={forcedAlias() ?? ""}
         title={tooltip()}
-        class="min-w-0 max-w-[190px] justify-start gap-1.5 rounded-md px-2 text-[12px] font-[440] leading-5 text-v2-text-text-faint"
+        class="min-w-0 max-w-[230px] justify-start gap-1.5 rounded-md px-2 text-[12px] font-[440] leading-5 text-v2-text-text-faint"
         classList={{
-          "text-v2-text-text-base bg-v2-surface-surface-highlight": props.active,
+          "text-v2-text-text-base bg-v2-background-bg-layer-02": props.active,
           "opacity-70": !props.active && accountCount() === 0,
         }}
       >
@@ -2433,48 +2803,162 @@ function CodexMultiAuthChip(props: {
         <span class="truncate text-v2-text-text-muted">{detail()}</span>
       </KobaltePopover.Trigger>
       <KobaltePopover.Portal>
-        <KobaltePopover.Content class="z-50 w-[320px] rounded-lg border border-border-base bg-surface-raised-stronger-non-alpha p-3 text-[12px] leading-5 text-v2-text-text-base shadow-[var(--v2-elevation-floating)] outline-none">
+        <KobaltePopover.Content class="z-50 w-[390px] rounded-xl border border-v2-border-border-base bg-v2-background-bg-layer-01 p-3 text-[12px] leading-5 text-v2-text-text-base shadow-[var(--v2-elevation-floating)] outline-none">
           <KobaltePopover.Title class="mb-2 flex items-center gap-2 text-[13px] font-[560]">
             <span class="flex size-5 items-center justify-center rounded bg-orange-500/20 text-[10px] font-semibold text-orange-300">
               CA
             </span>
-            Codex Multi-Auth
+            <span class="min-w-0 flex-1 truncate">Codex Multi-Auth</span>
+            <span class="rounded-md bg-v2-background-bg-layer-02 px-2 py-0.5 text-[11px] font-[450] text-v2-text-text-muted">
+              {accountCount()} accounts
+            </span>
           </KobaltePopover.Title>
           <div class="space-y-2 text-v2-text-text-muted">
-            <div class="flex items-center justify-between gap-3">
-              <span>Accounts</span>
-              <span class="text-v2-text-text-base">{accountCount()}</span>
+            <div class="grid gap-1.5">
+              <Show
+                when={accountList().length > 0}
+                fallback={
+                  <div class="rounded-lg border border-v2-border-border-base bg-v2-background-bg-base px-3 py-2 text-v2-text-text-muted">
+                    No Codex accounts are configured yet.
+                  </div>
+                }
+              >
+                {accountList().map((account) => {
+                  const alias = account.alias ?? ""
+                  const accountActive = () => account.active || activeAlias() === alias
+                  const accountForced = () => forcedAlias() === alias
+                  const disabled = () => account.enabled === false || account.reauthNeeded === true
+                  const pending = (action: string) => pendingAction() === `${action}:${alias}`
+                  return (
+                    <div
+                      data-codex-account={alias}
+                      class="rounded-lg border border-v2-border-border-base bg-v2-background-bg-base px-2.5 py-2"
+                      classList={{
+                        "border-green-500/30 bg-green-500/5": accountActive(),
+                        "border-orange-500/30 bg-orange-500/5": accountForced(),
+                        "opacity-70": disabled(),
+                      }}
+                    >
+                      <div class="flex items-start gap-2">
+                        <span
+                          class="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md text-[10px] font-semibold"
+                          classList={{
+                            "bg-green-500/15 text-green-200": accountActive(),
+                            "bg-orange-500/15 text-orange-200": accountForced(),
+                            "bg-v2-background-bg-layer-02 text-v2-text-text-muted": !accountActive() && !accountForced(),
+                          }}
+                        >
+                          {(alias || "CA").slice(0, 2).toUpperCase()}
+                        </span>
+                        <div class="min-w-0 flex-1">
+                          <div class="flex min-w-0 items-center gap-2">
+                            <span class="truncate text-[12px] font-[560] text-v2-text-text-base">{alias || "account"}</span>
+                            <span class="shrink-0 rounded-full bg-v2-background-bg-layer-02 px-1.5 py-0.5 text-[10px] text-v2-text-text-muted">
+                              {accountStatusLabel(account)}
+                            </span>
+                            <Show when={account.planType}>
+                              {(plan) => (
+                                <span class="shrink-0 rounded-full bg-v2-background-bg-layer-02 px-1.5 py-0.5 text-[10px] text-v2-text-text-muted">
+                                  {plan()}
+                                </span>
+                              )}
+                            </Show>
+                          </div>
+                          <div class="truncate text-[11px] text-v2-text-text-muted">{account.email ?? account.label ?? "email not reported"}</div>
+                        </div>
+                      </div>
+                      <div class="mt-2 flex flex-wrap justify-end gap-1.5">
+                        <Show when={!accountActive() && !disabled()}>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="normal"
+                            data-action="codex-popup-set-active"
+                            data-account-alias={alias}
+                            class="h-6 px-2 text-[11px]"
+                            disabled={!!pendingAction()}
+                            onClick={(event: MouseEvent) => {
+                              event.stopPropagation()
+                              void setActive(alias)
+                            }}
+                          >
+                            {pending("set-active") ? "Setting..." : "Set active"}
+                          </Button>
+                        </Show>
+                        <Show when={!accountForced() && !disabled()}>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="normal"
+                            data-action="codex-popup-force"
+                            data-account-alias={alias}
+                            class="h-6 px-2 text-[11px]"
+                            disabled={!!pendingAction()}
+                            onClick={(event: MouseEvent) => {
+                              event.stopPropagation()
+                              void forceAccount(alias)
+                            }}
+                          >
+                            {pending("force-account") ? "Forcing..." : "Force 2h"}
+                          </Button>
+                        </Show>
+                        <Show when={accountForced()}>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="normal"
+                            data-action="codex-popup-clear-force"
+                            data-account-alias={alias}
+                            class="h-6 px-2 text-[11px]"
+                            disabled={!!pendingAction()}
+                            onClick={(event: MouseEvent) => {
+                              event.stopPropagation()
+                              void clearForce()
+                            }}
+                          >
+                            {pendingAction() === "clear-force" ? "Clearing..." : "Clear force"}
+                          </Button>
+                        </Show>
+                      </div>
+                    </div>
+                  )
+                })}
+              </Show>
             </div>
-            <div class="flex items-center justify-between gap-3">
-              <span>Routing</span>
-              <span class="max-w-[190px] truncate text-v2-text-text-base">{status()?.sendRouting ?? "unknown"}</span>
-            </div>
-            <div class="flex items-center justify-between gap-3">
-              <span>Status</span>
-              <span class="max-w-[190px] truncate text-v2-text-text-base">
-                {status.loading
-                  ? "checking"
-                  : sendBlocked()
-                    ? "runtime blocked"
-                    : (status()?.statusPhase ?? status()?.loginAttempt ?? "ready")}
-              </span>
+            <div class="grid grid-cols-2 gap-2 rounded-lg border border-v2-border-border-base bg-v2-background-bg-base px-2.5 py-2">
+              <div>
+                <div class="text-[10px] uppercase tracking-wide text-v2-text-text-faint">Routing</div>
+                <div class="truncate text-v2-text-text-base">{status()?.rotationStrategy ?? "auto"}</div>
+              </div>
+              <div>
+                <div class="text-[10px] uppercase tracking-wide text-v2-text-text-faint">Status</div>
+                <div class="truncate text-v2-text-text-base">
+                  {status.loading ? "checking" : sendBlocked() ? "runtime blocked" : (status()?.statusPhase ?? "ready")}
+                </div>
+              </div>
             </div>
             <Show when={usage()}>
               {(line) => (
-                <div class="rounded-md border border-border-weaker-base bg-background-stronger px-2 py-1 text-v2-text-text-base">
+                <div class="rounded-lg border border-v2-border-border-base bg-v2-background-bg-base px-2 py-1 text-v2-text-text-base">
                   {line()}
                 </div>
               )}
             </Show>
             <Show when={props.active && sendBlocked()}>
-              <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-2 py-1 text-orange-200">
+              <div class="rounded-lg border border-orange-500/20 bg-orange-500/10 px-2 py-1 text-orange-200">
                 This lane is selected, but sends are blocked until the multi-auth runtime adapter is verified.
                 <Show when={status()?.sendBlockReason}>{(reason) => <span> {reason()}</span>}</Show>
               </div>
             </Show>
+            <Show when={actionNote()}>
+              {(note) => <div class="rounded-lg border border-green-500/20 bg-green-500/10 px-2 py-1 text-green-200">{note()}</div>}
+            </Show>
+            <Show when={actionError()}>
+              {(error) => <div class="rounded-lg border border-red-500/25 bg-red-500/10 px-2 py-1 text-red-200">{error()}</div>}
+            </Show>
             <Show when={status()?.warning}>
               {(warning) => (
-                <div class="rounded-md border border-border-weaker-base bg-background-stronger px-2 py-1 text-v2-text-text-muted">
+                <div class="rounded-lg border border-v2-border-border-base bg-v2-background-bg-base px-2 py-1 text-v2-text-text-muted">
                   {warning()}
                 </div>
               )}
