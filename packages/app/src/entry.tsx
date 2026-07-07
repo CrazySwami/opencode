@@ -149,13 +149,18 @@ const builtInServers = (current: ServerConnection.Http) => {
       label: "LIVE",
       http: { url: CT100_SERVER_URL },
     },
-    {
+  ]
+  // The Mac server is a private tailnet address. Only seed it for clients that
+  // opt in (localStorage flag / ?seedMac=1) or are already connected to it, so
+  // other clients and headless loads never fire blocked/hanging fetches to it.
+  if (shouldSeedMac(current)) {
+    defaults.push({
       type: "http",
       displayName: "Alfonso Mac",
       label: "MAC",
       http: { url: MAC_SERVER_URL, username: "opencode" },
-    },
-  ]
+    })
+  }
 
   const servers = new Map<ServerConnection.Key, ServerConnection.Http>()
   for (const conn of defaults) servers.set(ServerConnection.key(conn), conn)
@@ -222,6 +227,23 @@ const setStorage = (key: string, value: string | null) => {
   } catch {
     return
   }
+}
+
+const MAC_SEED_FLAG = "opencode.seedMacServer"
+// Opt-in gate for the tailnet Mac server (see builtInServers). `?seedMac=1`
+// enables it for this browser and persists; `?seedMac=0` disables it.
+const shouldSeedMac = (current: ServerConnection.Http) => {
+  if (typeof window !== "undefined") {
+    try {
+      const p = new URLSearchParams(window.location.search)
+      if (p.get("seedMac") === "1") setStorage(MAC_SEED_FLAG, "1")
+      else if (p.get("seedMac") === "0") setStorage(MAC_SEED_FLAG, null)
+    } catch {
+      /* ignore */
+    }
+  }
+  if (isMacUrl(current.http.url)) return true
+  return getStorage(MAC_SEED_FLAG) === "1"
 }
 
 const readDefaultServerUrl = () => getStorage(DEFAULT_SERVER_URL_KEY)
