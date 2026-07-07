@@ -3662,50 +3662,99 @@ async function liveBrowserStatus(access?: Extract<LiveBrowserAccess, { ok: true 
   }
 }
 
-async function ensureLiveBrowser(): Promise<{ ok: true; pid?: number } | { ok: false; error: string }> {
-  await mkdirP(liveBrowserProfile(), { recursive: true })
-  await mkdirP(liveBrowserArtifacts(), { recursive: true })
+type EnsureLiveBrowserResult = { ok: true; pid?: number } | { ok: false; error: string }
+let liveBrowserEnsureInFlight: Promise<EnsureLiveBrowserResult> | undefined
 
-  const existing = await execText("pgrep", ["-f", `${liveBrowserProfile()}`]).catch(() => "")
-  const pid = existing
-    .split(/\s+/)
-    .map((value) => Number(value))
-    .find((value) => Number.isFinite(value) && value > 0)
-  if (pid) {
-    await fitLiveBrowserWindow().catch(() => undefined)
-    return { ok: true, pid }
+// Launch the live Chrome in dev's OWN user-manager cgroup slice (out of
+// opencode.service's cgroup) with its own memory cap, so Chrome memory growth
+// can never push the shared cgroup into MemoryHigh throttling — the root cause of
+// the recurring event-loop-freeze wedge. Falls back to a direct detached spawn
+// (previous behavior, in opencode's cgroup) if systemd-run --user is unavailable,
+// so the browser never fails to launch.
+async function spawnLiveChrome(chrome: string, args: string[], display: string): Promise<number | undefined> {
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined
+  if (uid !== undefined) {
+    const launched = await new Promise<boolean>((resolve) => {
+      try {
+        const runner = spawn(
+          "systemd-run",
+          [
+            "--user",
+            "--collect",
+            "-p",
+            "MemoryHigh=4G",
+            "-p",
+            "MemoryMax=6G",
+            `--setenv=DISPLAY=${display}`,
+            "--",
+            chrome,
+            ...args,
+          ],
+          { stdio: "ignore", env: { ...process.env, DISPLAY: display, XDG_RUNTIME_DIR: `/run/user/${uid}` } },
+        )
+        runner.on("error", () => resolve(false))
+        runner.on("exit", (code) => resolve(code === 0))
+      } catch {
+        resolve(false)
+      }
+    })
+    if (launched) return undefined
   }
-
-  const chrome = process.env.OPENCODE_LIVE_BROWSER_BIN || "google-chrome"
-  const viewport = liveBrowserViewport()
-  const child = spawn(
-    chrome,
-    [
-      "--no-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-gpu",
-      "--no-first-run",
-      "--no-default-browser-check",
-      `--user-data-dir=${liveBrowserProfile()}`,
-      "--remote-debugging-address=127.0.0.1",
-      `--remote-debugging-port=${liveBrowserDebugPort()}`,
-      `--window-size=${viewport.width},${viewport.height}`,
-      "--start-maximized",
-      "about:blank",
-    ],
-    {
-      detached: true,
-      stdio: "ignore",
-      env: {
-        ...process.env,
-        DISPLAY: liveBrowserDisplay(),
-      },
-    },
-  )
+  const child = spawn(chrome, args, {
+    detached: true,
+    stdio: "ignore",
+    env: { ...process.env, DISPLAY: display },
+  })
   child.unref()
-  await delay(1200)
-  await fitLiveBrowserWindow().catch(() => undefined)
-  return { ok: true, pid: child.pid }
+  return child.pid
+}
+
+async function ensureLiveBrowser(): Promise<EnsureLiveBrowserResult> {
+  // Share one in-flight ensure across concurrent callers so two simultaneous
+  // browser ops can't both spawn Chrome (the pre-existing double-spawn race).
+  if (liveBrowserEnsureInFlight) return liveBrowserEnsureInFlight
+  const run = (async (): Promise<EnsureLiveBrowserResult> => {
+    await mkdirP(liveBrowserProfile(), { recursive: true })
+    await mkdirP(liveBrowserArtifacts(), { recursive: true })
+
+    const existing = await execText("pgrep", ["-f", `${liveBrowserProfile()}`]).catch(() => "")
+    const pid = existing
+      .split(/\s+/)
+      .map((value) => Number(value))
+      .find((value) => Number.isFinite(value) && value > 0)
+    if (pid) {
+      await fitLiveBrowserWindow().catch(() => undefined)
+      return { ok: true, pid }
+    }
+
+    const chrome = process.env.OPENCODE_LIVE_BROWSER_BIN || "google-chrome"
+    const viewport = liveBrowserViewport()
+    const spawnedPid = await spawnLiveChrome(
+      chrome,
+      [
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--no-first-run",
+        "--no-default-browser-check",
+        `--user-data-dir=${liveBrowserProfile()}`,
+        "--remote-debugging-address=127.0.0.1",
+        `--remote-debugging-port=${liveBrowserDebugPort()}`,
+        `--window-size=${viewport.width},${viewport.height}`,
+        "--start-maximized",
+        "about:blank",
+      ],
+      liveBrowserDisplay(),
+    )
+    await delay(1200)
+    await fitLiveBrowserWindow().catch(() => undefined)
+    return { ok: true, pid: spawnedPid }
+  })()
+  liveBrowserEnsureInFlight = run
+  void run.finally(() => {
+    if (liveBrowserEnsureInFlight === run) liveBrowserEnsureInFlight = undefined
+  })
+  return run
 }
 
 async function runLiveBrowserInput(input: LiveBrowserInput) {
