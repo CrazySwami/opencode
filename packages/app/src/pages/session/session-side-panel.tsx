@@ -1,4 +1,4 @@
-import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, type JSX } from "solid-js"
+import { For, Index, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, untrack, type JSX } from "solid-js"
 import { Portal } from "solid-js/web"
 import { createStore } from "solid-js/store"
 import { createMediaQuery } from "@solid-primitives/media"
@@ -33,12 +33,15 @@ import {
   createOpenSessionFileTab,
   createSessionTabs,
   focusTerminalById,
+  shouldStealFocusForTerminal,
   getTabReorderIndex,
   shouldShowFileTree,
   type Sizing,
 } from "@/pages/session/helpers"
 import { setSessionHandoff } from "@/pages/session/handoff"
 import { useSessionLayout } from "@/pages/session/session-layout"
+import { OpenDesignMirror } from "@/pages/session/open-design-mirror"
+import { attachPreviewAgentBridge, type PreviewAgentDriver } from "@/pages/session/preview-agent-bridge"
 import {
   WORKSPACE_PANEL_TAB_BY_ID,
   WORKSPACE_PANEL_TAB_IDS,
@@ -53,7 +56,6 @@ const PANEL_BROWSER_TAB = "panel://browser" satisfies WorkspacePanelTabID
 const PANEL_PREVIEW_TAB = "panel://preview" satisfies WorkspacePanelTabID
 const PANEL_OPEN_DESIGN_TAB = "panel://open-design" satisfies WorkspacePanelTabID
 const PANEL_MAC_VIEW_TAB = "panel://mac-view" satisfies WorkspacePanelTabID
-const PANEL_ACCOUNTS_TAB = "panel://accounts" satisfies WorkspacePanelTabID
 const PANEL_ROUTINES_TAB = "panel://routines" satisfies WorkspacePanelTabID
 const PANEL_ENVIRONMENT_TAB = "panel://environment" satisfies WorkspacePanelTabID
 const PANEL_RESOURCES_TAB = "panel://resources" satisfies WorkspacePanelTabID
@@ -65,6 +67,32 @@ const FILE_BROWSER_STATE_KEY = "opencode:workspace-suite:file-browser"
 const PREVIEW_STATE_KEY = "opencode:workspace-suite:preview"
 const PANEL_TABS = new Set([...WORKSPACE_PANEL_TAB_IDS, PANEL_QUEUE_TAB])
 const MOBILE_PANEL_SHELL_MIN_HEIGHT_CLASS = "max-md:min-h-[calc(100svh-5rem)]"
+
+// The Resources tab is a sectioned CLI-resources dashboard. Section is shared at
+// module scope so open/focus paths (mentions, workspace_tabs, top bar) can deep
+// link to a section without threading props through the tab switch.
+export type ResourcesSection = "overview" | "system" | "opencode" | "codex" | "claude" | "antigravity"
+const RESOURCES_SECTIONS: { id: ResourcesSection; label: string }[] = [
+  { id: "overview", label: "Overview" },
+  { id: "opencode", label: "Providers" },
+  { id: "codex", label: "Codex" },
+  { id: "claude", label: "Claude Code" },
+  { id: "antigravity", label: "Antigravity" },
+  { id: "system", label: "System" },
+]
+const [resourcesSection, setResourcesSection] = createSignal<ResourcesSection>("overview")
+function sectionForRawTab(raw: string | undefined): ResourcesSection | undefined {
+  if (!raw) return undefined
+  const n = raw.toLowerCase()
+  if (n.includes("accounts") || n.includes("codex") || n.includes("multi_auth") || n.includes("multi-auth")) return "codex"
+  if (n.includes("claude")) return "claude"
+  if (n.includes("antigravity") || n.includes("agy")) return "antigravity"
+  if (n.includes("provider")) return "opencode"
+  if (n.includes("cpu") || n.includes("server_status") || n.includes("system")) return "system"
+  // Generic "@resources" / opening the tab lands on the cohesive Overview.
+  if (n.includes("resource")) return "overview"
+  return undefined
+}
 const MOBILE_PANEL_TABS_MIN_HEIGHT_CLASS = "max-md:min-h-[calc(100svh-6rem)]"
 const MOBILE_PANEL_CONTENT_MIN_HEIGHT_CLASS = "max-md:min-h-[calc(100svh-8rem)]"
 const MOBILE_PANEL_BODY_MIN_HEIGHT_CLASS = "max-md:min-h-[calc(100svh-9rem)]"
@@ -113,6 +141,7 @@ function readFileBrowserState() {
       mode?: "list" | "icons"
       query?: string
       selectedPath?: string
+      recursive?: boolean
     }
   } catch {
     return {}
@@ -124,6 +153,7 @@ function writeFileBrowserState(state: {
   mode: "list" | "icons"
   query: string
   selectedPath?: string
+  recursive?: boolean
 }) {
   if (typeof window === "undefined") return
   window.localStorage.setItem(FILE_BROWSER_STATE_KEY, JSON.stringify(state))
@@ -242,15 +272,15 @@ function SessionTerminalTab() {
   const ids = createMemo(() => all().map((pty) => pty.id))
 
   const focus = (id: string) => {
-    focusTerminalById(id)
-    const frame = requestAnimationFrame(() => {
+    const wrapperID = `terminal-wrapper-${id}`
+    const tryFocus = () => {
       if (terminal.active() !== id) return
+      if (!shouldStealFocusForTerminal(wrapperID)) return
       focusTerminalById(id)
-    })
-    const timer = window.setTimeout(() => {
-      if (terminal.active() !== id) return
-      focusTerminalById(id)
-    }, 180)
+    }
+    tryFocus()
+    const frame = requestAnimationFrame(tryFocus)
+    const timer = window.setTimeout(tryFocus, 180)
     return () => {
       cancelAnimationFrame(frame)
       clearTimeout(timer)
@@ -417,6 +447,11 @@ type LiveBrowserStatus = {
   requiredAccessBoundary?: string
   streamURL?: string
   proxiedLiveURL?: string
+  optimizedViewer?: {
+    ok?: boolean
+    proxiedURL?: string
+    apiBase?: string
+  }
   noVNC?: {
     viewer?: string
     defaultMode?: string
@@ -532,6 +567,19 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
   const interactiveUrl = createMemo(() => {
     if (browserExposureBlocked()) return undefined
     if (!useNoVNC()) return undefined
+
+    const optimized = status().optimizedViewer
+    if (optimized?.ok && optimized.proxiedURL) {
+      try {
+        const parsed = new URL(optimized.proxiedURL, window.location.href)
+        if (!(window.location.protocol === "https:" && parsed.protocol !== "https:")) {
+          parsed.searchParams.set("frame", String(streamKey()))
+          return parsed.toString()
+        }
+      } catch {
+        // fall through to the classic proxied viewer below
+      }
+    }
 
     const proxiedURL = status().proxiedLiveURL
     const liveURL = status().browserUse?.liveURL
@@ -1302,27 +1350,32 @@ function previewURLKind(value: string) {
   }
 }
 
+function previewIframeSrc(url: string, kind: string) {
+  if (kind !== "local") return url
+  try {
+    const parsed = new URL(url, window.location.origin)
+    // CT100-local apps are unreachable from the viewer's machine; route them
+    // through the same-origin preview proxy served by opencode-public-proxy.
+    return `/experimental/preview/proxy/${parsed.host}${parsed.pathname}${parsed.search}`
+  } catch {
+    return url
+  }
+}
+
 function PreviewTabContent(props: { sessionID?: string }) {
   const initial = readPreviewState().url ?? ""
   const [address, setAddress] = createSignal(initial)
   const [currentURL, setCurrentURL] = createSignal(initial)
+  // Layer-1 agent bridge: injected into the (same-origin) preview so the agent or
+  // a human can read/click/type the app with a visible cursor.
+  let previewDriver: PreviewAgentDriver | undefined
+  const [bridgeReady, setBridgeReady] = createSignal(false)
+  const [humanRequest, setHumanRequest] = createSignal<string | undefined>(undefined)
+  onCleanup(() => previewDriver?.dispose())
   const [lastPreviewStateAt, setLastPreviewStateAt] = createSignal<string | undefined>()
-  const [externalMode, setExternalMode] = createSignal<"idle" | "loading" | "ready" | "failed">("idle")
-  const [externalError, setExternalError] = createSignal<string | undefined>()
-  const [externalKey, setExternalKey] = createSignal(Date.now())
-  const [externalViewport, setExternalViewport] = createSignal({ width: 1920, height: 1400 })
-  let externalImageRef: HTMLImageElement | undefined
   const currentKind = createMemo(() => previewURLKind(currentURL()))
-  const externalStreamURL = createMemo(() =>
-    props.sessionID
-      ? `/experimental/browser/${encodeURIComponent(props.sessionID)}/screenshot?t=${externalKey()}`
-      : `/experimental/browser/live/stream?t=${externalKey()}`,
-  )
   const previewStateURL = createMemo(() =>
     props.sessionID ? `/experimental/preview/${encodeURIComponent(props.sessionID)}/state` : undefined,
-  )
-  const previewActionURL = createMemo(() =>
-    props.sessionID ? `/experimental/preview/${encodeURIComponent(props.sessionID)}/action` : undefined,
   )
 
   const syncPreviewState = async () => {
@@ -1344,88 +1397,47 @@ function PreviewTabContent(props: { sessionID?: string }) {
   const writePreviewServerState = async (url: string) => {
     const stateURL = previewStateURL()
     if (!stateURL) return
+    // Expose how the Preview surface is rendering this URL so the preview tool
+    // and workspace_tabs state explain embed mode and its limits to the LLM.
+    const kind = previewURLKind(url)
+    const renderMode = kind === "external" ? "not-embedded" : kind === "invalid" ? "invalid" : "iframe"
+    const embedNote =
+      kind === "external"
+        ? "Public URL: iframe embedding is blocked by CSP/X-Frame and it can't share the user's session, so Preview does NOT render it (no server browser is spawned). Open it externally, or use the on-demand Agent Browser (the browser tool) for real interaction."
+        : kind === "local"
+          ? "CT100-local URL proxied through /experimental/preview/proxy for same-origin embedding."
+          : "Same-origin URL embedded directly in an iframe."
     const response = await fetch(stateURL, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ url, action: "navigate", source: "client" }),
+      body: JSON.stringify({ url, action: "navigate", source: "client", renderMode, embedKind: kind, embedNote }),
     }).catch(() => undefined)
     if (!response?.ok) return
     const state = await response.json().catch(() => undefined)
     if (typeof state?.updatedAt === "string") setLastPreviewStateAt(state.updatedAt)
   }
 
-  const runExternalInput = async (body: Record<string, unknown>) => {
-    const actionURL = previewActionURL()
-    if (!actionURL) throw new Error("Preview actions require an active session.")
-    const response = await fetch(actionURL, {
+  // Hand the current URL to the real Agent Browser (live Chrome) and focus the
+  // Browser tab — the escape hatch when Preview embedding is not enough.
+  const openInAgentBrowser = async (url: string) => {
+    const clean = String(url || "").trim()
+    if (!clean) return
+    await fetch("/experimental/browser/live/input", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    })
-    const result = await response.json().catch(() => ({}))
-    if (!response.ok || result?.ok === false) throw new Error(result?.error ?? "External preview action failed")
-    setExternalKey(Date.now())
-  }
-
-  const refreshExternalViewport = async () => {
-    const response = await fetch("/experimental/browser/live/status", { cache: "no-store" }).catch(() => undefined)
-    if (!response?.ok) return
-    const body = await response.json().catch(() => undefined)
-    setExternalViewport(liveBrowserViewportFromStatus(body))
-  }
-
-  const externalPointForEvent = (event: MouseEvent) => {
-    const image = externalImageRef
-    if (!image) return
-    const rect = image.getBoundingClientRect()
-    const viewport = externalViewport()
-    const width = image.naturalWidth || viewport.width
-    const height = image.naturalHeight || viewport.height
-    return {
-      x: Math.round(((event.clientX - rect.left) / rect.width) * width),
-      y: Math.round(((event.clientY - rect.top) / rect.height) * height),
-    }
-  }
-
-  const handleExternalClick: JSX.EventHandler<HTMLDivElement, MouseEvent> = (event) => {
-    event.currentTarget.focus()
-    const point = externalPointForEvent(event)
-    if (!point) return
-    void runExternalInput({ action: "click", ...point }).catch((error) => {
-      setExternalError(error instanceof Error ? error.message : String(error))
-      setExternalMode("failed")
-    })
-  }
-
-  const handleExternalWheel: JSX.EventHandler<HTMLDivElement, WheelEvent> = (event) => {
-    event.preventDefault()
-    void runExternalInput({ action: "scroll", deltaX: event.deltaX, deltaY: event.deltaY }).catch((error) => {
-      setExternalError(error instanceof Error ? error.message : String(error))
-      setExternalMode("failed")
-    })
-  }
-
-  const handleExternalKeyDown: JSX.EventHandler<HTMLDivElement, KeyboardEvent> = (event) => {
-    if (event.metaKey || event.ctrlKey || event.altKey) return
-    if (event.key.length === 1) {
-      event.preventDefault()
-      void runExternalInput({ action: "type", text: event.key }).catch((error) => {
-        setExternalError(error instanceof Error ? error.message : String(error))
-        setExternalMode("failed")
-      })
-      return
-    }
-    if (
-      !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Backspace", "Delete", "Enter", "Escape", "Tab"].includes(
-        event.key,
-      )
+      body: JSON.stringify({ action: "goto", url: clean }),
+    }).catch(() => {})
+    window.dispatchEvent(
+      new CustomEvent("opencode:workspace-tab-action", {
+        detail: {
+          type: "workspace_tab",
+          action: "open",
+          tab: PANEL_BROWSER_TAB,
+          source: "preview-open-in-browser",
+          actionID: `preview-browser-${Date.now()}`,
+        },
+      }),
     )
-      return
-    event.preventDefault()
-    void runExternalInput({ action: "key", key: event.key }).catch((error) => {
-      setExternalError(error instanceof Error ? error.message : String(error))
-      setExternalMode("failed")
-    })
   }
 
   createEffect(() => writePreviewState({ url: currentURL() || address() }))
@@ -1434,25 +1446,19 @@ function PreviewTabContent(props: { sessionID?: string }) {
   const previewStateTimer = window.setInterval(() => void syncPreviewState(), 2000)
   onCleanup(() => window.clearInterval(previewStateTimer))
 
-  createEffect(() => {
-    const url = currentURL()
-    if (!url || currentKind() !== "external") {
-      setExternalMode("idle")
-      setExternalError(undefined)
-      return
+  // Instant open from other tabs (e.g. File Browser project card).
+  if (typeof window !== "undefined") {
+    const onPreviewOpen = (event: Event) => {
+      const url = (event as CustomEvent).detail?.url
+      if (typeof url !== "string" || !url.trim()) return
+      const next = normalizePreviewURL(url)
+      setAddress(next)
+      setCurrentURL(next)
+      void writePreviewServerState(next)
     }
-    setExternalMode("loading")
-    setExternalError(undefined)
-    void refreshExternalViewport()
-    runExternalInput({ action: "goto", url })
-      .then(() => {
-        setExternalMode("ready")
-      })
-      .catch((error) => {
-        setExternalError(error instanceof Error ? error.message : String(error))
-        setExternalMode("failed")
-      })
-  })
+    window.addEventListener("opencode:preview-open", onPreviewOpen as EventListener)
+    onCleanup(() => window.removeEventListener("opencode:preview-open", onPreviewOpen as EventListener))
+  }
 
   const openAddress = () => {
     const next = normalizePreviewURL(address())
@@ -1528,64 +1534,87 @@ function PreviewTabContent(props: { sessionID?: string }) {
           <Show
             when={currentKind() !== "external"}
             fallback={
-              <div
-                class="absolute inset-0 overflow-auto bg-background-base outline-none"
-                tabIndex={0}
-                onClick={handleExternalClick}
-                onWheel={handleExternalWheel}
-                onKeyDown={handleExternalKeyDown}
-              >
-                <Show
-                  when={externalMode() !== "failed"}
-                  fallback={
-                    <div class="flex size-full items-center justify-center p-6 text-center">
-                      <div class="max-w-md rounded-lg border border-border-weaker-base bg-background-base p-5 text-13-regular text-text-weak">
-                        <div class="mb-2 text-14-medium text-text-strong">External preview failed</div>
-                        <div>{externalError() ?? "The Chromium preview renderer could not open this URL."}</div>
-                        <div class="mt-4 flex justify-center gap-2">
-                          <button
-                            type="button"
-                            class="rounded-md border border-border-weaker-base px-3 py-1.5 text-12-regular text-text-strong hover:bg-surface-raised-base-hover"
-                            onClick={() => window.open(url(), "_blank", "noopener,noreferrer")}
-                          >
-                            Open external
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  }
-                >
-                  <Show when={externalMode() === "loading"}>
-                    <div class="absolute inset-0 z-10 flex items-center justify-center bg-background-base/70 text-12-regular text-text-weak">
-                      Opening external site in Chromium preview...
-                    </div>
-                  </Show>
-                  <img
-                    ref={(el) => (externalImageRef = el)}
-                    src={externalStreamURL()}
-                    alt="External site preview"
-                    class="block w-full select-none bg-white object-contain"
-                    style={{ "aspect-ratio": `${externalViewport().width} / ${externalViewport().height}` }}
-                    onLoad={() => setExternalMode("ready")}
-                    onError={() => {
-                      setExternalError("Chromium preview stream is unavailable.")
-                      setExternalMode("failed")
-                    }}
-                  />
-                  <div class="absolute bottom-3 left-3 rounded bg-background-base/90 px-2 py-1 text-11-regular text-text-weak shadow">
-                    external-browser-render
+              <div class="flex size-full items-center justify-center p-6 text-center">
+                <div class="max-w-md rounded-lg border border-border-weaker-base bg-background-base p-5 text-13-regular text-text-weak">
+                  <div class="mb-2 text-14-medium text-text-strong">Public URL — not embedded here</div>
+                  <div>
+                    Preview embeds your own app (local / same-origin) in an iframe, where your
+                    logins persist. Public sites block iframe embedding (CSP/X-Frame) and don’t
+                    share your session — so Preview no longer renders them via a server browser.
+                    Open the site in your own browser, or hand it to the on-demand Agent Browser.
                   </div>
-                </Show>
+                  <div class="mt-4 flex justify-center gap-2">
+                    <button
+                      type="button"
+                      class="rounded-md border border-border-weaker-base px-3 py-1.5 text-12-medium text-text-strong hover:bg-surface-raised-base-hover"
+                      onClick={() => window.open(url(), "_blank", "noopener,noreferrer")}
+                    >
+                      Open in your browser ↗
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="preview-open-in-browser"
+                      class="rounded-md border border-[#f97316]/40 bg-[#f97316]/10 px-3 py-1.5 text-12-medium text-text-strong hover:bg-[#f97316]/20"
+                      title="Spin up the on-demand Agent Browser (heavier) for this URL"
+                      onClick={() => void openInAgentBrowser(url())}
+                    >
+                      Open in Agent Browser
+                    </button>
+                  </div>
+                </div>
               </div>
             }
           >
-            <iframe
-              src={url()}
-              title="Preview"
-              class="absolute inset-0 block h-full w-full border-0 bg-white"
-              sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-downloads"
-              allow="clipboard-read; clipboard-write"
-            />
+            <>
+              <iframe
+                ref={(el) => {
+                  previewDriver?.dispose()
+                  setBridgeReady(false)
+                  setHumanRequest(undefined)
+                  previewDriver = attachPreviewAgentBridge(el, {
+                    onReady: () => setBridgeReady(true),
+                    onRequestHuman: (reason) => setHumanRequest(reason || "The agent needs you to complete a step here"),
+                  })
+                }}
+                src={previewIframeSrc(url(), currentKind())}
+                title="Preview"
+                class="absolute inset-0 block h-full w-full border-0 bg-white"
+                sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-downloads"
+                allow="clipboard-read; clipboard-write"
+              />
+              {/* request_human: agent hit a step it shouldn't automate (sign-in/OAuth/
+                  captcha). You act directly in the preview (it's your app), then Resume. */}
+              <Show when={humanRequest()}>
+                {(reason) => (
+                  <div class="absolute inset-x-3 top-3 flex items-center gap-2 rounded-lg border border-[#f97316]/40 bg-[#f97316]/10 px-3 py-2 text-12-regular text-text-strong shadow">
+                    <span class="inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-[#f97316] text-[9px] font-semibold text-white">
+                      !
+                    </span>
+                    <span class="min-w-0 flex-1 truncate">{reason()}</span>
+                    <button
+                      type="button"
+                      class="shrink-0 rounded-md border border-border-weaker-base px-2 py-1 text-11-medium text-text-strong hover:bg-surface-raised-base-hover"
+                      onClick={() => setHumanRequest(undefined)}
+                    >
+                      Resume
+                    </button>
+                  </div>
+                )}
+              </Show>
+              <Show when={bridgeReady()}>
+                <div
+                  class="absolute bottom-3 right-3 rounded bg-background-base/90 px-2 py-1 text-11-regular text-[#f97316] shadow"
+                  title="Agent UI bridge active — read/click/type available in this preview"
+                >
+                  UI bridge ●
+                </div>
+              </Show>
+              <Show when={currentKind() === "local"}>
+                <div class="absolute bottom-3 left-3 rounded bg-background-base/90 px-2 py-1 text-11-regular text-text-weak shadow">
+                  proxied via CT100
+                </div>
+              </Show>
+            </>
           </Show>
         )}
       </Show>
@@ -1941,6 +1970,7 @@ function OpenDesignTabContent(
   const status = createPolledJson<any>(() => "/experimental/open-design/status")
   const [frameKey, setFrameKey] = createSignal(Date.now())
   const [localBridgeState, setLocalBridgeState] = createSignal<any>({ mode: "dashboard", active: false })
+  let odFrameRef: HTMLIFrameElement | undefined
   const bridgeState = createMemo(() => props.bridgeState?.() ?? localBridgeState())
   const launchUrl = createMemo(() => {
     if (status.data()?.proxyReady === false) return undefined
@@ -1988,6 +2018,9 @@ function OpenDesignTabContent(
       if (!data || typeof data !== "object" || data.type !== "opendesign:bridge-state") return
       const next = {
         ...(data.payload ?? {}),
+        // Whether this Open Design build accepts inbound prompts from the
+        // OpenCode composer (bridge handshake).
+        acceptsPrompts: data.capabilities?.acceptsPrompts === true,
         origin: event.origin,
         receivedAt: new Date().toISOString(),
       }
@@ -1997,6 +2030,55 @@ function OpenDesignTabContent(
     window.addEventListener("message", onMessage)
     onCleanup(() => window.removeEventListener("message", onMessage))
   })
+
+  // Forward composer bridge actions (submit prompt / new chat / switch chat)
+  // from the OpenCode composer into the embedded Open Design chat.
+  createEffect(() => {
+    const postCommand = (command: string, payload: Record<string, unknown>) => {
+      odFrameRef?.contentWindow?.postMessage(
+        { type: "opencode:open-design-command", command, version: 1, payload },
+        window.location.origin,
+      )
+    }
+    const onSubmit = (event: Event) => {
+      const prompt = (event as CustomEvent<{ prompt?: unknown }>).detail?.prompt
+      if (typeof prompt !== "string" || !prompt.trim()) return
+      postCommand("submit-prompt", { prompt: prompt.trim() })
+    }
+    const onNewChat = () => postCommand("new-conversation", {})
+    const onSwitchChat = (event: Event) => {
+      const chatId = (event as CustomEvent<{ chatId?: unknown }>).detail?.chatId
+      if (typeof chatId !== "string" || !chatId) return
+      postCommand("switch-conversation", { chatId })
+    }
+    const onSwitchModel = (event: Event) => {
+      const detail = (event as CustomEvent<{ agentId?: unknown; model?: unknown }>).detail
+      const agentId = typeof detail?.agentId === "string" ? detail.agentId : ""
+      if (!agentId) return
+      postCommand("switch-agent-model", { agentId, model: typeof detail?.model === "string" ? detail.model : "" })
+    }
+    window.addEventListener("opencode:open-design-submit", onSubmit as EventListener)
+    window.addEventListener("opencode:open-design-new-chat", onNewChat as EventListener)
+    window.addEventListener("opencode:open-design-switch-chat", onSwitchChat as EventListener)
+    window.addEventListener("opencode:open-design-switch-model", onSwitchModel as EventListener)
+    onCleanup(() => {
+      window.removeEventListener("opencode:open-design-submit", onSubmit as EventListener)
+      window.removeEventListener("opencode:open-design-new-chat", onNewChat as EventListener)
+      window.removeEventListener("opencode:open-design-switch-chat", onSwitchChat as EventListener)
+      window.removeEventListener("opencode:open-design-switch-model", onSwitchModel as EventListener)
+    })
+  })
+
+  // Leaving the Open Design tab clears Design Mode so the composer and other
+  // surfaces stop showing an active OpenDesign project/chat context.
+  onCleanup(() => {
+    const cleared = { mode: "dashboard", active: false, clearedAt: new Date().toISOString() }
+    setLocalBridgeState(cleared)
+    props.onBridgeState?.(cleared)
+  })
+
+  const codexAccount = createMemo(() => status.data()?.codexAccount)
+  const authDegraded = createMemo(() => codexAccount()?.degraded === true)
 
   return (
     <TabChrome
@@ -2059,6 +2141,17 @@ function OpenDesignTabContent(
               <StatusRow label="Projects" value={status.data()?.projects?.count} />
               <StatusRow label="Bridge" value={stateLabel()} />
               <StatusRow label="Active project/chat" value={bridgeSummary()} />
+              <StatusRow label="Design auth account" value={codexAccount()?.email ?? "unknown"} />
+              <StatusRow
+                label="Auth vs active Codex"
+                value={
+                  authDegraded()
+                    ? `degraded (active: ${codexAccount()?.requestedActiveAlias ?? "unknown"})`
+                    : codexAccount()?.bridged
+                      ? "aligned"
+                      : "not bridged"
+                }
+              />
             </div>
           </details>
         </div>
@@ -2070,6 +2163,16 @@ function OpenDesignTabContent(
             {error()}
           </div>
         )}
+      </Show>
+      <Show when={authDegraded()}>
+        <div
+          class="absolute inset-x-0 top-0 z-10 border-b border-orange-500/25 bg-orange-500/10 px-3 py-1.5 text-11-regular text-orange-100"
+          data-testid="open-design-auth-degraded"
+        >
+          Open Design is authenticated as {codexAccount()?.email ?? "another account"}; the active Codex account is{" "}
+          {codexAccount()?.requestedActiveAlias ?? "different"}. It re-syncs on the next successful account switch (no
+          tokens are copied manually).
+        </div>
       </Show>
       <div class="absolute inset-0 overflow-hidden bg-background-base">
         <div class="absolute inset-0 overflow-hidden bg-background-stronger">
@@ -2104,6 +2207,7 @@ function OpenDesignTabContent(
             }
           >
             <iframe
+              ref={(el) => (odFrameRef = el)}
               src={frameUrl() ?? "about:blank"}
               title="Open Design"
               class="absolute inset-0 block h-full w-full border-0 bg-white"
@@ -2392,7 +2496,7 @@ function MacViewTabContent() {
   )
 }
 
-function AccountsTabContent() {
+function CodexResourcesSection() {
   const status = createPolledJson<any>(() => "/experimental/workspace-suite/status", 30000, 5000)
   const codexStatus = createPolledJson<any>(() => "/experimental/codex-multi-auth/status", 8000, 8000)
   const workspace = createPolledJson<any>(() => "/__workspace-index", 15000, 6000)
@@ -2528,6 +2632,24 @@ function AccountsTabContent() {
   const clearCodexForce = async () =>
     runCodexAccountAction({ action: "clear-force" }, "clear-force", "Codex forced account override cleared")
 
+  const setCodexAccountEnabled = async (alias: string, enabled: boolean) =>
+    runCodexAccountAction(
+      { action: "set-enabled", alias, enabled },
+      `set-enabled:${alias}`,
+      `Codex account ${alias} ${enabled ? "enabled" : "disabled"}`,
+    )
+
+  const removeCodexAccount = async (alias: string) => {
+    if (typeof window !== "undefined" && !window.confirm(`Remove Codex account "${alias}" from the multi-auth store?`))
+      return
+    await runCodexAccountAction({ action: "remove-account", alias }, `remove-account:${alias}`, `Codex account ${alias} removed`)
+  }
+
+  const reauthCodexAccount = async (alias: string) => {
+    setLoginResult((current: any) => ({ ...(current ?? {}), reauthTarget: alias }))
+    await startCodexLogin()
+  }
+
   const setCodexRotation = async (strategy: string) =>
     runCodexAccountAction({ action: "set-rotation", strategy }, `set-rotation:${strategy}`, `Codex rotation set to ${strategy}`)
 
@@ -2561,24 +2683,7 @@ function AccountsTabContent() {
   }
 
   return (
-    <TabChrome
-      title="Accounts"
-      iconTab={PANEL_ACCOUNTS_TAB}
-      onRefresh={() => {
-        void status.refresh()
-        void codexStatus.refresh()
-        void workspace.refresh()
-      }}
-    >
-      <div class="flex flex-col gap-3">
-        <StatusRow label="Hostname" value={status.data()?.hostname} />
-        <StatusRow
-          label="Open Design token"
-          value={status.data()?.openDesign?.configured ? "configured" : "not configured"}
-        />
-        <StatusRow label="Mac View" value={status.data()?.macView?.configured ? "configured" : "not configured"} />
-        <StatusRow label="Workspace projects" value={workspace.data()?.projects?.length} />
-        <StatusRow label="Recent sessions" value={workspace.data()?.sessions?.length} />
+      <div class="flex flex-col gap-3" data-testid="resources-codex">
         <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
           <div class="mb-2 flex items-center justify-between gap-3">
             <div>
@@ -2601,24 +2706,116 @@ function AccountsTabContent() {
               </div>
             )}
           </Show>
-          <div class="mb-3 grid gap-2 md:grid-cols-3">
-            <StatusRow label="Provider owner" value={codexAccounts()?.providerID ?? "codex-multi-auth"} />
-            <StatusRow label="Base OpenAI" value={codexBaseProviderLabel()} />
-            <StatusRow label="Account count" value={codexAccountCount()} />
-            <StatusRow label="Active account" value={codexAccounts()?.activeAccount ?? "none"} />
-            <StatusRow
-              label="Forced account"
-              value={
-                codexForcedAccount()
-                  ? `${codexForcedAccount()}${codexForcedUntilLabel() ? ` until ${codexForcedUntilLabel()}` : ""}`
-                  : "none"
-              }
-            />
-            <StatusRow label="Rotation" value={codexAccounts()?.rotationStrategy ?? "not set"} />
-            <StatusRow label="Runtime proof" value={codexRuntimeReady() ? "ready" : "not verified"} />
-            <StatusRow label="Send routing" value={codexRouting()} />
-            <StatusRow label="Usage" value={codexAccounts()?.usageSummary ?? codexAccounts()?.limitsOutput ?? "not reported"} />
-          </div>
+          <Show when={codexAccountList().length > 0}>
+            <div class="mb-3 flex flex-col gap-3" data-testid="codex-account-cards">
+              <Index each={codexAccountList()}>
+                {(accountItem) => {
+                  const account = accountItem
+                  const alias = () => account().alias ?? ""
+                  const pending = (op: string) => loginResult()?.accountActionPending === `${op}:${alias()}`
+                  const isForced = () => codexForcedAccount() === alias()
+                  const reauth = () => account().reauthNeeded === true
+                  const active = () => account().active === true
+                  const enabled = () => account().enabled !== false
+                  const planLabel = () => account().planType ? `ChatGPT ${account().planType}` : "plan unknown"
+                  return (
+                    <div
+                      class="relative overflow-hidden rounded-lg border bg-background-base/95 p-3 shadow-sm transition-colors"
+                      classList={{
+                        "border-green-500/45 shadow-green-950/10": active(),
+                        "border-red-500/35 shadow-red-950/10": !active() && reauth(),
+                        "border-border-weaker-base": !active() && !reauth(),
+                      }}
+                      data-testid="codex-account-card"
+                      data-alias={alias()}
+                    >
+                      <div
+                        class="absolute left-0 top-0 h-full w-1"
+                        classList={{
+                          "bg-green-500/80": active(),
+                          "bg-red-500/80": !active() && reauth(),
+                          "bg-border-strong-base": !active() && !reauth(),
+                        }}
+                      />
+                      <div class="pl-2">
+                        <div class="flex flex-wrap items-start justify-between gap-3">
+                          <div class="min-w-0">
+                            <div class="flex flex-wrap items-center gap-2">
+                              <span class="truncate text-14-medium text-text-strong">{alias() || "account"}</span>
+                              <Show when={active()}>
+                                <span class="rounded-full bg-green-500/15 px-2 py-0.5 text-10-medium uppercase tracking-wide text-green-200">active</span>
+                              </Show>
+                              <Show when={isForced()}>
+                                <span class="rounded-full bg-orange-500/15 px-2 py-0.5 text-10-medium uppercase tracking-wide text-orange-100">forced</span>
+                              </Show>
+                              <Show when={reauth()}>
+                                <span class="rounded-full bg-red-500/15 px-2 py-0.5 text-10-medium uppercase tracking-wide text-red-200">re-auth needed</span>
+                              </Show>
+                              <Show when={!reauth() && !enabled()}>
+                                <span class="rounded-full bg-background-stronger px-2 py-0.5 text-10-medium uppercase tracking-wide text-text-weak">disabled</span>
+                              </Show>
+                            </div>
+                            <div class="mt-1 truncate text-12-regular text-text-weak">{account().email ?? account().label ?? "email not reported"}</div>
+                          </div>
+                          <span class="shrink-0 rounded-md border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-medium text-text-weak">
+                            {planLabel()}
+                          </span>
+                        </div>
+                        <div class="mt-3 grid gap-2 sm:grid-cols-2">
+                          <div class="rounded-md bg-background-stronger px-2 py-1.5">
+                            <div class="text-10-regular text-text-weak">Local rotation sends</div>
+                            <div class="mt-0.5 text-12-medium text-text-strong">{typeof account().usageCount === "number" ? account().usageCount : "none"}</div>
+                          </div>
+                          <div class="rounded-md bg-background-stronger px-2 py-1.5">
+                            <div class="text-10-regular text-text-weak">Last used</div>
+                            <div class="mt-0.5 truncate text-12-medium text-text-strong">{account().lastUsed ? new Date(account().lastUsed).toLocaleString() : "not used yet"}</div>
+                          </div>
+                        </div>
+                        <Show when={reauth()}>
+                          <div class="mt-3 rounded-md border border-red-500/20 bg-red-500/10 px-3 py-2 text-11-regular text-red-100">
+                            Refresh token invalidated ({account().disabledReason ?? "reauth_needed"}). Re-authenticate before enabling this account again.
+                          </div>
+                        </Show>
+                        <div class="mt-3 flex flex-wrap items-center gap-2">
+                          <Show when={!active() && enabled() && !reauth()}>
+                            <button type="button" class="rounded-md border border-border-weaker-base bg-background-stronger px-2.5 py-1.5 text-11-medium text-text-strong transition hover:bg-surface-raised-base-hover disabled:opacity-60" disabled={pending("set-active")} onClick={() => void setCodexActiveAccount(alias())}>
+                              {pending("set-active") ? "Setting..." : "Set active"}
+                            </button>
+                          </Show>
+                          <Show when={reauth()}>
+                            <button type="button" class="rounded-md border border-red-500/40 bg-red-500/10 px-2.5 py-1.5 text-11-medium text-red-100 transition hover:bg-red-500/20 disabled:opacity-60" disabled={loginStarting()} onClick={() => void reauthCodexAccount(alias())}>
+                              {loginStarting() && loginResult()?.reauthTarget === alias() ? "Starting re-auth..." : "Re-authenticate"}
+                            </button>
+                          </Show>
+                          <button type="button" class="rounded-md border border-border-weaker-base bg-background-stronger px-2.5 py-1.5 text-11-medium text-text-strong transition hover:bg-surface-raised-base-hover disabled:opacity-60" disabled={pending("set-enabled") || (reauth() && !enabled())} title={reauth() && !enabled() ? "Re-authenticate before enabling" : undefined} onClick={() => void setCodexAccountEnabled(alias(), !enabled())}>
+                            {pending("set-enabled") ? "Updating..." : !enabled() ? "Enable" : "Disable"}
+                          </button>
+                          <Show when={!isForced() && enabled() && !reauth()}>
+                            <button type="button" class="rounded-md border border-border-weaker-base bg-background-stronger px-2.5 py-1.5 text-11-medium text-text-strong transition hover:bg-surface-raised-base-hover disabled:opacity-60" disabled={pending("force-account")} onClick={() => void forceCodexAccount(alias())}>
+                              {pending("force-account") ? "Forcing..." : "Force 2h"}
+                            </button>
+                          </Show>
+                          <Show when={isForced()}>
+                            <button type="button" class="rounded-md border border-orange-500/30 bg-orange-500/10 px-2.5 py-1.5 text-11-medium text-orange-100 transition hover:bg-orange-500/20 disabled:opacity-60" disabled={loginResult()?.accountActionPending === "clear-force"} onClick={() => void clearCodexForce()}>
+                              {loginResult()?.accountActionPending === "clear-force" ? "Clearing..." : "Unforce"}
+                            </button>
+                          </Show>
+                          <button type="button" class="ml-auto rounded-md border border-red-500/30 bg-background-stronger px-2.5 py-1.5 text-11-medium text-red-200 transition hover:bg-red-500/10 disabled:opacity-60" disabled={pending("remove-account")} onClick={() => void removeCodexAccount(alias())}>
+                            {pending("remove-account") ? "Removing..." : "Remove"}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                }}
+              </Index>
+            </div>
+            <Show when={codexAccountList().filter((a: any) => a.enabled !== false).length <= 1}>
+              <div class="mb-3 rounded border border-border-weaker-base bg-background-base px-3 py-2 text-10-regular text-text-weak">
+                Only one account is enabled, so rotation is effectively single-account. The model picker's Codex Multi-Auth lane always routes through the active account; base OpenAI stays hidden. OpenDesign design prompts use this same active lane.
+              </div>
+            </Show>
+          </Show>
           <Show when={codexAccountCount() > 0}>
             <div class="mb-3 rounded-md border border-border-weaker-base bg-background-base p-3">
               <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -2671,59 +2868,51 @@ function AccountsTabContent() {
               </div>
             )}
           </Show>
-          <Show when={codexAccountList().length > 0}>
-            <div class="mb-3 overflow-hidden rounded-md border border-border-weaker-base">
-              <For each={codexAccountList()}>
-                {(account: any) => (
-                  <div class="grid gap-2 border-b border-border-weaker-base bg-background-base px-3 py-2 text-12-regular last:border-b-0 md:grid-cols-[1fr_1fr_auto_auto]">
-                    <div class="min-w-0">
-                      <div class="truncate text-text-strong">{account.alias ?? "account"}</div>
-                      <div class="truncate text-11-regular text-text-weak">{account.email ?? account.label ?? "email not reported"}</div>
-                    </div>
-                    <div class="min-w-0 text-11-regular text-text-weak">
-                      <div class="truncate">{account.accountId ?? "account id hidden"}</div>
-                      <div class="truncate">source: {account.source ?? "unknown"}</div>
-                    </div>
-                    <div class="flex flex-wrap items-center gap-2 self-center">
-                      <span class="rounded bg-background-stronger px-2 py-1 text-11-regular text-text-weak">
-                        {account.enabled === false ? "disabled" : "enabled"}
-                      </span>
-                      <Show when={codexForcedAccount() === account.alias}>
-                        <span class="rounded bg-orange-500/10 px-2 py-1 text-11-regular text-orange-100">forced</span>
-                      </Show>
-                    </div>
-                    <div class="flex flex-wrap items-center justify-end gap-2 self-center">
-                      <Show
-                        when={account.active}
-                        fallback={
-                          <button
-                            type="button"
-                            class="rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60"
-                            disabled={loginResult()?.accountActionPending === `set-active:${account.alias}`}
-                            onClick={() => void setCodexActiveAccount(account.alias)}
-                          >
-                            {loginResult()?.accountActionPending === `set-active:${account.alias}` ? "Setting..." : "Set active"}
-                          </button>
-                        }
-                      >
-                        <span class="rounded bg-green-500/10 px-2 py-1 text-11-regular text-green-200">active</span>
-                      </Show>
-                      <Show when={codexForcedAccount() !== account.alias}>
-                        <button
-                          type="button"
-                          class="self-center rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60"
-                          disabled={loginResult()?.accountActionPending === `force-account:${account.alias}`}
-                          onClick={() => void forceCodexAccount(account.alias)}
-                        >
-                          {loginResult()?.accountActionPending === `force-account:${account.alias}` ? "Forcing..." : "Force 2h"}
-                        </button>
-                      </Show>
-                    </div>
-                  </div>
-                )}
-              </For>
+          <details class="mb-3 rounded-md border border-border-weaker-base bg-background-base px-3 py-2">
+            <summary class="cursor-pointer text-12-medium text-text-strong">Status &amp; routing details</summary>
+            <div class="mt-2 flex flex-col gap-2">
+          <div class="mb-3 grid gap-2 md:grid-cols-3">
+            <StatusRow label="Provider owner" value={codexAccounts()?.providerID ?? "codex-multi-auth"} />
+            <StatusRow label="Base OpenAI" value={codexBaseProviderLabel()} />
+            <StatusRow label="Account count" value={codexAccountCount()} />
+            <StatusRow label="Active account" value={codexAccounts()?.activeAccount ?? "none"} />
+            <StatusRow
+              label="Forced account"
+              value={
+                codexForcedAccount()
+                  ? `${codexForcedAccount()}${codexForcedUntilLabel() ? ` until ${codexForcedUntilLabel()}` : ""}`
+                  : "none"
+              }
+            />
+            <StatusRow label="Rotation" value={codexAccounts()?.rotationStrategy ?? "not set"} />
+            <StatusRow label="Runtime proof" value={codexRuntimeReady() ? "ready" : "not verified"} />
+            <StatusRow label="Send routing" value={codexRouting()} />
+            <StatusRow
+              label="Usage / limits"
+              value={
+                codexAccounts()?.usageSummary ??
+                "Weekly and 5-hour usage are not reported by the multi-auth wrapper yet. Per-account send counts below are local rotation counters, not OpenAI quota."
+              }
+            />
+          </div>
+          <details class="mb-3 rounded-md border border-border-weaker-base bg-background-base px-3 py-2 text-12-regular text-text-weak">
+            <summary class="cursor-pointer text-12-medium text-text-strong">How Codex Multi-Auth works</summary>
+            <ul class="mt-2 list-disc space-y-1 pl-4 text-11-regular">
+              <li>
+                All accounts live in one isolated multi-auth profile store (path shown below) - aliases share a single
+                store, they are not separate .codex folders.
+              </li>
+              <li>Prompts route through the sidecar prompt adapter; each send picks an account via the rotation strategy.</li>
+              <li>Force mode pins one account for 2 hours (or until cleared); rotation resumes afterwards.</li>
+              <li>Enable/disable controls whether rotation may pick an account. Active marks the account used for the next send.</li>
+              <li>
+                The base OpenAI provider is hidden from the model picker while multi-auth is ready, so sends cannot
+                silently bypass the account store. Set OPENCODE_SHOW_BASE_OPENAI_WITH_MULTI_AUTH=1 to restore it.
+              </li>
+            </ul>
+          </details>
             </div>
-          </Show>
+          </details>
           <Show when={codexAccountList().length === 0}>
             <div class="mb-3 rounded-md border border-border-weaker-base bg-background-base px-3 py-2 text-12-regular text-text-weak">
               No isolated Codex multi-auth accounts are visible yet. Normal OpenAI sign-in is separate from this store.
@@ -2794,7 +2983,18 @@ function AccountsTabContent() {
           </Show>
           <Show when={authPanel()}>
             {(result) => (
-              <div class="mb-3 rounded-md border border-border-weaker-base bg-background-base p-3 text-12-regular">
+              <div class="mb-3 rounded-md border border-border-weaker-base bg-background-base p-3 text-12-regular" data-testid="codex-auth-panel">
+                <div class="mb-2 flex items-center justify-between gap-2">
+                  <div class="text-12-medium text-text-strong">
+                    {loginResult()?.reauthTarget ? `Re-authenticate "${loginResult()?.reauthTarget}"` : "Add Codex account"}
+                  </div>
+                  <Show when={!/authorized|complete|written|success/i.test(String(result().phase ?? ""))}>
+                    <span class="rounded-full bg-orange-500/15 px-2 py-0.5 text-10-medium text-orange-100">waiting for approval</span>
+                  </Show>
+                </div>
+                <div class="mb-2 text-10-regular text-text-weak">
+                  Open the link (or copy the code), approve in ChatGPT, then this panel refreshes automatically. The device-code flow needs no localhost callback.
+                </div>
                 <div class="mb-2 flex items-center justify-between gap-2">
                   <div class="text-12-medium text-text-strong">Auth command</div>
                   <button
@@ -2939,7 +3139,6 @@ function AccountsTabContent() {
           </div>
         </div>
       </div>
-    </TabChrome>
   )
 }
 
@@ -2952,11 +3151,99 @@ function RoutinesTabContent() {
     () => (selected()?.id ? `/experimental/routines/jobs/${encodeURIComponent(selected().id)}/logs` : undefined),
     10000,
   )
+  const linkage = createPolledJson<any>(
+    () => (selected()?.id ? `/experimental/project-metadata/for-routine?id=${encodeURIComponent(selected().id)}` : undefined),
+    30000,
+  )
 
   createEffect(() => {
     const first = routines()[0]?.id
     if (!selectedID() && first) setSelectedID(first)
   })
+
+  const mutationsEnabled = createMemo(() => jobs.data()?.status?.mutationsEnabled === true)
+  const runEnabled = createMemo(() => jobs.data()?.status?.runEnabled === true)
+  const storeHome = createMemo(() => jobs.data()?.status?.home ?? jobs.data()?.status?.jobsFile ?? null)
+  const [actionPending, setActionPending] = createSignal<string | undefined>()
+  const [actionError, setActionError] = createSignal<string | undefined>()
+  const [actionNote, setActionNote] = createSignal<string | undefined>()
+  const [formOpen, setFormOpen] = createSignal(false)
+  const [formMode, setFormMode] = createSignal<"create" | "edit">("create")
+  const emptyForm = { name: "", schedule: "manual", command: "", description: "" }
+  const [form, setForm] = createStore({ ...emptyForm })
+
+  const routineAction = async (label: string, fn: () => Promise<Response>, successNote: string) => {
+    setActionPending(label)
+    setActionError(undefined)
+    setActionNote(undefined)
+    try {
+      const res = await fn()
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok || body?.ok === false) throw new Error(body?.error ?? `${label} failed (${res.status})`)
+      setActionNote(successNote)
+      void jobs.refresh()
+      return body
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error))
+      return undefined
+    } finally {
+      setActionPending(undefined)
+    }
+  }
+
+  const openCreateForm = () => {
+    setFormMode("create")
+    setForm({ ...emptyForm })
+    setFormOpen(true)
+  }
+  const openEditForm = (routine: any) => {
+    setFormMode("edit")
+    setForm({
+      name: routine.name ?? "",
+      schedule: routine.schedule ?? "manual",
+      command: routine.command ?? "",
+      description: routine.description ?? "",
+    })
+    setFormOpen(true)
+  }
+  const submitForm = async () => {
+    const payload = { name: form.name, schedule: form.schedule, command: form.command, description: form.description }
+    if (formMode() === "create") {
+      const body = await routineAction("create", () =>
+        fetch("/experimental/routines/jobs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) }),
+        "Created disabled draft routine",
+      )
+      if (body?.routine?.id) setSelectedID(body.routine.id)
+    } else {
+      const id = selected()?.id
+      if (!id) return
+      await routineAction("edit", () =>
+        fetch(`/experimental/routines/jobs/${encodeURIComponent(id)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) }),
+        "Routine updated",
+      )
+    }
+    setFormOpen(false)
+  }
+  const toggleEnabled = async (routine: any) => {
+    await routineAction(`toggle:${routine.id}`, () =>
+      fetch(`/experimental/routines/jobs/${encodeURIComponent(routine.id)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: !routine.enabled }) }),
+      routine.enabled ? "Routine disabled" : "Routine enabled",
+    )
+  }
+  const deleteRoutine = async (routine: any) => {
+    if (typeof window !== "undefined" && !window.confirm(`Delete routine "${routine.name}"?`)) return
+    await routineAction(`delete:${routine.id}`, () =>
+      fetch(`/experimental/routines/jobs/${encodeURIComponent(routine.id)}`, { method: "DELETE" }),
+      "Routine deleted",
+    )
+    setSelectedID(undefined)
+  }
+  const runRoutine = async (routine: any) => {
+    await routineAction(`run:${routine.id}`, () =>
+      fetch(`/experimental/routines/jobs/${encodeURIComponent(routine.id)}/run`, { method: "POST" }),
+      "Routine run requested",
+    )
+  }
 
   return (
     <TabChrome
@@ -3001,8 +3288,47 @@ function RoutinesTabContent() {
           />
         </div>
 
+        <div class="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            class="rounded-md border border-[#f97316]/40 bg-[#f97316]/10 px-3 py-1.5 text-12-regular text-text-strong hover:bg-[#f97316]/20 disabled:opacity-50"
+            data-testid="routine-new"
+            disabled={!mutationsEnabled()}
+            title={mutationsEnabled() ? "Create a disabled draft routine" : "Draft writes are off (OPENCODE_ROUTINES_MUTATIONS=1)"}
+            onClick={openCreateForm}
+          >
+            New routine (draft)
+          </button>
+          <span class="text-11-regular text-text-weak">
+            New routines are created disabled. Manual runs {runEnabled() ? "are enabled" : "stay gated (OPENCODE_ROUTINES_RUN_ENABLED=1)"}.
+          </span>
+        </div>
+        <Show when={actionNote()}>
+          <div class="rounded-md border border-green-500/20 bg-green-500/10 px-3 py-1.5 text-12-regular text-green-100" data-testid="routine-action-note">{actionNote()}</div>
+        </Show>
+        <Show when={actionError()}>
+          <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-1.5 text-12-regular text-orange-100" data-testid="routine-action-error">{actionError()}</div>
+        </Show>
+        <Show when={formOpen()}>
+          <div class="rounded-md border border-border-weaker-base bg-background-base p-3" data-testid="routine-form">
+            <div class="mb-2 text-13-medium text-text-strong">{formMode() === "create" ? "New routine (created disabled)" : "Edit routine"}</div>
+            <div class="grid gap-2 sm:grid-cols-2">
+              <input class="h-8 rounded border border-border-weaker-base bg-background-stronger px-2 text-12-regular text-text-strong outline-none" data-testid="routine-form-name" placeholder="Name" value={form.name} onInput={(e) => setForm("name", e.currentTarget.value)} />
+              <input class="h-8 rounded border border-border-weaker-base bg-background-stronger px-2 text-12-regular text-text-strong outline-none" data-testid="routine-form-schedule" placeholder="Schedule (e.g. daily 09:00 or manual)" value={form.schedule} onInput={(e) => setForm("schedule", e.currentTarget.value)} />
+            </div>
+            <input class="mt-2 h-8 w-full rounded border border-border-weaker-base bg-background-stronger px-2 font-mono text-11-regular text-text-strong outline-none" data-testid="routine-form-command" placeholder="Command" value={form.command} onInput={(e) => setForm("command", e.currentTarget.value)} />
+            <input class="mt-2 h-8 w-full rounded border border-border-weaker-base bg-background-stronger px-2 text-12-regular text-text-strong outline-none" data-testid="routine-form-description" placeholder="Description (optional)" value={form.description} onInput={(e) => setForm("description", e.currentTarget.value)} />
+            <div class="mt-2 flex items-center gap-2">
+              <button type="button" class="rounded border border-[#f97316]/40 bg-[#f97316]/10 px-3 py-1 text-12-regular text-text-strong hover:bg-[#f97316]/20 disabled:opacity-50" data-testid="routine-form-save" disabled={!form.name.trim() || !!actionPending()} onClick={() => void submitForm()}>
+                {actionPending() === "create" || actionPending() === "edit" ? "Saving..." : formMode() === "create" ? "Create draft" : "Save changes"}
+              </button>
+              <button type="button" class="rounded border border-border-weaker-base bg-background-stronger px-3 py-1 text-12-regular text-text-weak hover:bg-surface-raised-base-hover" onClick={() => setFormOpen(false)}>Cancel</button>
+            </div>
+          </div>
+        </Show>
+
         <div class="grid min-h-0 flex-1 gap-3 xl:grid-cols-[minmax(220px,0.8fr)_minmax(0,1.2fr)]">
-          <div class="min-h-0 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger">
+          <div class="min-h-0 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger" data-testid="routine-list">
             <For each={routines()}>
               {(routine: any) => (
                 <button
@@ -3012,12 +3338,19 @@ function RoutinesTabContent() {
                   onClick={() => setSelectedID(routine.id)}
                 >
                   <div class="flex items-center justify-between gap-3">
-                    <span class="min-w-0 truncate text-13-regular text-text-strong">{routine.name}</span>
-                    <span class="shrink-0 rounded bg-background-base px-2 py-1 text-11-regular text-text-weak">
+                    <span class="min-w-0 truncate text-13-regular text-text-strong" data-testid="routine-row-name">{routine.name}</span>
+                    <span
+                      class="shrink-0 rounded px-2 py-0.5 text-10-medium uppercase tracking-wide"
+                      classList={{ "bg-green-500/15 text-green-200": routine.enabled, "bg-background-base text-text-weak": !routine.enabled }}
+                    >
                       {routine.enabled ? "enabled" : "off"}
                     </span>
                   </div>
-                  <div class="truncate text-12-regular text-text-weak">{routine.schedule ?? "No schedule"}</div>
+                  <div class="truncate text-11-regular text-text-weak">{routine.schedule ?? "No schedule"}</div>
+                  <div class="flex items-center gap-2 text-10-regular text-text-weak">
+                    <span>last: {routine.lastStatus ?? "never"}</span>
+                    <Show when={routine.nextRunAt}><span>· next: {formatShortDate(routine.nextRunAt)}</span></Show>
+                  </div>
                 </button>
               )}
             </For>
@@ -3051,7 +3384,16 @@ function RoutinesTabContent() {
                     <EnvironmentInfoRow label="Next run" value={routine().nextRunAt} />
                     <EnvironmentInfoRow label="Notify" value={(routine().notify ?? []).join(", ") || "in-app"} />
                     <EnvironmentInfoRow label="Tags" value={(routine().tags ?? []).join(", ") || "none"} />
+                    <EnvironmentInfoRow
+                      label="Linked project"
+                      value={(linkage.data()?.projects ?? []).map((p: any) => p.name ?? p.repoRoot).join(", ") || "none"}
+                    />
                   </div>
+                  <Show when={(linkage.data()?.projects?.length ?? 0) > 0}>
+                    <div class="rounded border border-[#f97316]/20 bg-[#f97316]/5 px-2 py-1.5 text-11-regular text-text-weak" data-testid="routine-linked-project">
+                      Referenced by {(linkage.data()?.projects ?? []).length} project via <span class="font-mono">.opencode/design/project.json</span> routines[].
+                    </div>
+                  </Show>
 
                   <Show when={routine().command}>
                     <div class="rounded bg-background-base p-2">
@@ -3062,9 +3404,16 @@ function RoutinesTabContent() {
                     </div>
                   </Show>
 
-                  <div class="rounded border border-border-weaker-base bg-background-base p-2 text-12-regular text-text-weak">
-                    Disabled routine drafts can be created from the home Routines page. Enabling schedules and manual
-                    runs remain separate server-side controls.
+                  <div class="flex flex-wrap items-center gap-2" data-testid="routine-actions">
+                    <button type="button" class="rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-50" data-testid="routine-toggle" disabled={!mutationsEnabled() || actionPending() === `toggle:${routine().id}`} onClick={() => void toggleEnabled(routine())}>
+                      {actionPending() === `toggle:${routine().id}` ? "..." : routine().enabled ? "Disable" : "Enable"}
+                    </button>
+                    <button type="button" class="rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-50" data-testid="routine-edit" disabled={!mutationsEnabled()} onClick={() => openEditForm(routine())}>Edit</button>
+                    <button type="button" class="rounded border border-border-weaker-base bg-background-stronger px-2 py-1 text-11-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-50" data-testid="routine-run" disabled={!runEnabled() || actionPending() === `run:${routine().id}`} title={runEnabled() ? "Run now" : "Manual runs are gated (OPENCODE_ROUTINES_RUN_ENABLED=1)"} onClick={() => void runRoutine(routine())}>Run now</button>
+                    <button type="button" class="ml-auto rounded border border-red-500/30 bg-background-stronger px-2 py-1 text-11-regular text-red-200 hover:bg-red-500/10 disabled:opacity-50" data-testid="routine-delete" disabled={!mutationsEnabled() || actionPending() === `delete:${routine().id}`} onClick={() => void deleteRoutine(routine())}>Delete</button>
+                  </div>
+                  <div class="rounded border border-border-weaker-base bg-background-base p-2 text-11-regular text-text-weak">
+                    Routines are stored globally in <span class="font-mono text-text-strong">{storeHome()}</span>, not per-repo. A repo can reference routine ids in its <span class="font-mono">.opencode/design/project.json</span> "routines" array. New routines are created disabled; enabling activates the schedule. Manual "Run now" is separately gated.
                   </div>
 
                   <div>
@@ -3282,8 +3631,58 @@ function EnvironmentVariableManager(props: {
   const [draft, setDraft] = createSignal<EnvironmentDraft>(emptyEnvironmentDraft())
   const [saving, setSaving] = createSignal(false)
   const [message, setMessage] = createSignal<string>()
-  const entries = createMemo(() => props.registry?.entries ?? [])
+  const [envQuery, setEnvQuery] = createSignal("")
+  const [revealed, setRevealed] = createSignal<Record<string, boolean>>({})
+  const [importOpen, setImportOpen] = createSignal(false)
+  const [importText, setImportText] = createSignal("")
+  const [importValidation, setImportValidation] = createSignal<any>()
+  const allEntries = createMemo(() => props.registry?.entries ?? [])
+  const entries = createMemo(() => {
+    const needle = envQuery().trim().toLowerCase()
+    if (!needle) return allEntries()
+    return allEntries().filter((e: any) => `${e.name} ${e.scope} ${e.description ?? ""}`.toLowerCase().includes(needle))
+  })
   const editing = createMemo(() => !!draft().id)
+  const [changed, setChanged] = createSignal(false)
+
+  const validateImport = async () => {
+    setImportValidation(undefined)
+    try {
+      const res = await fetch("/experimental/workspace-env", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "validate", dotenv: importText() }),
+      })
+      const body = await res.json().catch(() => ({}))
+      setImportValidation(body?.validation ?? { ok: false })
+    } catch (error) {
+      setImportValidation({ ok: false, error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+  const runImport = async () => {
+    if (typeof window !== "undefined" && !window.confirm("Import these variables into the server-local env registry?")) return
+    setSaving(true)
+    setMessage(undefined)
+    try {
+      const res = await fetch("/experimental/workspace-env", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "import", dotenv: importText() }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok || body?.ok === false) throw new Error(body?.summary?.malformed?.length ? "Fix malformed lines first" : body?.error ?? "Import failed")
+      setMessage(`Imported ${body.summary?.imported ?? 0} variables (${body.summary?.created ?? 0} new, ${body.summary?.updated ?? 0} updated).`)
+      setImportText("")
+      setImportValidation(undefined)
+      setImportOpen(false)
+      setChanged(true)
+      props.onRefresh()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSaving(false)
+    }
+  }
 
   const updateDraft = (patch: Partial<EnvironmentDraft>) => setDraft((current) => ({ ...current, ...patch }))
   const loadEntry = (entry: any) => {
@@ -3330,6 +3729,7 @@ function EnvironmentVariableManager(props: {
       if (!response.ok || result?.ok === false) throw new Error(result?.error ?? "Could not save environment variable")
       setMessage(`Saved ${next.name}. New processes launched through OpenCode will inherit matching enabled variables.`)
       resetDraft()
+      setChanged(true)
       props.onRefresh()
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
@@ -3354,6 +3754,7 @@ function EnvironmentVariableManager(props: {
       if (!response.ok || result?.ok === false) throw new Error(result?.error ?? "Could not delete environment variable")
       setMessage(`Deleted ${entry.name}.`)
       if (draft().id === entry.id) resetDraft()
+      setChanged(true)
       props.onRefresh()
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
@@ -3465,25 +3866,96 @@ function EnvironmentVariableManager(props: {
         {(value) => <div class="mt-3 rounded bg-background-base p-2 text-12-regular text-text-weak">{value()}</div>}
       </Show>
 
-      <div class="mt-3 flex flex-col gap-2">
+      <Show when={changed()}>
+        <div class="mt-3 rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-11-regular text-orange-100" data-testid="env-restart-banner">
+          Saved to the server-local registry. Applies to newly launched OpenCode terminals/bash immediately. Already-running services (opencode.service, open terminals, running project servers) keep their current env until restarted.
+        </div>
+      </Show>
+
+      <div class="mt-3 flex flex-wrap items-center gap-2">
+        <input
+          class="h-8 min-w-[180px] flex-1 rounded border border-border-weaker-base bg-background-base px-2 text-12-regular text-text-strong outline-none placeholder:text-text-weak"
+          placeholder="Search variables"
+          data-testid="env-search"
+          value={envQuery()}
+          onInput={(e) => setEnvQuery(e.currentTarget.value)}
+        />
+        <button type="button" class="h-8 shrink-0 rounded border border-border-weaker-base bg-background-base px-3 text-12-regular text-text-strong hover:bg-surface-raised-base-hover" data-testid="env-import-toggle" onClick={() => setImportOpen(!importOpen())}>
+          {importOpen() ? "Close import" : "Import .env"}
+        </button>
+      </div>
+
+      <Show when={importOpen()}>
+        <div class="mt-2 rounded-md border border-border-weaker-base bg-background-base p-2" data-testid="env-import-panel">
+          <textarea
+            class="h-28 w-full rounded border border-border-weaker-base bg-background-stronger px-2 py-1 font-mono text-11-regular text-text-strong outline-none"
+            placeholder={"Paste dotenv lines, e.g.\nKEY=value\nANOTHER_KEY=value"}
+            data-testid="env-import-text"
+            value={importText()}
+            onInput={(e) => {
+              setImportText(e.currentTarget.value)
+              setImportValidation(undefined)
+            }}
+          />
+          <div class="mt-2 flex flex-wrap items-center gap-2">
+            <button type="button" class="rounded border border-border-weaker-base bg-background-stronger px-3 py-1 text-12-regular text-text-strong hover:bg-surface-raised-base-hover" data-testid="env-import-validate" onClick={() => void validateImport()}>Validate</button>
+            <button type="button" class="rounded border border-[#f97316]/40 bg-[#f97316]/10 px-3 py-1 text-12-regular text-text-strong hover:bg-[#f97316]/20 disabled:opacity-50" data-testid="env-import-apply" disabled={!importText().trim() || saving() || (importValidation() && importValidation().ok === false)} onClick={() => void runImport()}>Import</button>
+            <Show when={importValidation()}>
+              <span class="text-11-regular" data-testid="env-import-result" classList={{ "text-green-200": importValidation().ok, "text-orange-200": !importValidation().ok }}>
+                {importValidation().ok
+                  ? `${new Set(importValidation().keys ?? []).size} unique key(s) OK${importValidation().duplicates?.length ? `, ${importValidation().duplicates.length} duplicate(s) collapsed` : ""}`
+                  : `${importValidation().malformed?.length ?? 0} malformed line(s)${importValidation().malformed?.[0] ? ` (line ${importValidation().malformed[0].lineNumber}: ${importValidation().malformed[0].reason})` : ""}`}
+              </span>
+            </Show>
+          </div>
+        </div>
+      </Show>
+
+      <div class="mt-3 flex flex-col gap-2" data-testid="env-list">
         <For
           each={entries()}
           fallback={<div class="rounded bg-background-base p-3 text-12-regular text-text-weak">No variables yet.</div>}
         >
           {(entry: any) => (
-            <div class="grid gap-2 rounded bg-background-base p-2 text-12-regular text-text-weak xl:grid-cols-[1fr_0.7fr_0.7fr_1fr_auto]">
+            <div class="grid gap-2 rounded bg-background-base p-2 text-12-regular text-text-weak xl:grid-cols-[1fr_0.6fr_0.6fr_1.1fr_auto]" data-testid="env-row" data-name={entry.name}>
               <div class="min-w-0">
                 <div class="truncate text-text-strong">{entry.name}</div>
                 <div class="truncate">{entry.description ?? "No description"}</div>
               </div>
-              <div>{entry.scope}</div>
-              <div>{entry.enabled ? "enabled" : "disabled"}</div>
-              <div>{entry.secret ? "secret" : entry.valuePreview ?? (entry.hasValue ? "value set" : "empty")}</div>
+              <div>
+                <div>{entry.scope}</div>
+                <div class="text-10-regular">{entry.secret ? "secret" : "plain"}</div>
+              </div>
+              <div>
+                <div>{entry.enabled ? "enabled" : "disabled"}</div>
+                <Show when={entry.updatedAt}><div class="text-10-regular">{formatShortDate(entry.updatedAt)}</div></Show>
+              </div>
+              <div class="min-w-0">
+                <Show
+                  when={!entry.secret && revealed()[entry.id]}
+                  fallback={
+                    <div class="flex items-center gap-2">
+                      <span class="truncate font-mono text-11-regular" data-testid="env-value-masked">{entry.hasValue ? entry.maskedValue : "(empty)"}</span>
+                      <Show when={!entry.secret && entry.hasValue}>
+                        <button type="button" class="shrink-0 rounded border border-border-weaker-base px-1.5 py-0.5 text-10-regular text-text-weak hover:bg-surface-raised-base-hover" data-testid="env-reveal" onClick={() => setRevealed((r) => ({ ...r, [entry.id]: true }))}>Reveal</button>
+                      </Show>
+                      <Show when={entry.secret}>
+                        <span class="shrink-0 text-10-regular text-text-weak">secret · hidden</span>
+                      </Show>
+                    </div>
+                  }
+                >
+                  <div class="flex items-center gap-2">
+                    <span class="truncate font-mono text-11-regular text-text-strong" data-testid="env-value-revealed">{entry.valuePreview}</span>
+                    <button type="button" class="shrink-0 rounded border border-border-weaker-base px-1.5 py-0.5 text-10-regular text-text-weak hover:bg-surface-raised-base-hover" onClick={() => setRevealed((r) => ({ ...r, [entry.id]: false }))}>Hide</button>
+                  </div>
+                </Show>
+              </div>
               <div class="flex justify-end gap-2">
-                <button class="rounded px-2 py-1 text-text-strong hover:bg-surface-raised-base-hover" type="button" onClick={() => loadEntry(entry)}>
+                <button class="rounded px-2 py-1 text-text-strong hover:bg-surface-raised-base-hover" type="button" data-testid="env-edit" onClick={() => loadEntry(entry)}>
                   Edit
                 </button>
-                <button class="rounded px-2 py-1 text-red-400 hover:bg-red-500/10" type="button" onClick={() => void deleteEntry(entry)}>
+                <button class="rounded px-2 py-1 text-red-400 hover:bg-red-500/10" type="button" data-testid="env-delete" onClick={() => void deleteEntry(entry)}>
                   Delete
                 </button>
               </div>
@@ -3582,29 +4054,510 @@ function formatShortDate(value?: string) {
 }
 
 function ResourcesTabContent() {
-  const resources = createPolledJson<any>(() => "/experimental/resources/status", 15000)
+  const cli = createPolledJson<any>(() => "/experimental/cli-resources/status", 15000, 12000)
+  const section = () => resourcesSection()
+  const data = () => cli.data()
+  const systemData = createMemo(() => data()?.system ?? {})
+  const sectionWarnings = createMemo(() => {
+    const d = data()
+    const collect = (s: any) => (Array.isArray(s?.warnings) ? s.warnings : [])
+    return {
+      overview: [],
+      system: [],
+      opencode: collect(d?.opencode),
+      codex: collect(d?.codex),
+      claude: collect(d?.claude),
+      antigravity: collect(d?.antigravity),
+    } as Record<ResourcesSection, string[]>
+  })
 
   return (
-    <TabChrome title="Resources" iconTab={PANEL_RESOURCES_TAB} onRefresh={resources.refresh}>
+    <TabChrome title="Resources" iconTab={PANEL_RESOURCES_TAB} onRefresh={() => void cli.refresh()}>
       <div class="flex flex-col gap-3">
-        <Show when={resources.error()}>
+        <div class="flex flex-wrap gap-1.5" data-testid="resources-section-selector" role="tablist">
+          <For each={RESOURCES_SECTIONS}>
+            {(item) => {
+              const active = () => section() === item.id
+              const warnCount = () => (sectionWarnings()[item.id] ?? []).length
+              return (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={active()}
+                  data-testid={`resources-section-${item.id}`}
+                  class="rounded-md border px-2.5 py-1.5 text-11-medium transition"
+                  classList={{
+                    "border-[#f97316]/50 bg-[#f97316]/10 text-text-strong": active(),
+                    "border-border-weaker-base bg-background-stronger text-text-weak hover:text-text-strong": !active(),
+                  }}
+                  onClick={() => setResourcesSection(item.id)}
+                >
+                  {item.label}
+                  <Show when={warnCount() > 0}>
+                    <span class="ml-1 rounded-full bg-orange-500/20 px-1 text-10-medium text-orange-100">{warnCount()}</span>
+                  </Show>
+                </button>
+              )
+            }}
+          </For>
+        </div>
+        <Show when={cli.error()}>
           {(error) => (
-            <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">
-              {error()}
+            <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-12-regular text-orange-100">
+              CLI resources status failed: {error()}
             </div>
           )}
         </Show>
-        <div class="grid gap-3 xl:grid-cols-2">
-          <ResourceHostCard title="Server" status={resources.data()?.server} />
-          <ResourceHostCard title="MacBook" status={resources.data()?.mac} />
+        <div data-testid="resources-section-active" data-section={section()}>
+          <Switch>
+            <Match when={section() === "overview"}>
+              <ResourcesOverviewSection
+                data={data()}
+                onView={(s) => setResourcesSection(s)}
+                onRefresh={() => void cli.refresh()}
+              />
+            </Match>
+            <Match when={section() === "system"}>
+              <div class="flex flex-col gap-3" data-testid="resources-system">
+                <div class="grid gap-3 xl:grid-cols-2">
+                  <ResourceHostCard title="Server" status={systemData()?.server} />
+                  <ResourceHostCard title="MacBook" status={systemData()?.mac} />
+                </div>
+                <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">
+                  Server metrics are local to CT100. Mac metrics require SSH from CT100 to the Mac; Mac View can still be
+                  live through the separate ScreenCaptureKit/Tailscale feed.
+                </div>
+                <StatusRow label="Last checked" value={data()?.checkedAt} />
+              </div>
+            </Match>
+            <Match when={section() === "opencode"}>
+              <OpenCodeProvidersSection data={data()?.opencode} />
+            </Match>
+            <Match when={section() === "codex"}>
+              <CodexResourcesSection />
+            </Match>
+            <Match when={section() === "claude"}>
+              <ClaudeResourcesSection data={data()?.claude} />
+            </Match>
+            <Match when={section() === "antigravity"}>
+              <AntigravityResourcesSection data={data()?.antigravity} />
+            </Match>
+          </Switch>
         </div>
-        <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">
-          Server metrics are local to CT100. Mac metrics require SSH from CT100 to the Mac; Mac View can still be live
-          through the separate ScreenCaptureKit/Tailscale feed.
-        </div>
-        <StatusRow label="Last checked" value={resources.data()?.checkedAt} />
+        <ResourcesToolsState section={section()} data={data()} warnings={sectionWarnings()} />
       </div>
     </TabChrome>
+  )
+}
+
+function ResourcesOverviewSection(props: {
+  data?: any
+  onView: (s: ResourcesSection) => void
+  onRefresh: () => void
+}) {
+  const lanes = () => (Array.isArray(props.data?.lanes) ? props.data.lanes : [])
+  return (
+    <div class="flex flex-col gap-3" data-testid="resources-overview">
+      <div class="rounded-md border border-border-weaker-base bg-background-stronger px-3 py-2 text-11-regular text-text-weak">
+        Connected CLI &amp; provider resources on this workspace. Codex Multi-Auth is a custom terminal sidecar; OpenCode
+        Providers is the native model catalog; Claude Code and Antigravity are separate CLIs with their own auth. No
+        tokens or secret values are shown. Account changes stay inside each detail section.
+      </div>
+      <Show when={lanes().length > 0} fallback={<div class="text-12-regular text-text-weak">Loading resources…</div>}>
+        <div class="grid gap-3 sm:grid-cols-2" data-testid="resources-overview-cards">
+          <For each={lanes()}>
+            {(lane: any) => <OverviewLaneCard lane={lane} onView={props.onView} onRefresh={props.onRefresh} />}
+          </For>
+        </div>
+      </Show>
+      <StatusRow label="Last checked" value={props.data?.checkedAt} />
+    </div>
+  )
+}
+
+function OverviewLaneCard(props: { lane: any; onView: (s: ResourcesSection) => void; onRefresh: () => void }) {
+  const lane = () => props.lane
+  const status = () => String(lane().status ?? "unknown")
+  const statusColor = () => {
+    switch (status()) {
+      case "connected":
+        return { dot: "bg-green-500", chip: "bg-green-500/15 text-green-200" }
+      case "needs-setup":
+      case "needs-auth":
+        return { dot: "bg-orange-400", chip: "bg-orange-500/15 text-orange-100" }
+      default:
+        return { dot: "bg-text-disabled", chip: "bg-background-base text-text-weak" }
+    }
+  }
+  return (
+    <div
+      class="flex flex-col gap-2 rounded-lg border border-border-weaker-base bg-background-stronger p-3"
+      data-testid="resources-overview-card"
+      data-lane={lane().id}
+      data-status={status()}
+    >
+      <div class="flex items-start justify-between gap-2">
+        <div class="flex min-w-0 items-center gap-2">
+          <span class={`mt-0.5 h-2 w-2 shrink-0 rounded-full ${statusColor().dot}`} />
+          <div class="min-w-0">
+            <div class="truncate text-13-medium text-text-strong">{lane().label}</div>
+            <div class="text-10-regular uppercase tracking-wide text-text-weak">{lane().source}</div>
+          </div>
+        </div>
+        <span class={`shrink-0 rounded-full px-2 py-0.5 text-10-medium uppercase tracking-wide ${statusColor().chip}`}>
+          {status().replaceAll("-", " ")}
+        </span>
+      </div>
+      <div class="text-11-regular text-text-weak">{lane().detail}</div>
+      <Show when={lane().active}>
+        <div class="text-11-regular text-text-weak">
+          active: <span class="text-text-strong">{lane().active}</span>
+        </div>
+      </Show>
+      <Show when={lane().version || lane().path}>
+        <div class="truncate text-10-regular text-text-weak">
+          {lane().version ? `${lane().version} · ` : ""}
+          {lane().path}
+        </div>
+      </Show>
+      <Show when={lane().note}>
+        <div class="text-10-regular text-text-weak/80">{lane().note}</div>
+      </Show>
+      <Show when={Array.isArray(lane().actions) && lane().actions.length > 0}>
+        <div class="flex flex-wrap gap-1" data-testid="resources-overview-actions" title="Available in this section's detail view">
+          <For each={lane().actions}>
+            {(action: string) => (
+              <span
+                class="rounded bg-background-base px-1.5 py-0.5 text-10-regular text-text-weak"
+                data-testid="resources-overview-action-chip"
+              >
+                {action}
+              </span>
+            )}
+          </For>
+        </div>
+      </Show>
+      <div class="mt-1 flex items-center justify-end gap-1.5">
+        <button
+          type="button"
+          data-testid="resources-overview-refresh"
+          data-section={lane().section}
+          class="shrink-0 rounded-md border border-border-weaker-base bg-background-base px-2.5 py-1 text-11-medium text-text-weak transition hover:bg-surface-raised-base-hover hover:text-text-strong"
+          onClick={() => props.onRefresh()}
+          title="Re-check resource status"
+        >
+          Refresh
+        </button>
+        <button
+          type="button"
+          data-testid="resources-overview-view"
+          data-section={lane().section}
+          class="shrink-0 rounded-md border border-border-weaker-base bg-background-base px-2.5 py-1 text-11-medium text-text-strong transition hover:bg-surface-raised-base-hover"
+          onClick={() => props.onView(lane().section as ResourcesSection)}
+        >
+          View
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function OpenCodeProvidersSection(props: { data?: any }) {
+  const d = () => props.data ?? {}
+  const providers = () => (Array.isArray(d().providers) ? d().providers : [])
+  return (
+    <div class="flex flex-col gap-3" data-testid="resources-opencode">
+      <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+        <div class="mb-2 flex items-center justify-between gap-3">
+          <div class="text-12-regular text-text-weak">OpenCode providers</div>
+          <span class="rounded bg-background-base px-2 py-1 text-11-regular text-text-strong">
+            {!d().installed
+              ? "opencode not found"
+              : d().catalogAvailable
+                ? `${d().connectedCount ?? providers().filter((p: any) => p.connected).length} connected · ${d().availableCount ?? "?"} available`
+                : `${providers().length} credentialed`}
+          </span>
+        </div>
+        <Show
+          when={providers().length > 0}
+          fallback={<div class="text-12-regular text-text-weak">No providers reported.</div>}
+        >
+          <div class="flex flex-col gap-2" data-testid="resources-provider-list">
+            <For each={providers()}>
+              {(p: any) => (
+                <div
+                  class="rounded-md border border-border-weaker-base bg-background-base px-3 py-2"
+                  data-testid="resources-provider-row"
+                  data-provider-id={p.id}
+                >
+                  <div class="flex items-start justify-between gap-3">
+                    <div class="min-w-0">
+                      <div class="flex flex-wrap items-center gap-1.5">
+                        <span class="truncate text-13-medium text-text-strong">{p.name}</span>
+                        <span class="rounded bg-background-stronger px-1.5 py-0.5 text-10-regular text-text-weak">{p.id}</span>
+                      </div>
+                      <div class="mt-0.5 text-11-regular text-text-weak">
+                        auth: {p.authMethod}
+                        {p.source ? ` · ${p.source}` : ""}
+                        {typeof p.modelCount === "number" ? ` · ${p.modelCount} models` : " · models unknown"}
+                      </div>
+                      <div class="mt-0.5 text-11-regular text-text-weak">
+                        default model: <span class="text-text-strong">{p.defaultModel ?? "unknown"}</span>
+                      </div>
+                      <Show when={p.hiddenReason}>
+                        <div class="mt-0.5 text-10-regular text-orange-200/80">{p.hiddenReason}</div>
+                      </Show>
+                    </div>
+                    <div class="flex shrink-0 flex-col items-end gap-1">
+                      <span
+                        class="rounded-full px-2 py-0.5 text-10-medium uppercase tracking-wide"
+                        classList={{
+                          "bg-green-500/15 text-green-200": p.connected,
+                          "bg-background-stronger text-text-weak": !p.connected,
+                        }}
+                      >
+                        {p.connected ? "connected" : p.credentialed ? "credentialed" : "available"}
+                      </span>
+                      <span
+                        class="rounded-full px-2 py-0.5 text-10-regular"
+                        classList={{
+                          "bg-background-stronger text-text-weak": p.visible !== false,
+                          "bg-orange-500/15 text-orange-100": p.visible === false,
+                        }}
+                      >
+                        {p.visible === false ? "hidden" : p.visible === true ? "visible" : "visibility unknown"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </For>
+          </div>
+        </Show>
+      </div>
+      <div class="flex flex-col gap-2 rounded-md border border-border-weaker-base bg-background-stronger p-3">
+        <StatusRow label="Catalog" value={d().catalogAvailable ? "live (instance provider catalog)" : "unavailable — values shown as unknown"} />
+        <StatusRow label="Auth source" value={d().authPath ?? "unknown"} />
+        <StatusRow label="Auth file present" value={d().authFileExists ? "yes" : "no"} />
+        <StatusRow label="Config source" value={d().configPath ?? "default (opencode.json / opencode.jsonc)"} />
+      </div>
+      <Show when={(d().warnings ?? []).length > 0}>
+        <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-11-regular text-orange-100">
+          {(d().warnings ?? []).join("; ")}
+        </div>
+      </Show>
+      <div class="rounded bg-background-base px-3 py-2 text-11-regular text-text-weak">
+        Provider credentials live in auth.json and are never read here. Deep connect/manage stays in Settings.
+      </div>
+    </div>
+  )
+}
+
+function ClaudeResourcesSection(props: { data?: any }) {
+  const d = () => props.data ?? {}
+  const [running, setRunning] = createSignal(false)
+  const [result, setResult] = createSignal<any>()
+  const runDoctor = async () => {
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm("Run `claude doctor --help`? This spawns the Claude Code CLI (safe, no config printed).")
+    )
+      return
+    setRunning(true)
+    setResult(undefined)
+    try {
+      const res = await fetch("/experimental/cli-resources/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ probe: "claude-doctor" }),
+      })
+      setResult(await res.json())
+    } catch (error) {
+      setResult({ ok: false, error: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setRunning(false)
+    }
+  }
+  return (
+    <div class="flex flex-col gap-3" data-testid="resources-claude">
+      <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+        <div class="mb-2 flex items-center justify-between gap-3">
+          <div class="text-12-regular text-text-weak">Claude Code CLI</div>
+          <span
+            class="rounded bg-background-base px-2 py-1 text-11-regular"
+            classList={{ "text-text-strong": d().installed, "text-text-weak": !d().installed }}
+          >
+            {d().installed ? "installed" : "not installed"}
+          </span>
+        </div>
+        <div class="grid gap-2 sm:grid-cols-2">
+          <StatusPill label="Binary" value={d().binary ?? "not found"} active={!!d().installed} />
+          <StatusPill label="Version" value={d().version ?? "unknown"} active={!!d().version} />
+          <StatusPill label="User settings" value={d().settings?.userSettings ?? "unknown"} active={d().settings?.userSettings === "present"} />
+          <StatusPill label="User config" value={d().settings?.userConfig ?? "unknown"} active={d().settings?.userConfig === "present"} />
+          <StatusPill label="Project settings" value={d().settings?.projectSettings ?? "unknown"} />
+          <StatusPill
+            label="Telemetry"
+            value={d().telemetry?.configured ? (d().telemetry?.enabled ? "enabled" : "configured") : "not configured"}
+            active={!!d().telemetry?.configured}
+          />
+        </div>
+      </div>
+      <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+        <div class="mb-2 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            class="rounded-md border border-border-weaker-base bg-background-base px-3 py-1.5 text-12-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60"
+            disabled={running() || !d().installed}
+            onClick={() => void runDoctor()}
+            data-testid="resources-claude-doctor"
+          >
+            {running() ? "Running..." : "Run claude doctor"}
+          </button>
+          <span class="text-11-regular text-text-weak">Approval-gated. Spawns the CLI; no tokens or config contents are shown.</span>
+        </div>
+        <Show when={result()}>
+          {(r) => (
+            <pre class="max-h-52 overflow-auto whitespace-pre-wrap break-words rounded bg-background-base p-2 text-11-regular text-text-weak">
+              {r().output ?? r().error ?? "no output"}
+            </pre>
+          )}
+        </Show>
+      </div>
+      <Show when={(d().warnings ?? []).length > 0}>
+        <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-11-regular text-orange-100">
+          {(d().warnings ?? []).join("; ")}
+        </div>
+      </Show>
+      <div class="rounded bg-background-base px-3 py-2 text-11-regular text-text-weak">
+        Claude Code is a separate CLI with its own auth/session store (~/.claude, ~/.claude.json). It is not an OpenCode
+        model provider. Settings contents and tokens are never read.
+      </div>
+    </div>
+  )
+}
+
+function AntigravityResourcesSection(props: { data?: any }) {
+  const d = () => props.data ?? {}
+  const [running, setRunning] = createSignal(false)
+  const [result, setResult] = createSignal<any>()
+  const runModels = async () => {
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm("Run `agy models`? This may require Antigravity auth (keyring or SSH URL). Auth material is never shown.")
+    )
+      return
+    setRunning(true)
+    setResult(undefined)
+    try {
+      const res = await fetch("/experimental/cli-resources/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ probe: "antigravity-models" }),
+      })
+      setResult(await res.json())
+    } catch (error) {
+      setResult({ ok: false, error: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setRunning(false)
+    }
+  }
+  return (
+    <div class="flex flex-col gap-3" data-testid="resources-antigravity">
+      <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+        <div class="mb-2 flex items-center justify-between gap-3">
+          <div class="text-12-regular text-text-weak">Antigravity CLI (agy)</div>
+          <span
+            class="rounded bg-background-base px-2 py-1 text-11-regular"
+            classList={{ "text-text-strong": d().installed, "text-text-weak": !d().installed }}
+          >
+            {d().installed ? "installed" : "not installed"}
+          </span>
+        </div>
+        <div class="grid gap-2 sm:grid-cols-2">
+          <StatusPill label="Command" value={d().commandName ?? "agy"} active={!!d().installed} />
+          <StatusPill label="Binary" value={d().binary ?? "not found"} active={!!d().installed} />
+          <StatusPill label="Models command" value={d().modelsAvailable === null ? "unknown" : d().modelsAvailable ? "available" : "missing"} active={d().modelsAvailable === true} />
+          <StatusPill label="Plugins command" value={d().pluginsAvailable === null ? "unknown" : d().pluginsAvailable ? "available" : "missing"} active={d().pluginsAvailable === true} />
+          <StatusPill label="Auth" value={d().auth?.state ?? "unknown"} />
+        </div>
+        <Show when={Array.isArray(d().subcommands) && d().subcommands.length > 0}>
+          <div class="mt-2 flex flex-wrap gap-1.5">
+            <For each={d().subcommands}>
+              {(sub: string) => <span class="rounded bg-background-base px-2 py-1 text-11-regular text-text-strong">{sub}</span>}
+            </For>
+          </div>
+        </Show>
+      </div>
+      <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3">
+        <div class="mb-2 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            class="rounded-md border border-border-weaker-base bg-background-base px-3 py-1.5 text-12-regular text-text-strong hover:bg-surface-raised-base-hover disabled:opacity-60"
+            disabled={running() || !d().installed}
+            onClick={() => void runModels()}
+            data-testid="resources-antigravity-models"
+          >
+            {running() ? "Checking..." : "Check models (agy models)"}
+          </button>
+          <span class="text-11-regular text-text-weak">Approval-gated. May trigger auth; the URL/token is intentionally withheld.</span>
+        </div>
+        <Show when={result()}>
+          {(r) => (
+            <div
+              class="rounded-md border px-3 py-2 text-11-regular"
+              classList={{
+                "border-orange-500/20 bg-orange-500/10 text-orange-100": r().needsAuth === true || r().ok === false,
+                "border-border-weaker-base bg-background-base text-text-weak": r().needsAuth !== true && r().ok !== false,
+              }}
+            >
+              <pre class="max-h-52 overflow-auto whitespace-pre-wrap break-words">{r().output ?? r().error ?? "no output"}</pre>
+            </div>
+          )}
+        </Show>
+      </div>
+      <Show when={(d().warnings ?? []).length > 0}>
+        <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-11-regular text-orange-100">
+          {(d().warnings ?? []).join("; ")}
+        </div>
+      </Show>
+      <div class="rounded bg-background-base px-3 py-2 text-11-regular text-text-weak">
+        Antigravity is a separate CLI (command: agy). Auth uses the system keyring or an SSH authorization URL; tokens are
+        never read or displayed. It is not an OpenCode model provider.
+      </div>
+    </div>
+  )
+}
+
+function ResourcesToolsState(props: {
+  section: ResourcesSection
+  data?: any
+  warnings: Record<ResourcesSection, string[]>
+}) {
+  const allWarnings = createMemo(() =>
+    Object.entries(props.warnings).flatMap(([key, list]) => (list ?? []).map((warning) => `${key}: ${warning}`)),
+  )
+  const tools = () => props.data?.tools ?? ["cli_resources", "resource_status", "account_status", "workspace_tabs"]
+  return (
+    <details class="rounded-md border border-border-weaker-base bg-background-stronger p-3" data-testid="resources-tools-state">
+      <summary class="cursor-pointer text-12-medium text-text-strong">Tools &amp; state (what the model sees)</summary>
+      <div class="mt-2 flex flex-col gap-2 text-11-regular text-text-weak">
+        <div>
+          Active section: <span class="text-text-strong" data-testid="resources-active-section-label">{props.section}</span>
+        </div>
+        <div>Tools: {tools().map((tool: string) => `@${tool}`).join("  ")}</div>
+        <div>Actions: {(props.data?.actions ?? []).join(", ") || "refresh, attach_to_chat"}</div>
+        <div>
+          Warnings:{" "}
+          <span data-testid="resources-warnings">{allWarnings().length ? allWarnings().join(" · ") : "none"}</span>
+        </div>
+        <div class="flex flex-col gap-1">
+          <For each={props.data?.safety ?? []}>
+            {(note: string) => <div class="rounded bg-background-base px-2 py-1">{note}</div>}
+          </For>
+        </div>
+      </div>
+    </details>
   )
 }
 
@@ -3784,7 +4737,7 @@ function ArtifactsTabContent(props: { sessionID?: string }) {
   )
 }
 
-function FileBrowserTabContent() {
+function FileBrowserTabContent(props: { onOpenPreview?: (url: string) => void; onOpenRoutines?: () => void }) {
   const fileContext = useFile()
   const { tabs } = useSessionLayout()
   const initialState = readFileBrowserState()
@@ -3798,8 +4751,74 @@ function FileBrowserTabContent() {
     12000,
   )
   createEffect(() =>
-    writeFileBrowserState({ currentPath: currentPath(), mode: mode(), query: query(), selectedPath: selectedPath() }),
+    writeFileBrowserState({ currentPath: currentPath(), mode: mode(), query: query(), selectedPath: selectedPath(), recursive: recursive() }),
   )
+
+  const projectMeta = createPolledJson<any>(
+    () => {
+      const base = currentPath() || browser.data()?.path
+      return base ? `/experimental/project-metadata?path=${encodeURIComponent(base)}` : undefined
+    },
+    30000,
+  )
+
+  // Back/forward history over resolved folder paths.
+  const [history, setHistory] = createSignal<string[]>(initialState.currentPath ? [initialState.currentPath] : [])
+  const [historyIndex, setHistoryIndex] = createSignal(initialState.currentPath ? 0 : -1)
+  const clearSelection = () => {
+    setSelected(undefined)
+    setSelectedPath(undefined)
+  }
+  // Seed history from the first resolved path so back/forward work from a default root.
+  createEffect(() => {
+    const resolved = browser.data()?.path
+    if (resolved && history().length === 0) {
+      setHistory([resolved])
+      setHistoryIndex(0)
+    }
+  })
+  const navigateTo = (next: string | undefined) => {
+    if (!next || next === currentPath()) return
+    clearSelection()
+    setCurrentPath(next)
+    setQuery("")
+    const trimmed = history().slice(0, historyIndex() + 1)
+    if (trimmed[trimmed.length - 1] !== next) trimmed.push(next)
+    setHistory(trimmed)
+    setHistoryIndex(trimmed.length - 1)
+  }
+  const canBack = () => historyIndex() > 0
+  const canForward = () => historyIndex() < history().length - 1
+  const goBack = () => {
+    if (!canBack()) return
+    const i = historyIndex() - 1
+    setHistoryIndex(i)
+    clearSelection()
+    setCurrentPath(history()[i])
+  }
+  const goForward = () => {
+    if (!canForward()) return
+    const i = historyIndex() + 1
+    setHistoryIndex(i)
+    clearSelection()
+    setCurrentPath(history()[i])
+  }
+  const breadcrumbs = createMemo(() => {
+    const full = browser.data()?.path
+    if (!full) return [] as Array<{ label: string; path: string }>
+    const roots: string[] = Array.isArray(browser.data()?.roots) ? browser.data().roots : []
+    const containingRoot = roots.filter((r) => full === r || full.startsWith(r + "/")).sort((a, b) => b.length - a.length)[0]
+    if (!containingRoot) {
+      const parts = full.split("/").filter(Boolean)
+      let acc = ""
+      return parts.map((part: string) => ({ label: part, path: (acc += "/" + part) }))
+    }
+    const crumbs: Array<{ label: string; path: string }> = [{ label: containingRoot.split("/").filter(Boolean).pop() || containingRoot, path: containingRoot }]
+    const rest = full.slice(containingRoot.length).split("/").filter(Boolean)
+    let acc = containingRoot
+    for (const part of rest) crumbs.push({ label: part, path: (acc += "/" + part) })
+    return crumbs
+  })
 
   const opensInViewer = (entry: any) => ["image", "video", "audio", "pdf", "html", "json", "text"].includes(entry.kind)
   const openCodeFile = (entry: any) => {
@@ -3817,9 +4836,7 @@ function FileBrowserTabContent() {
   const openEntry = (entry: any) => {
     selectEntry(entry)
     if (entry.kind === "directory") {
-      setSelected(undefined)
-      setSelectedPath(undefined)
-      setCurrentPath(entry.path)
+      navigateTo(entry.path)
       return
     }
     if (!opensInViewer(entry)) {
@@ -3839,6 +4856,67 @@ function FileBrowserTabContent() {
       `${entry.name} ${entry.kind} ${entry.contentType ?? ""}`.toLowerCase().includes(needle),
     )
   })
+
+  // Recursive search hits the server search route; current-folder search stays
+  // a client-side filter over the loaded folder listing.
+  const [recursive, setRecursive] = createSignal(initialState.recursive ?? false)
+  const [searchResults, setSearchResults] = createSignal<any[] | undefined>()
+  const [searchState, setSearchState] = createSignal<"idle" | "loading" | "ready" | "error">("idle")
+  const [searchError, setSearchError] = createSignal<string | undefined>()
+  const [searchTruncated, setSearchTruncated] = createSignal(false)
+  const searchActive = createMemo(() => recursive() && query().trim().length > 0)
+
+  // Recursive search: fetch the server search route when recursive+query are set.
+  // Debounce is a plain module-scoped timer so effect re-runs (folder polls)
+  // never clear an in-flight request via onCleanup.
+  let searchTimer: ReturnType<typeof setTimeout> | undefined
+  let searchToken = 0
+  const runRecursiveSearch = (base: string, needle: string) => {
+    const token = ++searchToken
+    setSearchState("loading")
+    fetch(`/experimental/files/search?path=${encodeURIComponent(base)}&query=${encodeURIComponent(needle)}`, {
+      cache: "no-store",
+    })
+      .then(async (res) => {
+        const body = await res.json().catch(() => ({}))
+        if (token !== searchToken) return
+        if (!res.ok || body?.ok === false) throw new Error(body?.error ?? `search failed (${res.status})`)
+        setSearchResults(Array.isArray(body.entries) ? body.entries : [])
+        setSearchTruncated(!!body.truncated)
+        setSearchState("ready")
+        setSearchError(undefined)
+      })
+      .catch((error) => {
+        if (token !== searchToken) return
+        setSearchError(error instanceof Error ? error.message : String(error))
+        setSearchState("error")
+      })
+  }
+  createEffect(() => {
+    const needle = query().trim()
+    const base = currentPath() || browser.data()?.path
+    const on = recursive()
+    if (searchTimer) clearTimeout(searchTimer)
+    if (!on || !needle || !base) {
+      searchToken++
+      setSearchResults(undefined)
+      setSearchState("idle")
+      setSearchError(undefined)
+      return
+    }
+    searchTimer = setTimeout(() => runRecursiveSearch(base, needle), 250)
+  })
+  onCleanup(() => {
+    if (searchTimer) clearTimeout(searchTimer)
+  })
+
+  // Entries the list renders: recursive search results, else the folder filter.
+  const viewEntries = createMemo(() => (searchActive() ? searchResults() ?? [] : entries()))
+  const relativeToRoot = (full: string) => {
+    const base = browser.data()?.path
+    if (base && full.startsWith(base + "/")) return full.slice(base.length + 1)
+    return full
+  }
 
   createEffect(() => {
     const path = selectedPath()
@@ -3864,23 +4942,76 @@ function FileBrowserTabContent() {
             icon="arrow-left"
             variant="ghost"
             class="h-7 w-7"
-            disabled={!browser.data()?.parent}
-            onClick={() => {
-              setSelected(undefined)
-              setSelectedPath(undefined)
-              setCurrentPath(browser.data()?.parent)
-            }}
-            aria-label="Parent folder"
+            disabled={!canBack()}
+            onClick={goBack}
+            aria-label="Back"
+            data-testid="file-browser-back"
           />
-          <div class="min-w-[180px] flex-1 truncate rounded-md border border-border-weaker-base bg-background-stronger px-2 py-1 text-13-regular text-text-strong">
-            {browser.data()?.path ?? "Loading..."}
+          <IconButton
+            icon="arrow-right"
+            variant="ghost"
+            class="h-7 w-7"
+            disabled={!canForward()}
+            onClick={goForward}
+            aria-label="Forward"
+            data-testid="file-browser-forward"
+          />
+          <IconButton
+            icon="arrow-up"
+            variant="ghost"
+            class="h-7 w-7"
+            disabled={!browser.data()?.parent}
+            onClick={() => navigateTo(browser.data()?.parent)}
+            aria-label="Parent folder"
+            data-testid="file-browser-parent"
+          />
+          <div
+            class="flex min-w-[180px] flex-1 items-center gap-0.5 overflow-x-auto rounded-md border border-border-weaker-base bg-background-stronger px-2 py-1 text-13-regular"
+            data-testid="file-browser-breadcrumbs"
+          >
+            <Show when={breadcrumbs().length > 0} fallback={<span class="text-text-weak">{browser.data()?.path ?? "Loading..."}</span>}>
+              <For each={breadcrumbs()}>
+                {(crumb, index) => (
+                  <>
+                    <Show when={index() > 0}>
+                      <span class="shrink-0 text-text-weak">/</span>
+                    </Show>
+                    <button
+                      type="button"
+                      class="shrink-0 truncate rounded px-1 py-0.5 hover:bg-surface-raised-base-hover"
+                      classList={{
+                        "text-text-strong": index() === breadcrumbs().length - 1,
+                        "text-text-weak": index() !== breadcrumbs().length - 1,
+                      }}
+                      onClick={() => navigateTo(crumb.path)}
+                    >
+                      {crumb.label}
+                    </button>
+                  </>
+                )}
+              </For>
+            </Show>
           </div>
           <input
-            class="h-8 min-w-[180px] rounded-md border border-border-weaker-base bg-background-stronger px-2 text-13-regular text-text-strong outline-none placeholder:text-text-weak"
+            class="h-8 min-w-[160px] flex-1 rounded-md border border-border-weaker-base bg-background-stronger px-2 text-13-regular text-text-strong outline-none placeholder:text-text-weak"
             value={query()}
             onInput={(event) => setQuery(event.currentTarget.value)}
-            placeholder="Search this folder"
+            placeholder={recursive() ? "Search this folder + subfolders" : "Search this folder"}
+            data-testid="file-browser-search"
           />
+          <button
+            type="button"
+            class="h-8 shrink-0 rounded-md border px-2 text-12-regular"
+            classList={{
+              "border-[#f97316] bg-[#f97316]/10 text-text-strong": recursive(),
+              "border-border-weaker-base bg-background-stronger text-text-weak hover:bg-surface-raised-base-hover": !recursive(),
+            }}
+            onClick={() => setRecursive(!recursive())}
+            title="Toggle recursive search into subfolders"
+            data-testid="file-browser-recursive-toggle"
+          >
+            Subfolders
+          </button>
           <IconButton
             icon={mode() === "list" ? "dot-grid" : "bullet-list"}
             variant="ghost"
@@ -3906,17 +5037,104 @@ function FileBrowserTabContent() {
             </div>
           )}
         </Show>
+        <Show when={projectMeta.data()?.present}>
+          <details class="rounded-md border border-[#f97316]/30 bg-background-stronger px-3 py-2" data-testid="project-metadata-card">
+            <summary class="cursor-pointer text-12-medium text-text-strong">
+              Project: {projectMeta.data()?.metadata?.name ?? "Untitled"} <span class="text-11-regular text-text-weak">· design surfaces</span>
+            </summary>
+            <div class="mt-2 grid gap-1 text-11-regular">
+              <Show when={projectMeta.data()?.metadata?.description}>
+                <div class="text-text-weak">{projectMeta.data()?.metadata?.description}</div>
+              </Show>
+              <Show when={projectMeta.data()?.metadata?.openDesign?.url}>
+                <div class="text-text-weak">
+                  Open Design:{" "}
+                  <a href={projectMeta.data()?.metadata?.openDesign?.url} target="_blank" rel="noreferrer" class="text-[#f97316] hover:underline">
+                    {projectMeta.data()?.metadata?.openDesign?.projectId ?? projectMeta.data()?.metadata?.openDesign?.url}
+                  </a>
+                </div>
+              </Show>
+              <Show when={projectMeta.data()?.metadata?.paper?.url}>
+                <div class="text-text-weak">
+                  Paper:{" "}
+                  <a href={projectMeta.data()?.metadata?.paper?.url} target="_blank" rel="noreferrer" class="text-[#f97316] hover:underline">
+                    {projectMeta.data()?.metadata?.paper?.projectId ?? projectMeta.data()?.metadata?.paper?.url}
+                  </a>
+                </div>
+              </Show>
+              <Show when={(projectMeta.data()?.metadata?.preview?.urls?.length ?? 0) > 0}>
+                <div class="flex flex-col gap-1" data-testid="project-preview-urls">
+                  <span class="text-text-weak">Preview URLs:</span>
+                  <For each={projectMeta.data()?.metadata?.preview?.urls ?? []}>
+                    {(url: string) => (
+                      <div class="flex items-center gap-2">
+                        <span class="min-w-0 flex-1 truncate font-mono text-10-regular text-text-strong">{url}</span>
+                        <button
+                          type="button"
+                          class="shrink-0 rounded border border-[#f97316]/40 bg-[#f97316]/10 px-2 py-0.5 text-10-regular text-text-strong hover:bg-[#f97316]/20 disabled:opacity-50"
+                          data-testid="open-in-preview"
+                          data-url={url}
+                          disabled={!props.onOpenPreview || !/^https?:\/\//i.test(String(url))}
+                          onClick={(event) => {
+                            event.preventDefault()
+                            const target = String(url).trim()
+                            if (props.onOpenPreview && /^https?:\/\//i.test(target)) props.onOpenPreview(target)
+                          }}
+                        >
+                          Open in Preview
+                        </button>
+                      </div>
+                    )}
+                  </For>
+                </div>
+              </Show>
+              <Show when={(projectMeta.data()?.metadata?.routines?.length ?? 0) > 0}>
+                <div class="flex flex-wrap items-center gap-2" data-testid="project-routines">
+                  <span class="text-text-weak">Routines: {(projectMeta.data()?.metadata?.routines ?? []).map((r: any) => r.name ?? r.id).join(", ")}</span>
+                  <button
+                    type="button"
+                    class="shrink-0 rounded border border-[#f97316]/40 bg-[#f97316]/10 px-2 py-0.5 text-10-regular text-text-strong hover:bg-[#f97316]/20 disabled:opacity-50"
+                    data-testid="open-routines"
+                    disabled={!props.onOpenRoutines}
+                    onClick={() => props.onOpenRoutines?.()}
+                  >
+                    Open Routines
+                  </button>
+                </div>
+              </Show>
+              <Show when={(projectMeta.data()?.metadata?.relatedFiles?.length ?? 0) > 0}>
+                <div class="text-text-weak">Related files: {(projectMeta.data()?.metadata?.relatedFiles ?? []).length}</div>
+              </Show>
+              <div class="truncate font-mono text-10-regular text-text-weak">{projectMeta.data()?.metadataPath}</div>
+            </div>
+          </details>
+        </Show>
+        <Show when={searchActive()}>
+          <div class="flex items-center gap-2 rounded-md border border-border-weaker-base bg-background-stronger px-3 py-1.5 text-11-regular text-text-weak" data-testid="file-browser-search-status">
+            <Switch fallback={<span>Type to search subfolders...</span>}>
+              <Match when={searchState() === "loading"}><span>Searching subfolders...</span></Match>
+              <Match when={searchState() === "error"}><span class="text-orange-200">Search failed: {searchError()}</span></Match>
+              <Match when={searchState() === "ready"}>
+                <span>{viewEntries().length} match{viewEntries().length === 1 ? "" : "es"} under {(currentPath() || browser.data()?.path)?.split("/").filter(Boolean).pop() ?? "root"}</span>
+                <Show when={searchTruncated()}><span class="text-orange-200">(truncated)</span></Show>
+              </Match>
+            </Switch>
+          </div>
+        </Show>
         <div class="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(280px,40%)]">
           <div class="min-h-0 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger">
             <Switch>
               <Match when={mode() === "icons"}>
                 <div class="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-2 p-2">
-                  <For each={entries()}>
+                  <For each={viewEntries()}>
                     {(entry: any) => (
                       <button
                         class="min-h-24 rounded-md bg-background-base p-2 text-left hover:bg-surface-raised-base-hover"
                         classList={{ "ring-1 ring-[#f97316]": selected()?.path === entry.path }}
-                        onClick={() => selectEntry(entry)}
+                        data-testid="fb-entry"
+                        data-kind={entry.kind}
+                        data-name={entry.name}
+                        onClick={() => (entry.kind === "directory" ? navigateTo(entry.path) : selectEntry(entry))}
                         onDblClick={() => openEntry(entry)}
                       >
                         <div class="mb-2 flex justify-center text-[#f97316]">
@@ -3933,12 +5151,15 @@ function FileBrowserTabContent() {
               </Match>
               <Match when={true}>
                 <div class="flex flex-col">
-                  <For each={entries()}>
+                  <For each={viewEntries()}>
                     {(entry: any) => (
                       <button
                         class="flex items-center gap-3 border-b border-border-weaker-base px-3 py-2 text-left last:border-b-0 hover:bg-surface-raised-base-hover"
                         classList={{ "bg-background-base": selected()?.path === entry.path }}
-                        onClick={() => selectEntry(entry)}
+                        data-testid="fb-entry"
+                        data-kind={entry.kind}
+                        data-name={entry.name}
+                        onClick={() => (entry.kind === "directory" ? navigateTo(entry.path) : selectEntry(entry))}
                         onDblClick={() => openEntry(entry)}
                       >
                         <span class="text-[#f97316]">
@@ -3947,16 +5168,21 @@ function FileBrowserTabContent() {
                             size="small"
                           />
                         </span>
-                        <span class="min-w-0 flex-1 truncate text-13-regular text-text-strong">{entry.name}</span>
+                        <span class="min-w-0 flex-1 truncate">
+                          <span class="block truncate text-13-regular text-text-strong">{entry.name}</span>
+                          <Show when={searchActive()}>
+                            <span class="block truncate text-11-regular text-text-weak">{relativeToRoot(entry.path)}</span>
+                          </Show>
+                        </span>
                         <span class="shrink-0 text-12-regular text-text-weak">
                           {entry.kind === "directory" ? "folder" : `${entry.size ?? 0} bytes`}
                         </span>
                       </button>
                     )}
                   </For>
-                  <Show when={entries().length === 0}>
+                  <Show when={viewEntries().length === 0 && searchState() !== "loading"}>
                     <div class="flex min-h-40 items-center justify-center p-6 text-center text-12-regular text-text-weak">
-                      No files match this search in the current folder.
+                      {searchActive() ? "No matches in this folder or its subfolders." : "No files match this search in the current folder."}
                     </div>
                   </Show>
                 </div>
@@ -4019,6 +5245,14 @@ function FileDetails(props: { file: any; onOpen?: () => void }) {
           <StatusRow label="Size" value={file().kind === "directory" ? "Folder" : formatBytes(file().size)} />
           <StatusRow label="Modified" value={file().mtime ? new Date(file().mtime).toLocaleString() : "Unknown"} />
         </div>
+        <Show when={file().kind !== "directory" && (file().url || file().path)}>
+          <div class="mt-3" data-testid="file-preview">
+            <div class="mb-1 text-11-medium text-text-weak">Preview</div>
+            <div class="h-72 overflow-hidden rounded-md border border-border-weaker-base bg-background-base">
+              <FilePreview file={file()} showHeader={false} />
+            </div>
+          </div>
+        </Show>
       </div>
       <div class="flex shrink-0 items-center justify-end gap-2 border-t border-border-weaker-base p-3">
         <Show when={file().url}>
@@ -4456,7 +5690,9 @@ export function SessionSidePanel(props: {
     }
 
     if (!openedTabs().includes(canonical)) tabs().open(canonical)
-    if (!mobile() && !view().reviewPanel.opened()) view().reviewPanel.open()
+    // Only react to active-tab changes here. Tracking reviewPanel.opened() made the
+    // header close button useless: closing the panel re-ran this effect and reopened it.
+    if (!untrack(mobile) && !untrack(() => view().reviewPanel.opened())) view().reviewPanel.open()
   })
 
   createEffect(() => {
@@ -4493,11 +5729,34 @@ export function SessionSidePanel(props: {
 
   const openPanelTab = (tab: string) => {
     const nextTab = canonicalPanelTab(tab)
+    const detectedSection = sectionForRawTab(tab)
+    if (detectedSection && nextTab === PANEL_RESOURCES_TAB) setResourcesSection(detectedSection)
     setPanelMenuOpen(false)
     openReviewPanel()
     if (nextTab === PANEL_TERMINAL_TAB && view().terminal.opened()) view().terminal.close()
     tabs().open(nextTab)
     tabs().setActive(nextTab)
+  }
+
+  // Open a URL in the Preview tab without disturbing the caller's tab (used by
+  // the File Browser project-metadata card). Seeds localStorage (for a fresh
+  // mount), the server preview state (for an already-open Preview poll), and
+  // dispatches an event (for an instant update on the mounted Preview).
+  const openPreviewURL = (url: string) => {
+    const clean = String(url || "").trim()
+    if (!clean) return
+    writePreviewState({ url: clean })
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("opencode:preview-open", { detail: { url: clean } }))
+      if (params.id) {
+        void fetch(`/experimental/preview/${encodeURIComponent(params.id)}/state`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ url: clean, action: "navigate", source: "file-browser" }),
+        }).catch(() => {})
+      }
+    }
+    openPanelTab(PANEL_PREVIEW_TAB)
   }
 
   const changeActiveTab = (tab: string) => {
@@ -4664,6 +5923,9 @@ export function SessionSidePanel(props: {
     const action = clientAction?.action ?? pending?.action
     const tab = clientAction?.tab ?? pending?.tab
     if (!actionID || !action) return
+    const requestedSection = sectionForRawTab(clientAction?.requestedTab ?? pending?.requestedTab ?? tab)
+    if (requestedSection && typeof tab === "string" && canonicalPanelTab(tab) === PANEL_RESOURCES_TAB)
+      setResourcesSection(requestedSection)
     try {
       if (action === "close" && typeof tab === "string") {
         closePanelTab(canonicalPanelTab(tab))
@@ -4726,6 +5988,10 @@ export function SessionSidePanel(props: {
       if (action === "close") {
         tabs().close(tab)
       } else if (isPanelTab(tab)) {
+        const requestedSection = sectionForRawTab(
+          typeof detail.requestedTab === "string" ? detail.requestedTab : tab,
+        )
+        if (requestedSection && canonicalPanelTab(tab) === PANEL_RESOURCES_TAB) setResourcesSection(requestedSection)
         openPanelTab(tab)
         if (tab === PANEL_BROWSER_TAB && typeof detail.url === "string") {
           setBrowserLaunch({ url: detail.url, nonce: Date.now() })
@@ -4746,6 +6012,21 @@ export function SessionSidePanel(props: {
 
     window.addEventListener("opencode:workspace-tab-action", handleWorkspaceTabAction)
     onCleanup(() => window.removeEventListener("opencode:workspace-tab-action", handleWorkspaceTabAction))
+  })
+
+  createEffect(() => {
+    const handleResourcesSection = (event: Event) => {
+      const detail = (event as CustomEvent<any>).detail ?? {}
+      const section =
+        typeof detail.section === "string" ? (detail.section as ResourcesSection) : sectionForRawTab(detail.raw)
+      // Open the tab first: openPanelTab("panel://resources") defaults the section
+      // to "system" (via sectionForRawTab), so an explicit section must be applied
+      // after, or it would be clobbered.
+      openPanelTab(PANEL_RESOURCES_TAB)
+      if (section) setResourcesSection(section)
+    }
+    window.addEventListener("opencode:resources-section", handleResourcesSection as EventListener)
+    onCleanup(() => window.removeEventListener("opencode:resources-section", handleResourcesSection as EventListener))
   })
 
   const [store, setStore] = createStore({
@@ -4795,25 +6076,8 @@ export function SessionSidePanel(props: {
 
   return (
     <>
-      <Show when={openDesignBridgeState()?.active ? openDesignBridgeState() : undefined}>
-        {(bridge) => (
-          <Portal>
-            <div class="pointer-events-none fixed bottom-24 left-1/2 z-[900] max-w-[min(560px,calc(100vw-2rem))] -translate-x-1/2 rounded-full border border-blue-400/35 bg-blue-500/12 px-3 py-1.5 text-12-medium text-blue-200 shadow-[0_0_24px_rgba(59,130,246,0.22)] backdrop-blur">
-              <span class="text-blue-100">Design Mode</span>
-              <span class="mx-2 text-blue-300/70">/</span>
-              <span class="text-blue-200/90">{bridge().projectName ?? bridge().projectId ?? "OpenDesign"}</span>
-              <Show when={bridge().chatName ?? bridge().chatId}>
-                {(chat) => (
-                  <>
-                    <span class="mx-2 text-blue-300/70">/</span>
-                    <span class="text-blue-200/75">{chat()}</span>
-                  </>
-                )}
-              </Show>
-            </div>
-          </Portal>
-        )}
-      </Show>
+      {/* Phase 1: mirror Open Design's live conversation over the left message region when bridged. */}
+      <OpenDesignMirror />
       <Show when={(mobile() && !!params.id) || (isDesktop() && !(settings.general.newLayoutDesigns() && !params.id))}>
         <aside
           id="review-panel"
@@ -5051,15 +6315,6 @@ export function SessionSidePanel(props: {
                       </Tabs.Content>
 
                       <Tabs.Content
-                        value={PANEL_ACCOUNTS_TAB}
-                        class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
-                      >
-                        <Show when={activePanelTab() === PANEL_ACCOUNTS_TAB}>
-                          <AccountsTabContent />
-                        </Show>
-                      </Tabs.Content>
-
-                      <Tabs.Content
                         value={PANEL_ROUTINES_TAB}
                         class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
                       >
@@ -5100,7 +6355,7 @@ export function SessionSidePanel(props: {
                         class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
                       >
                         <Show when={activePanelTab() === PANEL_FILE_BROWSER_TAB}>
-                          <FileBrowserTabContent />
+                          <FileBrowserTabContent onOpenPreview={openPreviewURL} onOpenRoutines={() => openPanelTab(PANEL_ROUTINES_TAB)} />
                         </Show>
                       </Tabs.Content>
 

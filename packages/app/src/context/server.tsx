@@ -1,5 +1,5 @@
 import { createSimpleContext } from "@opencode-ai/ui/context"
-import { type Accessor, batch, createMemo } from "solid-js"
+import { type Accessor, batch, createEffect, createMemo } from "solid-js"
 import { createStore, type SetStoreFunction, type Store } from "solid-js/store"
 import { Persist, persisted } from "@/utils/persist"
 import { ServerScope } from "@/utils/server-scope"
@@ -7,6 +7,7 @@ import { ServerScope } from "@/utils/server-scope"
 type StoredProject = { worktree: string; expanded: boolean }
 type StoredServer = string | ServerConnection.HttpBase | ServerConnection.Http
 type ServerProjectState = { projects: Record<string, StoredProject[]>; lastProject: Record<string, string> }
+type ServerProjectSeedMap = Record<string, string[]>
 const HEALTH_POLL_INTERVAL_MS = 10_000
 
 export function normalizeServerUrl(input: string) {
@@ -225,6 +226,7 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
     defaultServer: ServerConnection.Key
     canonicalLocalServer?: ServerConnection.Key
     servers?: Array<ServerConnection.Any>
+    projectSeeds?: ServerProjectSeedMap
   }) => {
     const [store, setStore, _, ready] = persisted(
       {
@@ -280,6 +282,32 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
     const isReady = createMemo(() => ready() && !!state.active)
 
     const scope = (key = state.active) => ServerScope.fromServerKey(key, props.canonicalLocalServer)
+
+    createEffect(() => {
+      if (!ready()) return
+      const seeds = props.projectSeeds
+      if (!seeds) return
+
+      for (const conn of allServers()) {
+        const key = ServerConnection.key(conn)
+        const scopeKey = scope(key)
+        const seedDirectories = [...new Set([...(seeds[key] ?? []), ...(seeds[scopeKey] ?? [])])]
+        if (!seedDirectories.length) continue
+
+        const currentProjects = store.projects[scopeKey] ?? []
+        const known = new Set(currentProjects.map((project) => project.worktree))
+        const additions = seedDirectories
+          .map((worktree) => worktree.trim())
+          .filter((worktree) => worktree && !known.has(worktree))
+          .map((worktree) => {
+            known.add(worktree)
+            return { worktree, expanded: true }
+          })
+
+        if (additions.length) setStore("projects", scopeKey, [...currentProjects, ...additions])
+      }
+    })
+
     const projects = createServerProjects({ scope, store, setStore })
     const projectStores = new Map<ServerConnection.Key, ReturnType<typeof createServerProjects>>()
     const projectsForServer = (key: ServerConnection.Key) => {

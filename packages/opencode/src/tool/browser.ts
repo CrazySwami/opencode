@@ -343,7 +343,8 @@ function commandFor(params: Schema.Schema.Type<typeof Parameters>, paths: Return
     case "keydown":
     case "keyup":
       requireParam(params.text, "text", params.action)
-      if (params.target) command.push(params.target)
+      // playwright-cli press/keydown/keyup take only <key>; a selector argument
+      // makes the CLI exit with "too many arguments".
       command.push(params.text)
       break
     case "eval":

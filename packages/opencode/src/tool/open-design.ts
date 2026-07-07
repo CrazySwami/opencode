@@ -31,6 +31,9 @@ export const Parameters = Schema.Struct({
   content: Schema.optional(Schema.String).annotate({ description: "File content for write/create actions." }),
   title: Schema.optional(Schema.String).annotate({ description: "Conversation title for create-conversation." }),
   message: Schema.optional(Schema.String).annotate({ description: "Prompt message for run-prompt." }),
+  agent: Schema.optional(Schema.String).annotate({
+    description: "Open Design agent id for run-prompt (default codex, the lane bridged to Codex Multi-Auth).",
+  }),
 })
 
 type Metadata = {
@@ -135,11 +138,13 @@ async function executeOpenDesignAction(client: Client, params: OpenDesignParams)
         `/api/projects/${encodeURIComponent(required(params.project, "project"))}/conversations/${encodeURIComponent(required(params.conversation, "conversation"))}/messages`,
       )
     case "run-prompt":
+      // The daemon fails runs with AGENT_UNAVAILABLE when agentId is omitted.
       return request(client, "/api/runs", {
         method: "POST",
         body: compact({
           projectId: required(params.project, "project"),
           conversationId: params.conversation,
+          agentId: params.agent || "codex",
           message: required(params.message, "message"),
         }),
       })

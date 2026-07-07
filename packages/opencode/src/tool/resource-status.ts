@@ -3,6 +3,7 @@ import * as Tool from "./tool"
 import DESCRIPTION from "./resource-status.txt"
 import { execFile } from "node:child_process"
 import { readFile } from "node:fs/promises"
+import { readFileSync } from "node:fs"
 import os from "node:os"
 import { promisify } from "node:util"
 
@@ -100,6 +101,22 @@ export async function collectResourceStatus(target: ResourceTarget = "all"): Pro
   }
 }
 
+
+// Bun's os.uptime() is unreliable on this host (returns ~8x the real value),
+// so read the kernel's own counter on Linux and only fall back to os.uptime().
+function serverUptimeSeconds() {
+  try {
+    if (process.platform === "linux") {
+      const first = readFileSync("/proc/uptime", "utf8").trim().split(/\s+/)[0]
+      const parsed = Number(first)
+      if (Number.isFinite(parsed) && parsed > 0) return Math.round(parsed)
+    }
+  } catch {
+    /* fall through */
+  }
+  return Math.round(os.uptime())
+}
+
 async function readServerStatus(): Promise<HostResourceStatus> {
   const checkedAt = new Date().toISOString()
   try {
@@ -116,7 +133,7 @@ async function readServerStatus(): Promise<HostResourceStatus> {
       checkedAt,
       hostname: os.hostname(),
       platform: `${os.type()} ${os.release()}`,
-      uptimeSeconds: Math.round(os.uptime()),
+      uptimeSeconds: serverUptimeSeconds(),
       cpu: {
         cores,
         load1: load[0] ?? 0,
@@ -203,13 +220,17 @@ function parseDf(stdout: string, fallbackPath: string) {
   const totalBytes = Number(parts[1]) * 1024
   const usedBytes = Number(parts[2]) * 1024
   const freeBytes = Number(parts[3]) * 1024
+  // Column 5 is df's Capacity %, which matches what a user sees in a terminal
+  // (used / (used + available), i.e. reserved blocks excluded). Computing
+  // used/total instead understates a nearly-full disk by several points.
+  const dfPercent = Number(String(parts[4]).replace("%", ""))
   return {
     filesystem: parts[0],
     path: parts.slice(5).join(" ") || fallbackPath,
     totalBytes,
     usedBytes,
     freeBytes,
-    usedPercent: percent(usedBytes, totalBytes),
+    usedPercent: Number.isFinite(dfPercent) ? dfPercent : percent(usedBytes, freeBytes + usedBytes),
   }
 }
 
@@ -312,7 +333,8 @@ function parseDf(stdout, fallbackPath) {
   const totalBytes = Number(parts[1]) * 1024
   const usedBytes = Number(parts[2]) * 1024
   const freeBytes = Number(parts[3]) * 1024
-  return { filesystem: parts[0], path: parts.slice(5).join(" ") || fallbackPath, totalBytes, usedBytes, freeBytes, usedPercent: percent(usedBytes, totalBytes) }
+  const dfPercent = Number(String(parts[4]).replace("%", ""))
+  return { filesystem: parts[0], path: parts.slice(5).join(" ") || fallbackPath, totalBytes, usedBytes, freeBytes, usedPercent: Number.isFinite(dfPercent) ? dfPercent : percent(usedBytes, freeBytes + usedBytes) }
 }
 const load = os.loadavg()
 const cores = os.cpus().length

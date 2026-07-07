@@ -111,34 +111,65 @@ export const WORKSPACE_PANEL_TABS: WorkspacePanelDefinition[] = [
   {
     id: "panel://resources",
     label: "Resources",
-    badge: "CPU",
-    route: "/experimental/resources/status",
-    toolIDs: ["resource_status", "workspace_tabs"],
-    mentionIDs: ["resources", "resource_status", "cpu", "server_status"],
-    aliases: ["resources", "resource_status", "cpu", "server_status"],
-    actions: ["refresh", "attach_to_chat", "tools"],
-    safetyPolicy: "Read-only metrics. Do not expose secrets or environment variable values.",
+    badge: "CLI",
+    route: "/experimental/cli-resources/status",
+    toolIDs: ["cli_resources", "resource_status", "account_status", "workspace_tabs"],
+    mentionIDs: [
+      "resources",
+      "cli_resources",
+      "resource_status",
+      "cpu",
+      "server_status",
+      "codex",
+      "accounts",
+      "account_status",
+      "multi_auth",
+      "claude_code",
+      "antigravity",
+      "opencode_provider",
+    ],
+    aliases: [
+      "resources",
+      "cli_resources",
+      "resource_status",
+      "cpu",
+      "server_status",
+      "codex",
+      "accounts",
+      "account_status",
+      "multi_auth",
+      "claude_code",
+      "antigravity",
+      "opencode_provider",
+    ],
+    actions: ["refresh", "attach_to_chat", "tools", "settings"],
+    safetyPolicy:
+      "Read-only status across CLI resources. No auth.json, ~/.claude.json, keyring data, OAuth/refresh tokens, API keys, cookies, or env values are exposed. Codex account mutations and Claude/Antigravity run actions are approval-gated.",
     canSnapshot: false,
     canAttachToChat: true,
-    description: "Server and Mac CPU, memory, storage, online, and uptime status.",
+    description:
+      "CLI resources dashboard: system metrics, OpenCode providers, Codex Multi-Auth, Claude Code, and Antigravity — shown as separate auth systems, not merged providers.",
   },
   {
     id: "panel://accounts",
     label: "Codex",
     shortLabel: "Accounts",
     icon: "providers",
-    route: "/experimental/workspace-suite/status",
-    toolIDs: ["account_status", "workspace_tabs"],
+    hidden: true,
+    aliasFor: "panel://resources",
+    route: "/experimental/cli-resources/status",
+    toolIDs: ["account_status", "cli_resources", "workspace_tabs"],
     mentionIDs: ["codex", "accounts", "account_status", "multi_auth"],
     aliases: ["codex", "accounts", "account_status", "multi_auth"],
     actions: ["refresh", "attach_to_chat", "tools", "settings"],
     safetyPolicy: "Account switching, probing, and re-auth are explicit/approval-gated account actions.",
     canSnapshot: false,
     canAttachToChat: true,
-    description: "Codex account lanes, rotation status, account health, and workspace index.",
+    description: "Codex account lanes (now inside the Resources tab, Codex section). Alias kept for compatibility.",
   },
   {
     id: "panel://artifacts",
+    hidden: true,
     label: "Artifacts",
     icon: "photo",
     toolIDs: ["artifact", "workspace_tabs"],
@@ -224,7 +255,7 @@ export function workspacePanelTabForTool(id: string, source?: string) {
   if (source === "resource") return "panel://resources"
   if (source === "artifact") return "panel://artifacts"
   if (source === "file_browser") return "panel://file-browser"
-  if (source === "account") return "panel://accounts"
+  if (source === "account") return "panel://resources"
   if (source === "routines") return "panel://routines"
   return undefined
 }

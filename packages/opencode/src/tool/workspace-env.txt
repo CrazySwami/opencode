@@ -1,0 +1,5 @@
+Read-only view of the server-local workspace environment registry, plus dotenv validation.
+
+Use action=list to see variable names, scope, enabled/secret flags, description, and updatedAt (NEVER values). Use action=validate with dotenv text to check for duplicate keys and malformed lines before the user imports them (returns key names and line validity only, never values).
+
+This tool never returns or mutates values. Secret values are never exposed. To add/edit/delete/import variables, propose the change to the user; those mutations happen in the Environment tab UI (approval-gated). The authoritative env file is server-local (path returned by list), not in GitHub.

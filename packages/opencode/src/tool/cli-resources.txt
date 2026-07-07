@@ -1,0 +1,7 @@
+Read-only, redacted status for the local CLI coding-agent resources shown in the Resources workspace tab.
+
+Use action=status for a full snapshot with five sections: system (CPU/RAM/storage for CT100 + Mac), opencode (native provider names + auth methods), codex (Codex Multi-Auth accounts/rotation/runtime), claude (Claude Code CLI installed state, settings-file presence, telemetry flags), and antigravity (agy installed state + subcommand availability + auth note). Use probe-opencode/probe-codex/probe-claude/probe-antigravity to fetch one section.
+
+This tool never returns secrets: no auth.json values, no ~/.claude.json contents, no keyring data, no OAuth/refresh tokens, no API keys, no cookies, no env values. Every CLI probe is timeout-bounded and output-bounded. OpenCode providers, Codex CLI accounts, Claude Code, and Antigravity are separate auth systems shown side by side, not merged; Claude Code and Antigravity are CLI resources, not OpenCode model providers.
+
+Codex account mutations stay in the account_status tool. Claude/Antigravity run actions (claude doctor, agy models) are approval-gated in the UI and are not exposed here.

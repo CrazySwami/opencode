@@ -11,6 +11,7 @@ import { useServerSync } from "@/context/server-sync"
 import { DialogConnectProvider } from "./dialog-connect-provider"
 import { DialogSelectProvider } from "./dialog-select-provider"
 import { DialogCustomProvider } from "./dialog-custom-provider"
+import { DialogCodexMultiAuthProvider } from "./dialog-codex-multi-auth-provider"
 import { SettingsList } from "./settings-list"
 import { SettingsServerPicker, SettingsServerScope } from "./settings-server-picker"
 
@@ -166,18 +167,33 @@ const SettingsProvidersContent: Component = () => {
                       <span class="text-14-medium text-text-strong truncate">{item.name}</span>
                       <Tag>{type(item)}</Tag>
                     </div>
-                    <Show
-                      when={canDisconnect(item)}
-                      fallback={
-                        <span class="text-14-regular text-text-base opacity-0 group-hover:opacity-100 transition-opacity duration-200 pr-3 cursor-default">
-                          {language.t("settings.providers.connected.environmentDescription")}
-                        </span>
-                      }
-                    >
-                      <Button size="large" variant="ghost" onClick={() => void disconnect(item.id, item.name)}>
-                        {language.t("common.disconnect")}
-                      </Button>
-                    </Show>
+                    <div class="flex items-center gap-2">
+                      <Show when={item.id === "codex-multi-auth"}>
+                        <Button
+                          size="large"
+                          variant="secondary"
+                          onClick={() => {
+                            dialog.show(() => <DialogCodexMultiAuthProvider />)
+                          }}
+                        >
+                          Manage accounts
+                        </Button>
+                      </Show>
+                      <Show
+                        when={canDisconnect(item) && item.id !== "codex-multi-auth"}
+                        fallback={
+                          <Show when={item.id !== "codex-multi-auth"}>
+                            <span class="text-14-regular text-text-base opacity-0 group-hover:opacity-100 transition-opacity duration-200 pr-3 cursor-default">
+                              {language.t("settings.providers.connected.environmentDescription")}
+                            </span>
+                          </Show>
+                        }
+                      >
+                        <Button size="large" variant="ghost" onClick={() => void disconnect(item.id, item.name)}>
+                          {language.t("common.disconnect")}
+                        </Button>
+                      </Show>
+                    </div>
                   </div>
                 )}
               </For>
