@@ -9,6 +9,8 @@ type StoredServer = string | ServerConnection.HttpBase | ServerConnection.Http
 type ServerProjectState = { projects: Record<string, StoredProject[]>; lastProject: Record<string, string> }
 type ServerProjectSeedMap = Record<string, string[]>
 const HEALTH_POLL_INTERVAL_MS = 10_000
+// One-time flag: collapse pre-existing expanded seed projects (reconnect-storm fix).
+const SEEDS_COLLAPSED_FLAG = "opencode.seedsCollapsed.v1"
 
 export function normalizeServerUrl(input: string) {
   const trimmed = input.trim()
@@ -288,6 +290,19 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
       const seeds = props.projectSeeds
       if (!seeds) return
 
+      // One-time migration: existing clients have the ~95 seed dirs persisted as
+      // expanded:true, which drives the reconnect storm. Collapse them once (a
+      // localStorage flag prevents fighting the user's later manual expands).
+      if (typeof localStorage !== "undefined" && !localStorage.getItem(SEEDS_COLLAPSED_FLAG)) {
+        for (const scopeKey of Object.keys(store.projects)) {
+          const list = store.projects[scopeKey] ?? []
+          list.forEach((project, index) => {
+            if (project.expanded) setStore("projects", scopeKey, index, "expanded", false)
+          })
+        }
+        localStorage.setItem(SEEDS_COLLAPSED_FLAG, "1")
+      }
+
       for (const conn of allServers()) {
         const key = ServerConnection.key(conn)
         const scopeKey = scope(key)
@@ -301,7 +316,11 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
           .filter((worktree) => worktree && !known.has(worktree))
           .map((worktree) => {
             known.add(worktree)
-            return { worktree, expanded: true }
+            // Seed collapsed: an expanded project opens live SSE streams and
+            // bootstraps on every (re)connect. With ~95 seeds, expanding them
+            // all produced the reconnect-storm (~200 SSE conns → RSS spike →
+            // event-loop lag). Collapsed dirs bootstrap lazily when opened.
+            return { worktree, expanded: false }
           })
 
         if (additions.length) setStore("projects", scopeKey, [...currentProjects, ...additions])
