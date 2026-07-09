@@ -1,8 +1,21 @@
 import { Effect, Schema } from "effect"
 import * as Tool from "./tool"
 import DESCRIPTION from "./routines.txt"
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { spawn } from "node:child_process"
 import path from "node:path"
+
+// Hosts a routine can execute on. `ssh` null = run locally (this machine);
+// otherwise the command runs via `ssh <alias> <command>`. Extensible — add
+// entries here (or later from ~/.ssh/config) to expose more run targets.
+export const ROUTINE_HOSTS: Record<string, { label: string; ssh: string | null }> = {
+  local: { label: "This machine", ssh: null },
+  ct100: { label: "CT100 (hustle-dev)", ssh: "hustle-dev" },
+}
+const DEFAULT_HOST = "local"
+// Hard cap so a runaway routine command can't hang the runner forever.
+const ROUTINE_RUN_TIMEOUT_MS = 5 * 60 * 1000
+const ROUTINE_OUTPUT_CAP = 64 * 1024
 
 export const Parameters = Schema.Struct({
   action: Schema.optional(Schema.Literals(["status", "list", "get", "logs", "create", "update", "delete", "enable", "disable", "run"])).annotate({
@@ -26,6 +39,12 @@ export const Parameters = Schema.Struct({
   enabled: Schema.optional(Schema.Boolean).annotate({
     description: "Enabled state for update. Created routines are always disabled drafts.",
   }),
+  host: Schema.optional(Schema.String).annotate({
+    description: "Machine the routine runs on. One of: local (this machine), ct100 (hustle-dev). Defaults to local.",
+  }),
+  icon: Schema.optional(Schema.String).annotate({
+    description: "Optional icon name/emoji shown for the routine in the UI.",
+  }),
   tags: Schema.optional(Schema.Array(Schema.String)).annotate({
     description: "Optional routine tags for create/update.",
   }),
@@ -46,6 +65,8 @@ export type Routine = {
   schedule?: string
   command?: string
   enabled: boolean
+  host?: string
+  icon?: string
   tags?: readonly string[]
   notify?: readonly string[]
   createdAt: string
@@ -53,6 +74,7 @@ export type Routine = {
   lastRunAt?: string
   nextRunAt?: string
   lastStatus?: "ok" | "error" | "running" | "never"
+  lastExitCode?: number
 }
 
 export type RoutineLog = {
@@ -80,6 +102,8 @@ export const RoutinesTool = Tool.define<typeof Parameters, Metadata, never>(
               schedule: params.schedule,
               command: params.command,
               enabled: params.enabled,
+              host: params.host,
+              icon: params.icon,
               tags: params.tags,
               notify: params.notify,
             }),
@@ -106,6 +130,7 @@ export async function routinesStatus() {
     logsDir: routinesLogsDir(),
     mutationsEnabled: routinesMutationsEnabled(),
     runEnabled: routinesRunEnabled(),
+    hosts: Object.entries(ROUTINE_HOSTS).map(([id, h]) => ({ id, label: h.label, remote: !!h.ssh })),
     accessBoundaryRequired: routinesMutationsEnabled() ? null : "Set OPENCODE_ROUTINES_MUTATIONS=1 to allow disabled draft writes.",
     mutationPolicy: routinesMutationsEnabled() ? "disabled_draft_writes_enabled" : "disabled_draft_writes_disabled",
     scheduler: {
@@ -132,6 +157,8 @@ export async function routinesAction(input: {
   schedule?: string
   command?: string
   enabled?: boolean
+  host?: string
+  icon?: string
   tags?: readonly string[]
   notify?: readonly string[]
 }) {
@@ -161,6 +188,8 @@ export async function createRoutineDraft(input: {
   description?: string
   schedule?: string
   command?: string
+  host?: string
+  icon?: string
   tags?: readonly string[]
   notify?: readonly string[]
 }) {
@@ -188,6 +217,8 @@ export async function createRoutineDraft(input: {
     schedule: optionalText(input.schedule) || "manual",
     command: optionalText(input.command),
     enabled: false,
+    host: input.host && ROUTINE_HOSTS[input.host] ? input.host : DEFAULT_HOST,
+    icon: optionalText(input.icon),
     tags: sanitizedList(input.tags, ["draft"]),
     notify: sanitizedList(input.notify, ["in-app"]),
     createdAt: now,
@@ -211,6 +242,8 @@ export async function updateRoutine(
     schedule?: string
     command?: string
     enabled?: boolean
+    host?: string
+    icon?: string
     tags?: readonly string[]
     notify?: readonly string[]
   },
@@ -236,6 +269,8 @@ export async function updateRoutine(
     schedule: input.schedule === undefined ? current.schedule : optionalText(input.schedule) || "manual",
     command: input.command === undefined ? current.command : optionalText(input.command),
     enabled: typeof input.enabled === "boolean" ? input.enabled : current.enabled,
+    host: input.host === undefined ? current.host : input.host && ROUTINE_HOSTS[input.host] ? input.host : DEFAULT_HOST,
+    icon: input.icon === undefined ? current.icon : optionalText(input.icon),
     tags: input.tags === undefined ? cloneList(current.tags) : sanitizedList(input.tags, current.tags ?? []),
     notify: input.notify === undefined ? cloneList(current.notify) : sanitizedList(input.notify, current.notify ?? []),
     updatedAt: new Date().toISOString(),
@@ -272,6 +307,62 @@ export async function deleteRoutine(id: string | undefined) {
   }
 }
 
+function routineLogFile(routineID: string) {
+  return path.join(routinesLogsDir(), `${safeID(routineID)}.jsonl`)
+}
+
+function appendRoutineLog(routineID: string, level: RoutineLog["level"], message: string) {
+  ensureRoutinesStore()
+  const entry: RoutineLog = { time: new Date().toISOString(), routineID, level, message }
+  try {
+    appendFileSync(routineLogFile(routineID), JSON.stringify(entry) + "\n")
+  } catch {
+    // best-effort logging; never let a log write fail a run
+  }
+}
+
+function patchRoutine(id: string, patch: Partial<Routine>) {
+  const routines = readRoutines()
+  const idx = routines.findIndex((routine) => routine.id === id)
+  if (idx === -1) return
+  routines[idx] = { ...routines[idx], ...patch, updatedAt: new Date().toISOString() }
+  writeRoutines(routines)
+}
+
+// Execute a routine command on the selected host. ssh=null runs locally via a
+// shell; otherwise it runs over `ssh <alias>` (BatchMode so it never blocks on a
+// password prompt). Output is capped and the whole run is time-boxed.
+function runCommandOnHost(host: string, command: string): Promise<{ code: number; output: string }> {
+  return new Promise((resolve) => {
+    const target = ROUTINE_HOSTS[host] ?? ROUTINE_HOSTS[DEFAULT_HOST]
+    const [cmd, args] = target.ssh
+      ? (["ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", target.ssh, command]] as const)
+      : (["/bin/sh", ["-c", command]] as const)
+    let output = ""
+    let done = false
+    const append = (buf: Buffer) => {
+      if (output.length >= ROUTINE_OUTPUT_CAP) return
+      output += buf.toString("utf8")
+      if (output.length > ROUTINE_OUTPUT_CAP) output = output.slice(0, ROUTINE_OUTPUT_CAP) + "\n…(truncated)"
+    }
+    const settle = (code: number, extra?: string) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      resolve({ code, output: extra ? output + extra : output })
+    }
+    const child = spawn(cmd, args as unknown as string[], { stdio: ["ignore", "pipe", "pipe"] })
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL")
+      settle(124, "\n…(timed out)")
+    }, ROUTINE_RUN_TIMEOUT_MS)
+    child.stdout?.on("data", append)
+    child.stderr?.on("data", append)
+    child.on("error", (err) => settle(127, `\nspawn error: ${err.message}`))
+    child.on("close", (code) => settle(code ?? 0))
+  })
+}
+
 export async function runRoutine(id: string | undefined) {
   const safe = id ? safeID(id) : undefined
   if (!safe) return { ok: false, error: "Routine id is required." }
@@ -285,11 +376,27 @@ export async function runRoutine(id: string | undefined) {
       mutationPolicy: "manual_runs_disabled",
     }
   }
+  if (!routine.command || !routine.command.trim()) {
+    return { ok: false, routine, error: "Routine has no command to run." }
+  }
+  const host = routine.host && ROUTINE_HOSTS[routine.host] ? routine.host : DEFAULT_HOST
+  const startedAt = new Date().toISOString()
+  patchRoutine(safe, { lastStatus: "running", lastRunAt: startedAt })
+  appendRoutineLog(safe, "info", `run started on host=${host} (${ROUTINE_HOSTS[host].label})`)
+
+  const { code, output } = await runCommandOnHost(host, routine.command)
+  const status: Routine["lastStatus"] = code === 0 ? "ok" : "error"
+  for (const line of output.split(/\r?\n/).filter(Boolean).slice(-100)) {
+    appendRoutineLog(safe, status === "ok" ? "info" : "error", line)
+  }
+  appendRoutineLog(safe, status === "ok" ? "info" : "error", `run finished exit=${code} status=${status}`)
+  patchRoutine(safe, { lastStatus: status, lastExitCode: code })
+
   return {
-    ok: false,
-    routine,
-    error: "Routine manual run execution is not implemented in this build.",
-    mutationPolicy: "manual_runs_unimplemented",
+    ok: code === 0,
+    generatedAt: new Date().toISOString(),
+    routine: readRoutines().find((item) => item.id === safe),
+    run: { host, hostLabel: ROUTINE_HOSTS[host].label, exitCode: code, status, output: output.slice(0, 4000) },
   }
 }
 

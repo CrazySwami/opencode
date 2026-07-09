@@ -33,13 +33,22 @@ function parseBody(body: string) {
 function eventResponse() {
   return Effect.gen(function* () {
     yield* Effect.logInfo("global event connected")
-    const events = Stream.callback<GlobalBusEvent>((queue) => {
-      const handler = (event: GlobalBusEvent) => Queue.offerUnsafe(queue, event)
-      return Effect.acquireRelease(
-        Effect.sync(() => GlobalBus.on("event", handler)),
-        () => Effect.sync(() => GlobalBus.off("event", handler)),
-      )
-    })
+    // Explicitly bounded, sliding buffer so a stalled / half-open global-event
+    // client can't retain every GlobalBus event in memory (same leak class as the
+    // instance /event handler). Kept small (512): the cost is per-connection, and a
+    // reconnect storm (server restart → every tab reconnects) briefly multiplies it
+    // by ~200 connections — 4096 ballooned RSS to GBs. 512 still absorbs bursts for
+    // healthy clients (which hold ~0 events) and slide-drops for dead ones.
+    const events = Stream.callback<GlobalBusEvent>(
+      (queue) => {
+        const handler = (event: GlobalBusEvent) => Queue.offerUnsafe(queue, event)
+        return Effect.acquireRelease(
+          Effect.sync(() => GlobalBus.on("event", handler)),
+          () => Effect.sync(() => GlobalBus.off("event", handler)),
+        )
+      },
+      { bufferSize: 512, strategy: "sliding" },
+    )
     const heartbeat = Stream.tick("10 seconds").pipe(
       Stream.drop(1),
       Stream.map(() => ({ payload: { id: EventV2.ID.create(), type: "server.heartbeat", properties: {} } })),

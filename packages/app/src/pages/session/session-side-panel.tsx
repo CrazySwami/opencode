@@ -40,7 +40,6 @@ import {
 } from "@/pages/session/helpers"
 import { setSessionHandoff } from "@/pages/session/handoff"
 import { useSessionLayout } from "@/pages/session/session-layout"
-import { OpenDesignMirror } from "@/pages/session/open-design-mirror"
 import { attachPreviewAgentBridge, type PreviewAgentDriver } from "@/pages/session/preview-agent-bridge"
 import {
   WORKSPACE_PANEL_TAB_BY_ID,
@@ -1959,6 +1958,22 @@ function TabChrome(props: {
       </div>
     </div>
   )
+}
+
+// Keep-alive wrapper for the lightweight iframe tabs (OpenDesign, Preview).
+// Previously each tab body was gated by `<Show when={active}>`, so switching tabs
+// UNMOUNTED it — destroying the iframe and tearing down its streams, then fully
+// re-booting them on the next visit (the tab-switch lag). This mounts the subtree
+// while the tab is OPEN and keeps it alive across active/inactive switches: the
+// parent `<Tabs.Content forceMount>` stays in the DOM and the caller's inline
+// `display:none` (not Kobalte) hides it when it isn't the active tab, so the
+// loaded iframe/poll persists and re-showing is instant. It unmounts when the tab
+// is CLOSED (leaves the open set) — a closed tab's iframe/poll is torn down, not
+// left running forever. NOTE: only used for lightweight iframe tabs; heavy
+// live-stream tabs (Browser CDP, Mac View video) still unmount on switch so their
+// streams don't run while hidden.
+function KeepAlive(props: { open: boolean; children: JSX.Element }) {
+  return <Show when={props.open}>{props.children}</Show>
 }
 
 function OpenDesignTabContent(
@@ -5863,15 +5878,10 @@ export function SessionSidePanel(props: {
     }
   }
 
-  createEffect(() => {
-    if (typeof window === "undefined") return
-    const state = openDesignBridgeState()
-    const target = window as Window & {
-      __opencodeOpenDesignBridgeState?: unknown
-    }
-    target.__opencodeOpenDesignBridgeState = state
-    window.dispatchEvent(new CustomEvent("opencode:open-design-bridge-state", { detail: state }))
-  })
+  // The in-chat Open Design bridge was removed (flaky container opencode-cli route):
+  // we no longer broadcast bridge state to the composer, so the Design-Mode strip +
+  // mirror never activate. The OpenDesign TAB keeps its own local bridge state. OD is
+  // now driven from the main chat via the OD MCP daemon instead.
 
   createEffect(() => {
     if (typeof window === "undefined") return
@@ -6076,8 +6086,6 @@ export function SessionSidePanel(props: {
 
   return (
     <>
-      {/* Phase 1: mirror Open Design's live conversation over the left message region when bridged. */}
-      <OpenDesignMirror />
       <Show when={(mobile() && !!params.id) || (isDesktop() && !(settings.general.newLayoutDesigns() && !params.id))}>
         <aside
           id="review-panel"
@@ -6287,22 +6295,26 @@ export function SessionSidePanel(props: {
                       <Tabs.Content
                         value={PANEL_PREVIEW_TAB}
                         class={WORKSPACE_PANEL_CONTENT_LAYOUT_CLASS}
+                        forceMount
+                        style={{ display: activePanelTab() === PANEL_PREVIEW_TAB ? undefined : "none" }}
                       >
-                        <Show when={activePanelTab() === PANEL_PREVIEW_TAB}>
+                        <KeepAlive open={openedPanelTabs().includes(PANEL_PREVIEW_TAB)}>
                           <PreviewTabContent sessionID={params.id} />
-                        </Show>
+                        </KeepAlive>
                       </Tabs.Content>
 
                       <Tabs.Content
                         value={PANEL_OPEN_DESIGN_TAB}
                         class={WORKSPACE_PANEL_CONTENT_LAYOUT_CLASS}
+                        forceMount
+                        style={{ display: activePanelTab() === PANEL_OPEN_DESIGN_TAB ? undefined : "none" }}
                       >
-                        <Show when={activePanelTab() === PANEL_OPEN_DESIGN_TAB}>
+                        <KeepAlive open={openedPanelTabs().includes(PANEL_OPEN_DESIGN_TAB)}>
                           <OpenDesignTabContent
                             bridgeState={openDesignBridgeState}
                             onBridgeState={setOpenDesignBridgeState}
                           />
-                        </Show>
+                        </KeepAlive>
                       </Tabs.Content>
 
                       <Tabs.Content

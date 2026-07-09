@@ -144,11 +144,21 @@ function parseCodexMultiAuthJsonLines(output: string) {
 function runCodexMultiAuthSidecar(input: { prompt: string; cwd: string; modelID?: string }) {
   const startedAt = Date.now()
   const script = codexMultiAuthScript()
-  // The multi-auth wrapper owns model/account selection. Passing OpenCode UI
-  // model ids here can break wrappers that expose aliased model labels, so keep
-  // the session metadata on the OpenCode message but let the isolated profile
-  // choose its configured runtime model.
-  const args = [script, "run", "--format", "json", "--dir", input.cwd, input.prompt]
+  // Honor the model the user explicitly selected in the composer: pass it through
+  // as --model so the sidecar runs it, instead of letting the isolated profile
+  // silently fall back to its configured default (which flipped a chosen GPT-5.5
+  // back to the profile default GLM-5.2 on send). Only forwarded when a modelID is
+  // present, so profiles that manage their own model still default as before.
+  const args = [
+    script,
+    "run",
+    "--format",
+    "json",
+    "--dir",
+    input.cwd,
+    ...(input.modelID ? ["--model", String(input.modelID)] : []),
+    input.prompt,
+  ]
 
   const realHome = process.env.HOME || "/home/dev"
   const env: NodeJS.ProcessEnv = {

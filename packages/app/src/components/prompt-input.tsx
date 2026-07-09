@@ -266,7 +266,12 @@ const BUILT_IN_TOOL_IDS = new Set([
 
 const classifyToolMention = (id: string): ToolPartSource => {
   const normalized = id.toLowerCase()
-  if (normalized === "swami" || normalized === "alfonso-os" || normalized === "alfonso_os" || normalized === "alfonsoos")
+  if (
+    normalized === "swami" ||
+    normalized === "alfonso-os" ||
+    normalized === "alfonso_os" ||
+    normalized === "alfonsoos"
+  )
     return "swami"
   if (
     normalized === "browser" ||
@@ -275,7 +280,8 @@ const classifyToolMention = (id: string): ToolPartSource => {
     normalized === "preview" ||
     normalized === "project_preview" ||
     normalized === "viewer"
-  ) return "browser"
+  )
+    return "browser"
   if (normalized === "terminal" || normalized === "bash") return "terminal"
   if (normalized === "open_design" || normalized.startsWith("open_design_")) return "open_design"
   if (normalized === "mac_view" || normalized.startsWith("mac_view_")) return "mac_view"
@@ -283,7 +289,8 @@ const classifyToolMention = (id: string): ToolPartSource => {
   if (normalized === "artifact" || normalized.startsWith("artifact_")) return "artifact"
   if (normalized === "file_browser" || normalized.startsWith("file_browser_")) return "file_browser"
   if (normalized === "account_status" || normalized.startsWith("account_")) return "account"
-  if (normalized === "routines" || normalized === "routine_status" || normalized.startsWith("routine_")) return "routines"
+  if (normalized === "routines" || normalized === "routine_status" || normalized.startsWith("routine_"))
+    return "routines"
   if (normalized.startsWith("mcp") || normalized.includes("mcp") || !BUILT_IN_TOOL_IDS.has(normalized)) return "mcp"
   return "tool"
 }
@@ -1788,12 +1795,9 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     const list = designModeBridge()?.conversations
     return Array.isArray(list) ? list : []
   })
-  const designActiveChatId = createMemo(() => designModeBridge()?.activeConversationId ?? designModeBridge()?.chatId ?? null)
-  const designModelLabel = createMemo(() => {
-    const state = designModeBridge()
-    if (!state?.model) return undefined
-    return state.apiProtocol ? `${state.model} · ${state.apiProtocol}` : state.model
-  })
+  const designActiveChatId = createMemo(
+    () => designModeBridge()?.activeConversationId ?? designModeBridge()?.chatId ?? null,
+  )
   const switchDesignChat = (chatId: string) => {
     if (!chatId || chatId === designActiveChatId() || typeof window === "undefined") return
     window.dispatchEvent(new CustomEvent("opencode:open-design-switch-chat", { detail: { chatId } }))
@@ -1975,22 +1979,10 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                       >
                         / commands
                       </span>
-                      <Show
-                        when={designAgentOptions().length > 0}
-                        fallback={
-                          <Show when={designModelLabel()}>
-                            {(model) => (
-                              <span
-                                data-action="prompt-design-model"
-                                class="ml-auto min-w-0 max-w-[190px] truncate rounded-md bg-v2-background-bg-base px-1.5 py-1 text-[11px] text-v2-text-text-muted"
-                                title={designModelTooltip()}
-                              >
-                                {model()}
-                              </span>
-                            )}
-                          </Show>
-                        }
-                      >
+                      {/* Interactive agent/model switcher only. The passive model
+                          label was removed as redundant — the running model is
+                          already shown in the chat. */}
+                      <Show when={designAgentOptions().length > 0}>
                         <select
                           data-action="prompt-design-model"
                           class="ml-auto max-w-[210px] cursor-pointer truncate rounded-md bg-v2-background-bg-base px-1.5 py-1 text-[11px] text-v2-text-text-muted outline-none transition-colors hover:text-v2-text-text-base"
@@ -2015,7 +2007,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                         type="button"
                         data-action="prompt-design-exit"
                         class="flex size-6 shrink-0 items-center justify-center rounded-md text-v2-text-text-muted transition-colors hover:bg-v2-background-bg-base hover:text-v2-text-text-base"
-                        classList={{ "ml-auto": !designModelLabel() }}
+                        classList={{ "ml-auto": !(designAgentOptions().length > 0) }}
                         onClick={() => setDesignExited(true)}
                         title="Exit Design Mode — back to the OpenCode chat"
                         aria-label="Exit Design Mode"
@@ -2674,27 +2666,26 @@ function CodexMultiAuthChip(props: {
   // error boundary and crashes the WHOLE app to "Something went wrong" — which
   // happened on every transient 502 during a server restart. Never throw here:
   // keep the last-known status through blips and refresh on the next tick.
-  const [status, actions] = createResource<CodexMultiAuthStatus | undefined, number>(
-    tick,
-    async (_tick, info) => {
-      const previous = info.value as CodexMultiAuthStatus | undefined
-      try {
-        const response = await fetch("/experimental/codex-multi-auth/status", { cache: "no-store" })
-        if (!response.ok) return previous
-        const body = await response.json()
-        return body as CodexMultiAuthStatus
-      } catch {
-        return previous
-      }
-    },
-  )
+  const [status, actions] = createResource<CodexMultiAuthStatus | undefined, number>(tick, async (_tick, info) => {
+    const previous = info.value as CodexMultiAuthStatus | undefined
+    try {
+      const response = await fetch("/experimental/codex-multi-auth/status", { cache: "no-store" })
+      if (!response.ok) return previous
+      const body = await response.json()
+      return body as CodexMultiAuthStatus
+    } catch {
+      return previous
+    }
+  })
 
   const timer = window.setInterval(() => setTick((value) => value + 1), 20_000)
   onCleanup(() => window.clearInterval(timer))
 
   const accountCount = createMemo(() => readAccountCount(status()))
   const accountList = createMemo(() => status()?.accounts ?? [])
-  const activeAlias = createMemo(() => status()?.activeAccount ?? accountList().find((account) => account.active)?.alias)
+  const activeAlias = createMemo(
+    () => status()?.activeAccount ?? accountList().find((account) => account.active)?.alias,
+  )
   const forcedAlias = createMemo(() => status()?.forcedAccount)
   const sendBlocked = createMemo(() => status()?.sendBlocked !== false)
   const runtimeReady = createMemo(() => status()?.runtimeReady === true)
@@ -2845,14 +2836,17 @@ function CodexMultiAuthChip(props: {
                           classList={{
                             "bg-green-500/15 text-green-200": accountActive(),
                             "bg-orange-500/15 text-orange-200": accountForced(),
-                            "bg-v2-background-bg-layer-02 text-v2-text-text-muted": !accountActive() && !accountForced(),
+                            "bg-v2-background-bg-layer-02 text-v2-text-text-muted":
+                              !accountActive() && !accountForced(),
                           }}
                         >
                           {(alias || "CA").slice(0, 2).toUpperCase()}
                         </span>
                         <div class="min-w-0 flex-1">
                           <div class="flex min-w-0 items-center gap-2">
-                            <span class="truncate text-[12px] font-[560] text-v2-text-text-base">{alias || "account"}</span>
+                            <span class="truncate text-[12px] font-[560] text-v2-text-text-base">
+                              {alias || "account"}
+                            </span>
                             <span class="shrink-0 rounded-full bg-v2-background-bg-layer-02 px-1.5 py-0.5 text-[10px] text-v2-text-text-muted">
                               {accountStatusLabel(account)}
                             </span>
@@ -2864,7 +2858,9 @@ function CodexMultiAuthChip(props: {
                               )}
                             </Show>
                           </div>
-                          <div class="truncate text-[11px] text-v2-text-text-muted">{account.email ?? account.label ?? "email not reported"}</div>
+                          <div class="truncate text-[11px] text-v2-text-text-muted">
+                            {account.email ?? account.label ?? "email not reported"}
+                          </div>
                         </div>
                       </div>
                       <div class="mt-2 flex flex-wrap justify-end gap-1.5">
@@ -2951,10 +2947,16 @@ function CodexMultiAuthChip(props: {
               </div>
             </Show>
             <Show when={actionNote()}>
-              {(note) => <div class="rounded-lg border border-green-500/20 bg-green-500/10 px-2 py-1 text-green-200">{note()}</div>}
+              {(note) => (
+                <div class="rounded-lg border border-green-500/20 bg-green-500/10 px-2 py-1 text-green-200">
+                  {note()}
+                </div>
+              )}
             </Show>
             <Show when={actionError()}>
-              {(error) => <div class="rounded-lg border border-red-500/25 bg-red-500/10 px-2 py-1 text-red-200">{error()}</div>}
+              {(error) => (
+                <div class="rounded-lg border border-red-500/25 bg-red-500/10 px-2 py-1 text-red-200">{error()}</div>
+              )}
             </Show>
             <Show when={status()?.warning}>
               {(warning) => (

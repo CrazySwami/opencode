@@ -22,7 +22,7 @@ import { estimateRootSessionTotal, loadRootSessionsWithFallback } from "./global
 import { trimSessions } from "./global-sync/session-trim"
 import type { ProjectMeta } from "./global-sync/types"
 import { SESSION_RECENT_LIMIT } from "./global-sync/types"
-import { formatServerError } from "@/utils/server-errors"
+import { formatServerError, isTransientGatewayError } from "@/utils/server-errors"
 import { queryOptions, useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/solid-query"
 import { createRefreshQueue } from "./global-sync/queue"
 import { directoryKey } from "./global-sync/utils"
@@ -256,6 +256,7 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     }
 
     const limit = Math.max(retainedLimit + SESSION_RECENT_LIMIT, SESSION_RECENT_LIMIT)
+    let transientFailure = false
     const promise = queryClient
       .fetchQuery({
         ...queryOptionsApi.sessions(key),
@@ -291,6 +292,14 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
               sessionMeta.set(key, { limit })
             })
             .catch((err) => {
+              // Transient gateway/network blip (e.g. the backend restarting past
+              // the ~40s client retry budget). Don't alarm the user with a red
+              // "Failed to load sessions" toast — soft-fail and let the next
+              // reconnect/bootstrap refetch (the cache is dropped below).
+              if (isTransientGatewayError(err)) {
+                transientFailure = true
+                return
+              }
               console.error("Failed to load sessions", err)
               const project = getFilename(directory)
               showToast({
@@ -301,7 +310,11 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
             })
             .then(() => null),
       })
-      .then(() => {})
+      .then(() => {
+        // A transient failure must not stay cached as a null "success" — drop it
+        // so bootstrapInstance's reconnect reload (bootstrap.ts) refetches.
+        if (transientFailure) queryClient.removeQueries({ queryKey: queryOptionsApi.sessions(key).queryKey })
+      })
 
     sessionLoads.set(key, promise)
     void promise.finally(() => {

@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test"
 import type { SessionNotFoundError } from "@opencode-ai/sdk/v2/client"
 import type { ConfigInvalidError, ProviderModelNotFoundError } from "./server-errors"
-import { formatServerError, isSessionNotFoundError, parseReadableConfigInvalidError } from "./server-errors"
+import {
+  formatServerError,
+  isSessionNotFoundError,
+  isTransientGatewayError,
+  parseReadableConfigInvalidError,
+} from "./server-errors"
 
 function fill(text: string, vars?: Record<string, string | number>) {
   if (!vars) return text
@@ -141,6 +146,39 @@ describe("formatServerError", () => {
     const wrapped = new Error("ConfigInvalidError", { cause: { body, status: 400 } })
 
     expect(formatServerError(wrapped, language.t)).toBe("Arquivo de config em config invalido: Missing host")
+  })
+})
+
+describe("isTransientGatewayError", () => {
+  test("matches wrapClientError-shaped 502/503/504 via cause.status", () => {
+    for (const status of [502, 503, 504]) {
+      expect(isTransientGatewayError(new Error("Bad gateway", { cause: { body: "<html>", status } }))).toBe(true)
+    }
+  })
+
+  test("matches a network error with no response", () => {
+    expect(
+      isTransientGatewayError(
+        new Error("opencode server GET /x: network error (no response)", {
+          cause: { body: undefined, status: undefined },
+        }),
+      ),
+    ).toBe(true)
+  })
+
+  test("matches browser offline / cloudflare messages", () => {
+    expect(isTransientGatewayError(new Error("Failed to fetch"))).toBe(true)
+    expect(isTransientGatewayError(new Error("502: Bad gateway"))).toBe(true)
+    expect(isTransientGatewayError("Load failed")).toBe(true)
+  })
+
+  test("does NOT match genuine application errors", () => {
+    expect(isTransientGatewayError(new Error("Session not found: ses_x", { cause: { body: {}, status: 404 } }))).toBe(
+      false,
+    )
+    expect(isTransientGatewayError(new Error("Request failed with status 500"))).toBe(false)
+    expect(isTransientGatewayError({ name: "ConfigInvalidError", data: {} })).toBe(false)
+    expect(isTransientGatewayError(undefined)).toBe(false)
   })
 })
 
