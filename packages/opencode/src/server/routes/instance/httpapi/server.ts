@@ -2659,6 +2659,28 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
       Effect.sync(() => HttpServerResponse.jsonUnsafe(mcpRegistryCatalog())),
     )
 
+    // Token-maxing tab: proxy the local token-maxing daemon's /usage. Daemon URL
+    // is env-configurable; if it's offline we return a graceful marked shape so
+    // the tab renders "daemon offline" instead of erroring.
+    yield* router.add("GET", "/experimental/token-maxing/usage", () =>
+      Effect.promise(async () => {
+        const base = process.env.OPENCODE_TOKEN_MAXING_URL || "http://127.0.0.1:8787"
+        try {
+          const res = await fetch(`${base}/usage`, { signal: AbortSignal.timeout(3000) })
+          const data = (await res.json()) as Record<string, unknown>
+          return HttpServerResponse.jsonUnsafe({ ok: true, daemon: base, generatedAt: new Date().toISOString(), ...data })
+        } catch {
+          return HttpServerResponse.jsonUnsafe({
+            ok: false,
+            daemon: base,
+            error: "token-maxing daemon offline",
+            generatedAt: new Date().toISOString(),
+            snapshots: [],
+          })
+        }
+      }),
+    )
+
     yield* router.add("GET", "/experimental/routines/jobs", () =>
       Effect.promise(async () => HttpServerResponse.jsonUnsafe(await routinesAction({ action: "list" }))),
     )

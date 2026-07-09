@@ -58,6 +58,7 @@ const PANEL_MAC_VIEW_TAB = "panel://mac-view" satisfies WorkspacePanelTabID
 const PANEL_ROUTINES_TAB = "panel://routines" satisfies WorkspacePanelTabID
 const PANEL_ENVIRONMENT_TAB = "panel://environment" satisfies WorkspacePanelTabID
 const PANEL_MCP_REGISTRY_TAB = "panel://mcp-registry" satisfies WorkspacePanelTabID
+const PANEL_TOKEN_MAXING_TAB = "panel://token-maxing" satisfies WorkspacePanelTabID
 const PANEL_RESOURCES_TAB = "panel://resources" satisfies WorkspacePanelTabID
 const PANEL_ARTIFACTS_TAB = "panel://artifacts" satisfies WorkspacePanelTabID
 const PANEL_FILE_BROWSER_TAB = "panel://file-browser" satisfies WorkspacePanelTabID
@@ -3155,6 +3156,51 @@ function CodexResourcesSection() {
           </div>
         </div>
       </div>
+  )
+}
+
+function TokenMaxingTabContent() {
+  const usage = createPolledJson<any>(() => "/experimental/token-maxing/usage", 10000)
+  const snapshots = () => usage.data()?.snapshots ?? []
+  const online = () => usage.data()?.ok === true
+  const pct = (s: any) => (s?.limit ? Math.min(100, Math.round((Number(s.used) / Number(s.limit)) * 100)) : null)
+  return (
+    <TabChrome title="Token Maxing" iconTab={PANEL_TOKEN_MAXING_TAB} onRefresh={() => void usage.refresh()}>
+      <div class="flex min-h-0 flex-1 flex-col gap-3">
+        <Show when={!online()}>
+          <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-12-regular text-orange-100">
+            Token-maxing daemon offline ({usage.data()?.daemon ?? "127.0.0.1:8787"}). Start it locally or set OPENCODE_TOKEN_MAXING_URL.
+          </div>
+        </Show>
+        <div class="grid gap-3 xl:grid-cols-3">
+          <EnvironmentSummaryCard label="Accounts" value={String(snapshots().length)} detail="Tracked usage snapshots" tone={online() ? "ready" : "warn"} />
+          <EnvironmentSummaryCard label="Daemon" value={online() ? "online" : "offline"} detail={usage.data()?.daemon ?? "127.0.0.1:8787"} tone={online() ? "ready" : "blocked"} />
+          <EnvironmentSummaryCard label="Switching" value="operator-gated" detail="Subscription auto-rotation off by default" tone="warn" />
+        </div>
+        <div class="min-h-0 flex-1 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger" data-testid="token-maxing-list">
+          <For each={snapshots()}>
+            {(s: any) => (
+              <div class="flex flex-col gap-1 border-b border-border-weaker-base px-3 py-3 last:border-b-0">
+                <div class="flex items-center justify-between gap-3">
+                  <span class="min-w-0 truncate text-13-regular text-text-strong">{s.provider}<Show when={s.account}><span class="text-text-weak"> · {s.account}</span></Show></span>
+                  <span class="shrink-0 text-11-regular text-text-weak">{s.used ?? "?"}{s.limit ? ` / ${s.limit}` : ""} {s.unit ?? ""}</span>
+                </div>
+                <Show when={pct(s) !== null}>
+                  <div class="h-1.5 w-full overflow-hidden rounded bg-background-base">
+                    <div class="h-full rounded bg-[#f97316]" style={{ width: `${pct(s)}%` }} />
+                  </div>
+                </Show>
+                <Show when={s.source}><span class="text-10-regular text-text-weak">{s.source}{s.stale ? " · stale" : ""}</span></Show>
+              </div>
+            )}
+          </For>
+          <Show when={snapshots().length === 0}>
+            <div class="p-4 text-13-regular text-text-weak">No usage snapshots{online() ? "" : " (daemon offline)"}.</div>
+          </Show>
+        </div>
+        <StatusRow label="Last checked" value={usage.data()?.generatedAt} />
+      </div>
+    </TabChrome>
   )
 }
 
@@ -6435,6 +6481,15 @@ export function SessionSidePanel(props: {
                       >
                         <Show when={activePanelTab() === PANEL_MCP_REGISTRY_TAB}>
                           <MCPRegistryTabContent />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_TOKEN_MAXING_TAB}
+                        class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
+                      >
+                        <Show when={activePanelTab() === PANEL_TOKEN_MAXING_TAB}>
+                          <TokenMaxingTabContent />
                         </Show>
                       </Tabs.Content>
 

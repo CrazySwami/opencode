@@ -11,6 +11,7 @@ export type WorkspacePanelTabID =
   | "panel://routines"
   | "panel://environment"
   | "panel://mcp-registry"
+  | "panel://token-maxing"
 
 export type WorkspacePanelActionID =
   | "refresh"
@@ -238,6 +239,20 @@ export const WORKSPACE_PANEL_TABS: WorkspacePanelDefinition[] = [
     canSnapshot: false,
     canAttachToChat: true,
     description: "Browse configured MCP servers and a catalog of installable ones; add custom MCPs.",
+  },
+  {
+    id: "panel://token-maxing",
+    label: "Token Maxing",
+    badge: "TM",
+    route: "/experimental/token-maxing/usage",
+    toolIDs: ["workspace_tabs"],
+    mentionIDs: ["token_maxing", "token-maxing", "usage", "quota", "tokens"],
+    aliases: ["token_maxing", "token-maxing", "usage", "quota", "tokens"],
+    actions: ["refresh", "attach_to_chat", "tools"],
+    safetyPolicy: "Read-only usage view across accounts via the local token-maxing daemon. Account switching is a separate operator-gated action; never leak keys or tokens.",
+    canSnapshot: false,
+    canAttachToChat: true,
+    description: "Live usage across all model accounts/profiles + switch controls (backed by the local token-maxing daemon).",
   },
 ]
 
