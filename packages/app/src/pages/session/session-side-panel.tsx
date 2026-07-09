@@ -57,6 +57,7 @@ const PANEL_OPEN_DESIGN_TAB = "panel://open-design" satisfies WorkspacePanelTabI
 const PANEL_MAC_VIEW_TAB = "panel://mac-view" satisfies WorkspacePanelTabID
 const PANEL_ROUTINES_TAB = "panel://routines" satisfies WorkspacePanelTabID
 const PANEL_ENVIRONMENT_TAB = "panel://environment" satisfies WorkspacePanelTabID
+const PANEL_MCP_REGISTRY_TAB = "panel://mcp-registry" satisfies WorkspacePanelTabID
 const PANEL_RESOURCES_TAB = "panel://resources" satisfies WorkspacePanelTabID
 const PANEL_ARTIFACTS_TAB = "panel://artifacts" satisfies WorkspacePanelTabID
 const PANEL_FILE_BROWSER_TAB = "panel://file-browser" satisfies WorkspacePanelTabID
@@ -3154,6 +3155,53 @@ function CodexResourcesSection() {
           </div>
         </div>
       </div>
+  )
+}
+
+function MCPRegistryTabContent() {
+  const registry = createPolledJson<any>(() => "/experimental/mcp/registry", 30000)
+  const servers = () => registry.data()?.servers ?? []
+  return (
+    <TabChrome title="MCP Registry" iconTab={PANEL_MCP_REGISTRY_TAB} onRefresh={() => void registry.refresh()}>
+      <div class="flex min-h-0 flex-1 flex-col gap-3">
+        <Show when={registry.error()}>
+          {(error) => (
+            <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">
+              {error()}
+            </div>
+          )}
+        </Show>
+        <div class="grid gap-3 xl:grid-cols-3">
+          <EnvironmentSummaryCard label="Catalog" value={String(servers().length)} detail="Installable MCP servers" tone="ready" />
+          <EnvironmentSummaryCard label="Source" value={registry.data()?.source ?? "…"} detail="Curated seed (registry pull: TODO)" tone="warn" />
+          <EnvironmentSummaryCard label="Add custom" value="opencode.jsonc" detail="mcp{} block (type:local | type:remote)" tone="ready" />
+        </div>
+        <div class="min-h-0 flex-1 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger" data-testid="mcp-registry-list">
+          <For each={servers()}>
+            {(server: any) => (
+              <div class="flex flex-col gap-1 border-b border-border-weaker-base px-3 py-3 last:border-b-0">
+                <div class="flex items-center justify-between gap-3">
+                  <span class="min-w-0 truncate text-13-regular text-text-strong">{server.title ?? server.name}</span>
+                  <span class="shrink-0 rounded bg-background-base px-2 py-0.5 text-10-medium uppercase tracking-wide text-text-weak">{server.transport}</span>
+                </div>
+                <div class="text-11-regular text-text-weak">{server.description}</div>
+                <Show when={server.install}>
+                  <code class="mt-1 truncate rounded bg-background-base px-2 py-1 font-mono text-11-regular text-text-strong">{server.install}</code>
+                </Show>
+                <Show when={server.homepage}>
+                  <a href={server.homepage} target="_blank" rel="noreferrer" class="text-11-regular text-[#f97316] hover:underline">{server.homepage}</a>
+                </Show>
+              </div>
+            )}
+          </For>
+          <Show when={servers().length === 0}>
+            <div class="p-4 text-13-regular text-text-weak">No catalog entries.</div>
+          </Show>
+        </div>
+        <StatusRow label="Registries" value={(registry.data()?.registries ?? []).join(", ")} />
+        <StatusRow label="Last checked" value={registry.data()?.generatedAt} />
+      </div>
+    </TabChrome>
   )
 }
 
@@ -6378,6 +6426,15 @@ export function SessionSidePanel(props: {
                       >
                         <Show when={activePanelTab() === PANEL_ENVIRONMENT_TAB}>
                           <EnvironmentTabContent />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_MCP_REGISTRY_TAB}
+                        class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
+                      >
+                        <Show when={activePanelTab() === PANEL_MCP_REGISTRY_TAB}>
+                          <MCPRegistryTabContent />
                         </Show>
                       </Tabs.Content>
 

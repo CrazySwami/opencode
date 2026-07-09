@@ -10,6 +10,7 @@ export type WorkspacePanelTabID =
   | "panel://file-browser"
   | "panel://routines"
   | "panel://environment"
+  | "panel://mcp-registry"
 
 export type WorkspacePanelActionID =
   | "refresh"
@@ -222,6 +223,21 @@ export const WORKSPACE_PANEL_TABS: WorkspacePanelDefinition[] = [
     canSnapshot: false,
     canAttachToChat: true,
     description: "Live route, service, release, and environment topology.",
+  },
+  {
+    id: "panel://mcp-registry",
+    label: "MCP Registry",
+    badge: "MCP",
+    icon: "puzzle",
+    route: "/experimental/mcp/registry",
+    toolIDs: ["workspace_tabs"],
+    mentionIDs: ["mcp", "mcp_registry", "plugins", "connectors"],
+    aliases: ["mcp", "mcp_registry", "plugins", "connectors"],
+    actions: ["refresh", "attach_to_chat", "tools"],
+    safetyPolicy: "Read-only catalog + configured MCP list. Adding/enabling a server is a separate config action; never leak header/token values.",
+    canSnapshot: false,
+    canAttachToChat: true,
+    description: "Browse configured MCP servers and a catalog of installable ones; add custom MCPs.",
   },
 ]
 

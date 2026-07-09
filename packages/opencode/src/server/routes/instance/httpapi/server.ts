@@ -139,7 +139,7 @@ import { captureBrowserScreenshot, runBrowserAction, sessionPaths, type BrowserA
 import { readPreviewSurfaceState, runPreviewAction, writePreviewSurfaceState } from "@/tool/preview"
 import { collectResourceStatus } from "@/tool/resource-status"
 import { collectCliResourcesStatus, runCliResourceAction } from "@/tool/cli-resources"
-import { createRoutineDraft, routineLogs, routinesAction, routinesStatus } from "@/tool/routines"
+import { createRoutineDraft, ensureRoutinesScheduler, routineLogs, routinesAction, routinesStatus } from "@/tool/routines"
 import { publishAppleBridgeEvent } from "@/tool/ios-bridge-events"
 
 // Routines HTTP guards (MUST-FIX #8): reject oversized bodies and throttle run
@@ -153,6 +153,30 @@ function routinesRunRateOk() {
   if (now - routinesLastRunAt < ROUTINES_RUN_MIN_INTERVAL_MS) return false
   routinesLastRunAt = now
   return true
+}
+
+// MCP Registry tab: a curated catalog of installable MCP servers. This is the
+// server-side data source for the panel://mcp-registry tab. Static for now;
+// TODO: fetch + cache the official registry (registry.modelcontextprotocol.io)
+// and community catalogs (mcp.so) instead of the hardcoded seed below.
+type McpCatalogEntry = { name: string; title: string; description: string; transport: "local" | "remote"; homepage: string; install?: string }
+const MCP_REGISTRY_CATALOG: McpCatalogEntry[] = [
+  { name: "github", title: "GitHub", description: "Repos, PRs, issues, code search.", transport: "remote", homepage: "https://github.com/github/github-mcp-server" },
+  { name: "context7", title: "Context7", description: "Up-to-date library/framework docs.", transport: "remote", homepage: "https://github.com/upstash/context7" },
+  { name: "supabase", title: "Supabase", description: "Projects, SQL, migrations, edge functions.", transport: "local", homepage: "https://github.com/supabase-community/supabase-mcp", install: "npx -y @supabase/mcp-server-supabase@latest" },
+  { name: "playwright", title: "Playwright", description: "Browser automation + accessibility snapshots.", transport: "local", homepage: "https://github.com/microsoft/playwright-mcp", install: "npx -y @playwright/mcp@latest" },
+  { name: "filesystem", title: "Filesystem", description: "Read/write files under allowlisted roots.", transport: "local", homepage: "https://github.com/modelcontextprotocol/servers", install: "npx -y @modelcontextprotocol/server-filesystem" },
+  { name: "fetch", title: "Fetch", description: "Fetch + convert web pages to markdown.", transport: "local", homepage: "https://github.com/modelcontextprotocol/servers", install: "npx -y @modelcontextprotocol/server-fetch" },
+]
+function mcpRegistryCatalog() {
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    source: "seed",
+    note: "Curated seed catalog. Configured servers come from the client MCP config; add via opencode.jsonc mcp{}.",
+    registries: ["https://registry.modelcontextprotocol.io", "https://mcp.so"],
+    servers: MCP_REGISTRY_CATALOG,
+  }
 }
 // Reject an oversized body BEFORE buffering it (Codex finding #2): check the
 // declared Content-Length first, then verify the actual byte length (not char
@@ -2625,7 +2649,14 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
     )
 
     yield* router.add("GET", "/experimental/routines/status", () =>
-      Effect.promise(async () => HttpServerResponse.jsonUnsafe(await routinesStatus())),
+      Effect.promise(async () => {
+        ensureRoutinesScheduler()
+        return HttpServerResponse.jsonUnsafe(await routinesStatus())
+      }),
+    )
+
+    yield* router.add("GET", "/experimental/mcp/registry", () =>
+      Effect.sync(() => HttpServerResponse.jsonUnsafe(mcpRegistryCatalog())),
     )
 
     yield* router.add("GET", "/experimental/routines/jobs", () =>
@@ -2685,7 +2716,17 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
         } catch {
           return HttpServerResponse.text("Invalid JSON body", { status: 400 })
         }
-        const result = yield* Effect.promise(() => routinesAction({ action: "update", id, ...body }))
+        const operatorToken =
+          request.headers["x-opencode-routines-token"] ?? request.headers["x-opencode-routines-operator-token"]
+        const result = yield* Effect.promise(() =>
+          routinesAction({
+            action: "update",
+            id,
+            ...body,
+            caller: "http",
+            operatorToken: typeof operatorToken === "string" ? operatorToken : undefined,
+          }),
+        )
         publishAppleBridgeEvent("routines", "routine.updated", summarizeRoutineEvent("update", result, id))
         const error = result.ok ? undefined : (result as { error?: string }).error
         return HttpServerResponse.jsonUnsafe(result, {
