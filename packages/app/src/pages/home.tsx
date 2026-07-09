@@ -664,6 +664,8 @@ function HomeRoutinesDashboard() {
   const [draftSchedule, setDraftSchedule] = createSignal("daily 09:00")
   const [draftDescription, setDraftDescription] = createSignal("")
   const [draftCommand, setDraftCommand] = createSignal("")
+  const [draftHost, setDraftHost] = createSignal("local")
+  const [draftIcon, setDraftIcon] = createSignal("")
   const [draftSaving, setDraftSaving] = createSignal(false)
   const [draftError, setDraftError] = createSignal<string | undefined>()
   const [editOpen, setEditOpen] = createSignal(false)
@@ -671,11 +673,17 @@ function HomeRoutinesDashboard() {
   const [editSchedule, setEditSchedule] = createSignal("")
   const [editDescription, setEditDescription] = createSignal("")
   const [editCommand, setEditCommand] = createSignal("")
+  const [editHost, setEditHost] = createSignal("local")
+  const [editIcon, setEditIcon] = createSignal("")
   const [actionBusy, setActionBusy] = createSignal<string | undefined>()
   const [actionError, setActionError] = createSignal<string | undefined>()
   const jobs = createMemo(() => routines.data.value?.routines ?? [])
   const selected = createMemo(() => jobs().find((job: any) => job.id === selectedID()) ?? jobs()[0])
   const mutationsEnabled = createMemo(() => routines.data.value?.status?.mutationsEnabled ?? false)
+  const hosts = createMemo<Array<{ id: string; label: string; remote?: boolean }>>(
+    () => routines.data.value?.status?.hosts ?? [{ id: "local", label: "This machine", remote: false }],
+  )
+  const hostLabel = (id?: string) => hosts().find((h) => h.id === (id ?? "local"))?.label ?? id ?? "local"
 
   createEffect(() => {
     const first = jobs()[0]?.id
@@ -687,6 +695,8 @@ function HomeRoutinesDashboard() {
     setDraftSchedule("daily 09:00")
     setDraftDescription("")
     setDraftCommand("")
+    setDraftHost("local")
+    setDraftIcon("")
     setDraftError(undefined)
     setDraftOpen(true)
   }
@@ -728,6 +738,8 @@ function HomeRoutinesDashboard() {
     setEditSchedule(routine.schedule ?? "manual")
     setEditDescription(routine.description ?? "")
     setEditCommand(routine.command ?? "")
+    setEditHost(routine.host ?? "local")
+    setEditIcon(routine.icon ?? "")
     setActionError(undefined)
     setEditOpen(true)
   }
@@ -743,6 +755,8 @@ function HomeRoutinesDashboard() {
         schedule: editSchedule(),
         description: editDescription(),
         command: editCommand(),
+        host: editHost(),
+        icon: editIcon(),
       },
       successTitle: "Routine updated",
     })
@@ -783,6 +797,8 @@ function HomeRoutinesDashboard() {
           schedule: draftSchedule(),
           description: draftDescription(),
           command: draftCommand(),
+          host: draftHost(),
+          icon: draftIcon(),
         }),
       })
       const body = await response.json().catch(() => ({}))
@@ -832,13 +848,17 @@ function HomeRoutinesDashboard() {
                   onClick={() => setSelectedID(routine.id)}
                 >
                   <div class="flex min-w-0 items-center justify-between gap-3">
-                    <span class="min-w-0 truncate text-v2-text-text-base [font-weight:530]">{routine.name}</span>
+                    <span class="flex min-w-0 items-center gap-1.5">
+                      <Show when={routine.icon}><span class="shrink-0">{routine.icon}</span></Show>
+                      <span class="min-w-0 truncate text-v2-text-text-base [font-weight:530]">{routine.name}</span>
+                    </span>
                     <span class="shrink-0 rounded-[4px] bg-v2-background-bg-layer-02 px-1.5 py-0.5 text-[11px] text-v2-text-text-muted">
                       {routine.enabled ? "enabled" : "off"}
                     </span>
                   </div>
-                  <span class="min-w-0 truncate text-left text-[12px] text-v2-text-text-muted">
-                    {routine.schedule ?? "No schedule"}
+                  <span class="flex min-w-0 items-center gap-2 text-left text-[12px] text-v2-text-text-muted">
+                    <span class="min-w-0 truncate">{routine.schedule ?? "No schedule"}</span>
+                    <span class="shrink-0 rounded-[4px] bg-v2-background-bg-layer-02 px-1.5 py-0.5 text-[11px]">{hostLabel(routine.host)}</span>
                   </span>
                 </button>
               )}
@@ -867,7 +887,11 @@ function HomeRoutinesDashboard() {
                 <div class="border-b border-v2-border-border-base px-4 py-3">
                   <div class="flex min-w-0 items-center justify-between gap-3">
                     <div class="min-w-0">
-                      <div class="truncate text-[14px] text-v2-text-text-base [font-weight:600]">{routine().name}</div>
+                      <div class="flex items-center gap-2 truncate text-[14px] text-v2-text-text-base [font-weight:600]">
+                        <Show when={routine().icon}><span class="shrink-0">{routine().icon}</span></Show>
+                        <span class="truncate">{routine().name}</span>
+                        <span class="shrink-0 rounded-[4px] bg-v2-background-bg-layer-02 px-1.5 py-0.5 text-[11px] [font-weight:400] text-v2-text-text-muted">{hostLabel(routine().host)}</span>
+                      </div>
                       <div class="mt-1 text-[12px] text-v2-text-text-muted">
                         {routine().description ?? "No description"}
                       </div>
@@ -976,6 +1000,27 @@ function HomeRoutinesDashboard() {
                     onInput={(event) => setEditCommand(event.currentTarget.value)}
                   />
                 </label>
+                <div class="grid grid-cols-2 gap-3">
+                  <label class="grid gap-1 text-[12px] text-v2-text-text-muted">
+                    Host
+                    <select
+                      class="h-9 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-layer-01 px-3 text-[13px] text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+                      value={editHost()}
+                      onChange={(event) => setEditHost(event.currentTarget.value)}
+                    >
+                      <For each={hosts()}>{(h) => <option value={h.id}>{h.label}{h.remote ? " (remote)" : ""}</option>}</For>
+                    </select>
+                  </label>
+                  <label class="grid gap-1 text-[12px] text-v2-text-text-muted">
+                    Icon (optional)
+                    <input
+                      class="h-9 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-layer-01 px-3 text-[13px] text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+                      value={editIcon()}
+                      onInput={(event) => setEditIcon(event.currentTarget.value)}
+                      placeholder="🩺"
+                    />
+                  </label>
+                </div>
               </div>
               <Show when={actionError()}>
                 {(error) => (
@@ -1058,6 +1103,27 @@ function HomeRoutinesDashboard() {
                       placeholder="curl -fsS https://code.hustletogether.com/__health"
                     />
                   </label>
+                  <div class="grid grid-cols-2 gap-3">
+                    <label class="grid gap-1 text-[12px] text-v2-text-text-muted">
+                      Host
+                      <select
+                        class="h-9 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-layer-01 px-3 text-[13px] text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+                        value={draftHost()}
+                        onChange={(event) => setDraftHost(event.currentTarget.value)}
+                      >
+                        <For each={hosts()}>{(h) => <option value={h.id}>{h.label}{h.remote ? " (remote)" : ""}</option>}</For>
+                      </select>
+                    </label>
+                    <label class="grid gap-1 text-[12px] text-v2-text-text-muted">
+                      Icon (optional)
+                      <input
+                        class="h-9 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-layer-01 px-3 text-[13px] text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+                        value={draftIcon()}
+                        onInput={(event) => setDraftIcon(event.currentTarget.value)}
+                        placeholder="🩺"
+                      />
+                    </label>
+                  </div>
                   <div class="rounded-[8px] bg-v2-background-bg-layer-01 p-3 text-[12px] leading-5 text-v2-text-text-muted">
                     New routines are saved disabled. Enabling schedules and manual runs remain separate controls.
                   </div>

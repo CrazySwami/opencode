@@ -3184,8 +3184,12 @@ function RoutinesTabContent() {
   const [actionNote, setActionNote] = createSignal<string | undefined>()
   const [formOpen, setFormOpen] = createSignal(false)
   const [formMode, setFormMode] = createSignal<"create" | "edit">("create")
-  const emptyForm = { name: "", schedule: "manual", command: "", description: "" }
+  const emptyForm = { name: "", schedule: "manual", command: "", description: "", host: "local", icon: "" }
   const [form, setForm] = createStore({ ...emptyForm })
+  const hosts = createMemo<Array<{ id: string; label: string; remote?: boolean }>>(
+    () => jobs.data()?.status?.hosts ?? [{ id: "local", label: "This machine", remote: false }],
+  )
+  const hostLabel = (id?: string) => hosts().find((h) => h.id === (id ?? "local"))?.label ?? id ?? "local"
 
   const routineAction = async (label: string, fn: () => Promise<Response>, successNote: string) => {
     setActionPending(label)
@@ -3218,11 +3222,20 @@ function RoutinesTabContent() {
       schedule: routine.schedule ?? "manual",
       command: routine.command ?? "",
       description: routine.description ?? "",
+      host: routine.host ?? "local",
+      icon: routine.icon ?? "",
     })
     setFormOpen(true)
   }
   const submitForm = async () => {
-    const payload = { name: form.name, schedule: form.schedule, command: form.command, description: form.description }
+    const payload = {
+      name: form.name,
+      schedule: form.schedule,
+      command: form.command,
+      description: form.description,
+      host: form.host,
+      icon: form.icon,
+    }
     if (formMode() === "create") {
       const body = await routineAction("create", () =>
         fetch("/experimental/routines/jobs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) }),
@@ -3333,6 +3346,20 @@ function RoutinesTabContent() {
             </div>
             <input class="mt-2 h-8 w-full rounded border border-border-weaker-base bg-background-stronger px-2 font-mono text-11-regular text-text-strong outline-none" data-testid="routine-form-command" placeholder="Command" value={form.command} onInput={(e) => setForm("command", e.currentTarget.value)} />
             <input class="mt-2 h-8 w-full rounded border border-border-weaker-base bg-background-stronger px-2 text-12-regular text-text-strong outline-none" data-testid="routine-form-description" placeholder="Description (optional)" value={form.description} onInput={(e) => setForm("description", e.currentTarget.value)} />
+            <div class="mt-2 grid gap-2 sm:grid-cols-2">
+              <label class="flex flex-col gap-1 text-11-regular text-text-weak">
+                Host
+                <select class="h-8 rounded border border-border-weaker-base bg-background-stronger px-2 text-12-regular text-text-strong outline-none" data-testid="routine-form-host" value={form.host} onChange={(e) => setForm("host", e.currentTarget.value)}>
+                  <For each={hosts()}>
+                    {(h) => <option value={h.id}>{h.label}{h.remote ? " (remote)" : ""}</option>}
+                  </For>
+                </select>
+              </label>
+              <label class="flex flex-col gap-1 text-11-regular text-text-weak">
+                Icon (emoji / name, optional)
+                <input class="h-8 rounded border border-border-weaker-base bg-background-stronger px-2 text-12-regular text-text-strong outline-none" data-testid="routine-form-icon" placeholder="e.g. 🩺 or health" value={form.icon} onInput={(e) => setForm("icon", e.currentTarget.value)} />
+              </label>
+            </div>
             <div class="mt-2 flex items-center gap-2">
               <button type="button" class="rounded border border-[#f97316]/40 bg-[#f97316]/10 px-3 py-1 text-12-regular text-text-strong hover:bg-[#f97316]/20 disabled:opacity-50" data-testid="routine-form-save" disabled={!form.name.trim() || !!actionPending()} onClick={() => void submitForm()}>
                 {actionPending() === "create" || actionPending() === "edit" ? "Saving..." : formMode() === "create" ? "Create draft" : "Save changes"}
@@ -3353,7 +3380,10 @@ function RoutinesTabContent() {
                   onClick={() => setSelectedID(routine.id)}
                 >
                   <div class="flex items-center justify-between gap-3">
-                    <span class="min-w-0 truncate text-13-regular text-text-strong" data-testid="routine-row-name">{routine.name}</span>
+                    <span class="flex min-w-0 items-center gap-1.5">
+                      <Show when={routine.icon}><span class="shrink-0 text-13-regular" data-testid="routine-row-icon">{routine.icon}</span></Show>
+                      <span class="min-w-0 truncate text-13-regular text-text-strong" data-testid="routine-row-name">{routine.name}</span>
+                    </span>
                     <span
                       class="shrink-0 rounded px-2 py-0.5 text-10-medium uppercase tracking-wide"
                       classList={{ "bg-green-500/15 text-green-200": routine.enabled, "bg-background-base text-text-weak": !routine.enabled }}
@@ -3361,7 +3391,10 @@ function RoutinesTabContent() {
                       {routine.enabled ? "enabled" : "off"}
                     </span>
                   </div>
-                  <div class="truncate text-11-regular text-text-weak">{routine.schedule ?? "No schedule"}</div>
+                  <div class="flex items-center gap-2 truncate text-11-regular text-text-weak">
+                    <span class="truncate">{routine.schedule ?? "No schedule"}</span>
+                    <span class="shrink-0 rounded bg-background-base px-1.5 py-0.5 text-10-regular" data-testid="routine-row-host">{hostLabel(routine.host)}</span>
+                  </div>
                   <div class="flex items-center gap-2 text-10-regular text-text-weak">
                     <span>last: {routine.lastStatus ?? "never"}</span>
                     <Show when={routine.nextRunAt}><span>· next: {formatShortDate(routine.nextRunAt)}</span></Show>
@@ -3383,7 +3416,10 @@ function RoutinesTabContent() {
                 <div class="flex flex-col gap-3">
                   <div class="flex items-start justify-between gap-3">
                     <div class="min-w-0">
-                      <div class="truncate text-14-medium text-text-strong">{routine().name}</div>
+                      <div class="flex items-center gap-2 truncate text-14-medium text-text-strong">
+                        <Show when={routine().icon}><span class="shrink-0" data-testid="routine-detail-icon">{routine().icon}</span></Show>
+                        <span class="truncate">{routine().name}</span>
+                      </div>
                       <div class="mt-1 text-12-regular text-text-weak">{routine().description ?? "No description"}</div>
                     </div>
                     <EnvironmentPill
@@ -3394,6 +3430,7 @@ function RoutinesTabContent() {
 
                   <div class="grid gap-2 sm:grid-cols-2">
                     <EnvironmentInfoRow label="Schedule" value={routine().schedule} />
+                    <EnvironmentInfoRow label="Host" value={hostLabel(routine().host)} />
                     <EnvironmentInfoRow label="Last status" value={routine().lastStatus ?? "never"} />
                     <EnvironmentInfoRow label="Last run" value={routine().lastRunAt} />
                     <EnvironmentInfoRow label="Next run" value={routine().nextRunAt} />

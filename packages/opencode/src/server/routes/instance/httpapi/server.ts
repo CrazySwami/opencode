@@ -141,6 +141,29 @@ import { collectResourceStatus } from "@/tool/resource-status"
 import { collectCliResourcesStatus, runCliResourceAction } from "@/tool/cli-resources"
 import { createRoutineDraft, routineLogs, routinesAction, routinesStatus } from "@/tool/routines"
 import { publishAppleBridgeEvent } from "@/tool/ios-bridge-events"
+
+// Routines HTTP guards (MUST-FIX #8): reject oversized bodies and throttle run
+// requests. The runner itself also enforces run-enabled/approval/lock, so this
+// is defense-in-depth on the HTTP surface.
+const ROUTINES_MAX_BODY_BYTES = 16 * 1024
+const ROUTINES_RUN_MIN_INTERVAL_MS = 1000
+let routinesLastRunAt = 0
+function routinesRunRateOk() {
+  const now = Date.now()
+  if (now - routinesLastRunAt < ROUTINES_RUN_MIN_INTERVAL_MS) return false
+  routinesLastRunAt = now
+  return true
+}
+// Reject an oversized body BEFORE buffering it (Codex finding #2): check the
+// declared Content-Length first, then verify the actual byte length (not char
+// count, so multi-byte UTF-8 can't slip past the cap).
+function routinesBodyTooLargeByHeader(headers: Record<string, string | undefined>) {
+  const declared = Number(headers["content-length"])
+  return Number.isFinite(declared) && declared > ROUTINES_MAX_BODY_BYTES
+}
+function routinesBodyTooLarge(raw: string) {
+  return Buffer.byteLength(raw, "utf8") > ROUTINES_MAX_BODY_BYTES
+}
 import {
   ackWorkspaceTabsAction,
   updateWorkspaceTabsClientState,
@@ -2611,24 +2634,22 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
 
     yield* router.add("POST", "/experimental/routines/jobs", (request) =>
       Effect.gen(function* () {
+        if (routinesBodyTooLargeByHeader(request.headers)) return HttpServerResponse.text("Body too large", { status: 413 })
         const raw = yield* Effect.orDie(request.text)
-        let body: {
+        if (routinesBodyTooLarge(raw)) return HttpServerResponse.text("Body too large", { status: 413 })
+        type RoutineCreateBody = {
           name?: string
           description?: string
           schedule?: string
           command?: string
+          host?: string
+          icon?: string
           tags?: string[]
           notify?: string[]
         }
+        let body: RoutineCreateBody
         try {
-          body = JSON.parse(raw || "{}") as {
-            name?: string
-            description?: string
-            schedule?: string
-            command?: string
-            tags?: string[]
-            notify?: string[]
-          }
+          body = JSON.parse(raw || "{}") as RoutineCreateBody
         } catch {
           return HttpServerResponse.text("Invalid JSON body", { status: 400 })
         }
@@ -2644,13 +2665,17 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
     yield* router.add("PATCH", "/experimental/routines/jobs/:id", (request) =>
       Effect.gen(function* () {
         const id = decodeParam(request.url, /^\/experimental\/routines\/jobs\/([^/]+)$/)
+        if (routinesBodyTooLargeByHeader(request.headers)) return HttpServerResponse.text("Body too large", { status: 413 })
         const raw = yield* Effect.orDie(request.text)
+        if (routinesBodyTooLarge(raw)) return HttpServerResponse.text("Body too large", { status: 413 })
         type RoutineUpdateBody = {
           name?: string
           description?: string
           schedule?: string
           command?: string
           enabled?: boolean
+          host?: string
+          icon?: string
           tags?: string[]
           notify?: string[]
         }
@@ -2672,7 +2697,23 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
     yield* router.add("POST", "/experimental/routines/jobs/:id/run", (request) =>
       Effect.promise(async () => {
         const id = decodeParam(request.url, /^\/experimental\/routines\/jobs\/([^/]+)\/run$/)
-        const result = await routinesAction({ action: "run", id })
+        // Rate-limit run requests (MUST-FIX #8): a minimum interval between any
+        // two run attempts on this server, cheap in-memory guard on top of the
+        // per-routine run-lock in the runner.
+        if (!routinesRunRateOk()) {
+          return HttpServerResponse.jsonUnsafe(
+            { ok: false, error: "Too many run requests; slow down.", mutationPolicy: "rate_limited" },
+            { status: 429 },
+          )
+        }
+        const operatorToken =
+          request.headers["x-opencode-routines-token"] ?? request.headers["x-opencode-routines-operator-token"]
+        const result = await routinesAction({
+          action: "run",
+          id,
+          caller: "http",
+          operatorToken: typeof operatorToken === "string" ? operatorToken : undefined,
+        })
         publishAppleBridgeEvent("routines", "routine.run_requested", summarizeRoutineEvent("run", result, id))
         return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : 403 })
       }),

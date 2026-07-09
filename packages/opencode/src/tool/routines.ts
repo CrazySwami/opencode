@@ -1,7 +1,20 @@
 import { Effect, Schema } from "effect"
 import * as Tool from "./tool"
 import DESCRIPTION from "./routines.txt"
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import {
+  appendFileSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs"
 import { spawn } from "node:child_process"
 import path from "node:path"
 
@@ -16,6 +29,31 @@ const DEFAULT_HOST = "local"
 // Hard cap so a runaway routine command can't hang the runner forever.
 const ROUTINE_RUN_TIMEOUT_MS = 5 * 60 * 1000
 const ROUTINE_OUTPUT_CAP = 64 * 1024
+// Per-routine log file rotates once it exceeds this size; we keep one .1 backup.
+const ROUTINE_LOG_MAX_BYTES = 512 * 1024
+// Bytes of log tail we read back (avoids loading a large jsonl fully into RAM).
+const ROUTINE_LOG_READ_TAIL_BYTES = 128 * 1024
+// Env vars a routine command is allowed to inherit. Everything else (secrets,
+// tokens, provider keys on the server process) is stripped from the spawn env.
+const ROUTINE_ENV_ALLOWLIST = [
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TERM",
+  "TMPDIR",
+  "SHELL",
+  "SSH_AUTH_SOCK",
+  "TZ",
+]
+
+// Caller identity for a run request. `tool` = model/agent-initiated (must carry
+// an approval token minted by the tool's ctx.ask gate). `http` = the routines
+// HTTP surface (operator UI). `internal` = scheduler/self (future).
+export type RoutineCaller = "tool" | "http" | "internal"
 
 export const Parameters = Schema.Struct({
   action: Schema.optional(Schema.Literals(["status", "list", "get", "logs", "create", "update", "delete", "enable", "disable", "run"])).annotate({
@@ -90,9 +128,39 @@ export const RoutinesTool = Tool.define<typeof Parameters, Metadata, never>(
     return {
       description: DESCRIPTION,
       parameters: Parameters,
-      execute: (params: Schema.Schema.Type<typeof Parameters>) =>
+      execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
           const action = params.action ?? "list"
+          // MUST-FIX #1: routine execution is arbitrary shell (locally OR over
+          // ssh to another box), so a model/agent asking to `run` a routine has
+          // to pass the SAME approval gate as the shell tool — never auto-run.
+          // We prompt with the resolved command + host so the human sees exactly
+          // what will execute. Rejection dies the effect before anything runs.
+          let approval: string | undefined
+          if (action === "run") {
+            const routine = readRoutines().find((item) => item.id === safeID(params.id ?? ""))
+            const command = routine?.command?.trim() ?? ""
+            const host = routine?.host && ROUTINE_HOSTS[routine.host] ? routine.host : DEFAULT_HOST
+            const hostLabel = ROUTINE_HOSTS[host]?.label ?? host
+            if (routine && command) {
+              yield* ctx.ask({
+                // Dedicated permission key (independent of, and never weaker
+                // than, the bash allowlist): defaults to "ask" so a routine run
+                // is never silently auto-approved by an unrelated bash rule.
+                permission: "routines",
+                patterns: [`${host}:: ${command}`],
+                always: [`routines run ${host}`],
+                metadata: {
+                  routineID: routine.id,
+                  routineName: routine.name,
+                  host,
+                  hostLabel,
+                  command,
+                },
+              })
+              approval = mintRunApproval(routine.id, { command, host, updatedAt: routine.updatedAt })
+            }
+          }
           const result = yield* Effect.promise(() =>
             routinesAction({
               action,
@@ -106,6 +174,8 @@ export const RoutinesTool = Tool.define<typeof Parameters, Metadata, never>(
               icon: params.icon,
               tags: params.tags,
               notify: params.notify,
+              caller: "tool",
+              approval,
             }),
           )
           return {
@@ -121,6 +191,7 @@ export const RoutinesTool = Tool.define<typeof Parameters, Metadata, never>(
 export async function routinesStatus() {
   const home = routinesHome()
   ensureRoutinesStore()
+  reconcileStaleRunning()
   const routines = readRoutines()
   return {
     ok: true,
@@ -130,6 +201,7 @@ export async function routinesStatus() {
     logsDir: routinesLogsDir(),
     mutationsEnabled: routinesMutationsEnabled(),
     runEnabled: routinesRunEnabled(),
+    operatorTokenRequired: !!routinesOperatorToken(),
     hosts: Object.entries(ROUTINE_HOSTS).map(([id, h]) => ({ id, label: h.label, remote: !!h.ssh })),
     accessBoundaryRequired: routinesMutationsEnabled() ? null : "Set OPENCODE_ROUTINES_MUTATIONS=1 to allow disabled draft writes.",
     mutationPolicy: routinesMutationsEnabled() ? "disabled_draft_writes_enabled" : "disabled_draft_writes_disabled",
@@ -161,6 +233,9 @@ export async function routinesAction(input: {
   icon?: string
   tags?: readonly string[]
   notify?: readonly string[]
+  caller?: RoutineCaller
+  approval?: string
+  operatorToken?: string
 }) {
   const action = input.action ?? "list"
   if (action === "status") return routinesStatus()
@@ -170,7 +245,12 @@ export async function routinesAction(input: {
   if (action === "delete") return deleteRoutine(input.id)
   if (action === "enable") return updateRoutine(input.id, { enabled: true })
   if (action === "disable") return updateRoutine(input.id, { enabled: false })
-  if (action === "run") return runRoutine(input.id)
+  if (action === "run")
+    return runRoutine(input.id, {
+      caller: input.caller ?? "http",
+      approval: input.approval,
+      operatorToken: input.operatorToken,
+    })
   if (action === "get") {
     const routine = readRoutines().find((item) => item.id === input.id)
     return { ok: !!routine, routine: routine ?? null }
@@ -311,8 +391,28 @@ function routineLogFile(routineID: string) {
   return path.join(routinesLogsDir(), `${safeID(routineID)}.jsonl`)
 }
 
+// Rotate the per-routine log once it passes the size cap: current → .1 (one
+// backup kept), then start fresh. Keeps disk bounded (MUST-FIX #6).
+function rotateRoutineLogIfNeeded(routineID: string) {
+  const file = routineLogFile(routineID)
+  try {
+    if (!existsSync(file)) return
+    if (statSync(file).size < ROUTINE_LOG_MAX_BYTES) return
+    const backup = file + ".1"
+    try {
+      if (existsSync(backup)) unlinkSync(backup)
+    } catch {
+      // ignore
+    }
+    renameSync(file, backup)
+  } catch {
+    // best-effort rotation; never let it fail a run
+  }
+}
+
 function appendRoutineLog(routineID: string, level: RoutineLog["level"], message: string) {
   ensureRoutinesStore()
+  rotateRoutineLogIfNeeded(routineID)
   const entry: RoutineLog = { time: new Date().toISOString(), routineID, level, message }
   try {
     appendFileSync(routineLogFile(routineID), JSON.stringify(entry) + "\n")
@@ -329,15 +429,74 @@ function patchRoutine(id: string, patch: Partial<Routine>) {
   writeRoutines(routines)
 }
 
+// Build a minimal environment for a spawned routine command. The server process
+// holds provider API keys / tokens in its env; a routine command must NOT
+// inherit those (MUST-FIX #7). Only an explicit allowlist is passed through.
+function minimalSpawnEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {}
+  for (const key of ROUTINE_ENV_ALLOWLIST) {
+    const value = process.env[key]
+    if (value !== undefined) env[key] = value
+  }
+  return env
+}
+
+// Collect secret-looking values from the server env so we can scrub any that
+// leak into captured command output (MUST-FIX #7). Values shorter than 6 chars
+// are ignored to avoid masking noise.
+function secretValues(): string[] {
+  const secrets = new Set<string>()
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!value || value.length < 6) continue
+    if (/(TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL|PRIVATE|SESSION|COOKIE|API)/i.test(key)) secrets.add(value)
+  }
+  return Array.from(secrets)
+}
+
+function redactOutput(output: string, secrets: string[]): string {
+  let redacted = output
+  for (const secret of secrets) {
+    if (!secret) continue
+    redacted = redacted.split(secret).join("***REDACTED***")
+  }
+  return redacted
+}
+
 // Execute a routine command on the selected host. ssh=null runs locally via a
 // shell; otherwise it runs over `ssh <alias>` (BatchMode so it never blocks on a
-// password prompt). Output is capped and the whole run is time-boxed.
+// password prompt). The command runs in its own process group so a timeout can
+// kill the WHOLE tree (MUST-FIX #5), and remote runs are additionally wrapped in
+// a remote-side `timeout` so a dropped ssh connection can't orphan the remote
+// process. Output is capped, secret-scrubbed, and the run is time-boxed.
 function runCommandOnHost(host: string, command: string): Promise<{ code: number; output: string }> {
   return new Promise((resolve) => {
-    const target = ROUTINE_HOSTS[host] ?? ROUTINE_HOSTS[DEFAULT_HOST]
-    const [cmd, args] = target.ssh
-      ? (["ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", target.ssh, command]] as const)
-      : (["/bin/sh", ["-c", command]] as const)
+    const target = ROUTINE_HOSTS[host]!
+    const timeoutSecs = Math.ceil(ROUTINE_RUN_TIMEOUT_MS / 1000)
+    let cmd: string
+    let args: string[]
+    if (target.ssh) {
+      // base64 the command so no quoting/injection through the remote shell is
+      // possible, and self-terminate remotely via `timeout` so a killed ssh
+      // client can't leave the remote command running. `setsid` puts it in its
+      // own session/group so `timeout` reaps children too.
+      const b64 = Buffer.from(command, "utf8").toString("base64")
+      const remote = `printf %s ${b64} | base64 -d | setsid timeout -k 5 -s TERM ${timeoutSecs} bash`
+      cmd = "ssh"
+      args = [
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        target.ssh,
+        remote,
+      ]
+    } else {
+      cmd = "/bin/sh"
+      args = ["-c", command]
+    }
+    const secrets = secretValues()
     let output = ""
     let done = false
     const append = (buf: Buffer) => {
@@ -349,11 +508,27 @@ function runCommandOnHost(host: string, command: string): Promise<{ code: number
       if (done) return
       done = true
       clearTimeout(timer)
-      resolve({ code, output: extra ? output + extra : output })
+      resolve({ code, output: redactOutput(extra ? output + extra : output, secrets) })
     }
-    const child = spawn(cmd, args as unknown as string[], { stdio: ["ignore", "pipe", "pipe"] })
+    const child = spawn(cmd, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: true, // own process group → group-kill on timeout
+      env: minimalSpawnEnv(),
+    })
+    const killTree = (signal: NodeJS.Signals) => {
+      try {
+        if (child.pid) process.kill(-child.pid, signal)
+        else child.kill(signal)
+      } catch {
+        try {
+          child.kill(signal)
+        } catch {
+          // process already gone
+        }
+      }
+    }
     const timer = setTimeout(() => {
-      child.kill("SIGKILL")
+      killTree("SIGKILL")
       settle(124, "\n…(timed out)")
     }, ROUTINE_RUN_TIMEOUT_MS)
     child.stdout?.on("data", append)
@@ -363,11 +538,17 @@ function runCommandOnHost(host: string, command: string): Promise<{ code: number
   })
 }
 
-export async function runRoutine(id: string | undefined) {
+export async function runRoutine(
+  id: string | undefined,
+  auth: { caller: RoutineCaller; approval?: string; operatorToken?: string } = { caller: "http" },
+) {
   const safe = id ? safeID(id) : undefined
   if (!safe) return { ok: false, error: "Routine id is required." }
+  reconcileStaleRunning()
   const routine = readRoutines().find((item) => item.id === safe)
   if (!routine) return { ok: false, error: `Routine not found: ${safe}` }
+
+  // Layer 1: global kill-switch. Live box keeps this OFF.
   if (!routinesRunEnabled()) {
     return {
       ok: false,
@@ -376,27 +557,101 @@ export async function runRoutine(id: string | undefined) {
       mutationPolicy: "manual_runs_disabled",
     }
   }
+
+  // Layer 2: caller authorization (MUST-FIX #1/#2). A model/agent `tool` caller
+  // must present a single-use approval token minted by the ctx.ask gate; an
+  // `http` operator caller must present the operator token when one is
+  // configured. `internal` (scheduler) is reserved and rejected until built.
+  let approvedSnapshot: RunApprovalSnapshot | undefined
+  if (auth.caller === "tool") {
+    approvedSnapshot = auth.approval ? consumeRunApproval(safe, auth.approval) : undefined
+    if (!approvedSnapshot) {
+      return { ok: false, routine, error: "Routine run was not approved.", mutationPolicy: "approval_required" }
+    }
+  } else if (auth.caller === "http") {
+    const required = routinesOperatorToken()
+    if (required && auth.operatorToken !== required) {
+      return { ok: false, routine, error: "Operator token required to run routines.", mutationPolicy: "operator_token_required" }
+    }
+  } else {
+    return { ok: false, routine, error: `Caller '${auth.caller}' cannot run routines yet.`, mutationPolicy: "caller_not_allowed" }
+  }
+
+  // Layer 3: only enabled routines run (MUST-FIX #2). Draft/disabled routines
+  // are never executable regardless of who asks.
+  if (!routine.enabled) {
+    return { ok: false, routine, error: "Routine is disabled. Enable it before running.", mutationPolicy: "routine_disabled" }
+  }
   if (!routine.command || !routine.command.trim()) {
     return { ok: false, routine, error: "Routine has no command to run." }
   }
-  const host = routine.host && ROUTINE_HOSTS[routine.host] ? routine.host : DEFAULT_HOST
-  const startedAt = new Date().toISOString()
-  patchRoutine(safe, { lastStatus: "running", lastRunAt: startedAt })
-  appendRoutineLog(safe, "info", `run started on host=${host} (${ROUTINE_HOSTS[host].label})`)
 
-  const { code, output } = await runCommandOnHost(host, routine.command)
-  const status: Routine["lastStatus"] = code === 0 ? "ok" : "error"
-  for (const line of output.split(/\r?\n/).filter(Boolean).slice(-100)) {
-    appendRoutineLog(safe, status === "ok" ? "info" : "error", line)
+  // Layer 4: fail-closed host (MUST-FIX #3). An unknown host is an error — never
+  // silently fall back to executing on `local`.
+  if (routine.host !== undefined && !ROUTINE_HOSTS[routine.host]) {
+    return { ok: false, routine, error: `Unknown host '${routine.host}'.`, mutationPolicy: "invalid_host" }
   }
-  appendRoutineLog(safe, status === "ok" ? "info" : "error", `run finished exit=${code} status=${status}`)
-  patchRoutine(safe, { lastStatus: status, lastExitCode: code })
 
-  return {
-    ok: code === 0,
-    generatedAt: new Date().toISOString(),
-    routine: readRoutines().find((item) => item.id === safe),
-    run: { host, hostLabel: ROUTINE_HOSTS[host].label, exitCode: code, status, output: output.slice(0, 4000) },
+  // Layer 5: run-lock (MUST-FIX #4). Atomic lockfile prevents concurrent runs
+  // (and the patchRoutine read-modify-write race). Stale locks (crashed run)
+  // are recovered by reconcileStaleRunning above + acquireRunLock below.
+  const lock = acquireRunLock(safe)
+  if (!lock.ok || !lock.owner) {
+    return { ok: false, routine, error: "Routine is already running.", mutationPolicy: "already_running" }
+  }
+  const lockOwner = lock.owner
+
+  try {
+    // Re-read under the lock and, for tool callers, confirm the command/host/
+    // version still match exactly what the human approved (Codex finding #1).
+    // This closes the window where a PATCH between ctx.ask and execution could
+    // swap in a different command under the original approval.
+    const fresh = readRoutines().find((item) => item.id === safe)
+    if (!fresh) return { ok: false, error: `Routine not found: ${safe}` }
+    const freshHost = fresh.host ?? DEFAULT_HOST
+    if (approvedSnapshot) {
+      const commandChanged = (fresh.command ?? "").trim() !== approvedSnapshot.command
+      const hostChanged = freshHost !== approvedSnapshot.host
+      const versionChanged = fresh.updatedAt !== approvedSnapshot.updatedAt
+      if (commandChanged || hostChanged || versionChanged) {
+        return {
+          ok: false,
+          routine: fresh,
+          error: "Routine changed since it was approved. Re-run to approve the current command.",
+          mutationPolicy: "approval_stale",
+        }
+      }
+    }
+    if (freshHost !== undefined && !ROUTINE_HOSTS[freshHost]) {
+      return { ok: false, routine: fresh, error: `Unknown host '${freshHost}'.`, mutationPolicy: "invalid_host" }
+    }
+    if (!fresh.enabled) {
+      return { ok: false, routine: fresh, error: "Routine is disabled. Enable it before running.", mutationPolicy: "routine_disabled" }
+    }
+    if (!fresh.command || !fresh.command.trim()) {
+      return { ok: false, routine: fresh, error: "Routine has no command to run." }
+    }
+
+    const startedAt = new Date().toISOString()
+    patchRoutine(safe, { lastStatus: "running", lastRunAt: startedAt })
+    appendRoutineLog(safe, "info", `run started on host=${freshHost} (${ROUTINE_HOSTS[freshHost]!.label})`)
+
+    const { code, output } = await runCommandOnHost(freshHost, fresh.command)
+    const status: Routine["lastStatus"] = code === 0 ? "ok" : "error"
+    for (const line of output.split(/\r?\n/).filter(Boolean).slice(-100)) {
+      appendRoutineLog(safe, status === "ok" ? "info" : "error", line)
+    }
+    appendRoutineLog(safe, status === "ok" ? "info" : "error", `run finished exit=${code} status=${status}`)
+    patchRoutine(safe, { lastStatus: status, lastExitCode: code })
+
+    return {
+      ok: code === 0,
+      generatedAt: new Date().toISOString(),
+      routine: readRoutines().find((item) => item.id === safe),
+      run: { host: freshHost, hostLabel: ROUTINE_HOSTS[freshHost]!.label, exitCode: code, status, output: output.slice(0, 4000) },
+    }
+  } finally {
+    releaseRunLock(safe, lockOwner)
   }
 }
 
@@ -421,19 +676,54 @@ export async function routineLogs(id?: string) {
   }
 }
 
+// Read back only the tail of the log (MUST-FIX #6): open the file, seek to the
+// last ROUTINE_LOG_READ_TAIL_BYTES, and parse whole lines. Never loads a large
+// rotated log fully into memory. A partial first line (cut by the seek) is
+// dropped by JSON.parse failing.
+function readLogTail(file: string): RoutineLog[] {
+  if (!existsSync(file)) return []
+  let fd: number | undefined
+  try {
+    const size = statSync(file).size
+    const start = size > ROUTINE_LOG_READ_TAIL_BYTES ? size - ROUTINE_LOG_READ_TAIL_BYTES : 0
+    const length = size - start
+    if (length <= 0) return []
+    fd = openSync(file, "r")
+    const buf = Buffer.allocUnsafe(length)
+    let read = 0
+    while (read < length) {
+      const n = readSync(fd, buf, read, length - read, start + read)
+      if (n <= 0) break
+      read += n
+    }
+    return buf
+      .subarray(0, read)
+      .toString("utf8")
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .flatMap((line) => {
+        try {
+          return [JSON.parse(line) as RoutineLog]
+        } catch {
+          return []
+        }
+      })
+  } catch {
+    return []
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd)
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
 function readRoutineLogFile(routineID: string): RoutineLog[] {
   const file = path.join(routinesLogsDir(), `${safeID(routineID)}.jsonl`)
-  if (!existsSync(file)) return []
-  return readFileSync(file, "utf8")
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .flatMap((line) => {
-      try {
-        return [JSON.parse(line) as RoutineLog]
-      } catch {
-        return []
-      }
-    })
+  return readLogTail(file)
 }
 
 function ensureRoutinesStore() {
@@ -483,6 +773,127 @@ function routinesMutationsEnabled() {
 
 function routinesRunEnabled() {
   return routinesMutationsEnabled() && process.env.OPENCODE_ROUTINES_RUN_ENABLED === "1"
+}
+
+// Optional operator token gating HTTP `run` requests. When set, the routines UI
+// / HTTP surface must present it (MUST-FIX #2/#8). Unset = rely on the outer
+// server auth layer only.
+function routinesOperatorToken() {
+  const token = process.env.OPENCODE_ROUTINES_OPERATOR_TOKEN?.trim()
+  return token ? token : undefined
+}
+
+// --- Single-use approval nonces (MUST-FIX #1) -------------------------------
+// The tool's ctx.ask gate mints a token AFTER the human approves; runRoutine
+// consumes it exactly once. This guarantees a `tool` caller cannot reach the
+// executor without a fresh human approval, even if some other code path tried
+// to forge caller:"tool".
+// The approval is bound to the exact command/host/version the human saw at
+// ctx.ask time (Codex finding #1 — TOCTOU): if the routine is mutated between
+// approval and execution, the snapshot no longer matches and the run is
+// rejected, so a PATCH can't swap in a different command under an old approval.
+type RunApprovalSnapshot = { command: string; host: string; updatedAt?: string }
+const RUN_APPROVALS = new Map<string, { token: string; expires: number; snapshot: RunApprovalSnapshot }>()
+const RUN_APPROVAL_TTL_MS = 60 * 1000
+
+function randomToken() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`
+}
+
+function mintRunApproval(routineID: string, snapshot: RunApprovalSnapshot): string {
+  const token = randomToken()
+  RUN_APPROVALS.set(routineID, { token, expires: Date.now() + RUN_APPROVAL_TTL_MS, snapshot })
+  return token
+}
+
+function consumeRunApproval(routineID: string, token: string): RunApprovalSnapshot | undefined {
+  const entry = RUN_APPROVALS.get(routineID)
+  RUN_APPROVALS.delete(routineID)
+  if (!entry) return undefined
+  if (entry.expires < Date.now()) return undefined
+  if (entry.token !== token) return undefined
+  return entry.snapshot
+}
+
+// --- Run lock (MUST-FIX #4) --------------------------------------------------
+function routinesLocksDir() {
+  return path.join(routinesHome(), "locks")
+}
+
+function routineLockFile(routineID: string) {
+  return path.join(routinesLocksDir(), `${safeID(routineID)}.lock`)
+}
+
+type RunLock = { pid: number; startedAt: string; owner: string }
+
+// Authoritative concurrency guard. opencode is a SINGLE Bun process, so a
+// module-level Set is a fully atomic in-process lock — no filesystem
+// check-then-act race is possible (closes Codex finding #3). The on-disk
+// lockfile below is now ADVISORY only: it records the active run for
+// observability and lets a fresh process detect a run that a PRIOR (crashed)
+// process left mid-flight. Correctness never depends on the file.
+const RUNNING = new Set<string>()
+
+function readRunLock(routineID: string): RunLock | undefined {
+  try {
+    return JSON.parse(readFileSync(routineLockFile(routineID), "utf8")) as RunLock
+  } catch {
+    return undefined
+  }
+}
+
+// Acquire the per-routine run lock. The in-process Set is the source of truth;
+// the file is written best-effort for cross-restart visibility.
+function acquireRunLock(routineID: string): { ok: boolean; owner?: string } {
+  if (RUNNING.has(routineID)) return { ok: false }
+  RUNNING.add(routineID)
+  const owner = randomToken()
+  try {
+    mkdirSync(routinesLocksDir(), { recursive: true })
+    writeFileSync(
+      routineLockFile(routineID),
+      JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), owner } satisfies RunLock),
+    )
+  } catch {
+    // advisory only; run still proceeds under the in-process lock
+  }
+  return { ok: true, owner }
+}
+
+// Release the in-process lock and remove our advisory file. The owner guard
+// keeps us from deleting a file we no longer own (belt-and-suspenders).
+function releaseRunLock(routineID: string, owner: string) {
+  RUNNING.delete(routineID)
+  try {
+    const current = readRunLock(routineID)
+    if (current && current.owner !== owner) return
+    unlinkSync(routineLockFile(routineID))
+  } catch {
+    // already released
+  }
+}
+
+// Flip any routine stuck in "running" that is NOT actually active in this
+// process back to "error" — that state can only be a run a prior (crashed)
+// process left behind, since a live run is tracked in RUNNING. Keeps the UI
+// from showing a perpetual running state after a restart.
+function reconcileStaleRunning() {
+  const routines = readRoutines()
+  let changed = false
+  for (const routine of routines) {
+    if (routine.lastStatus !== "running") continue
+    if (RUNNING.has(routine.id)) continue
+    routine.lastStatus = "error"
+    routine.lastExitCode = routine.lastExitCode ?? -1
+    changed = true
+    try {
+      unlinkSync(routineLockFile(routine.id))
+    } catch {
+      // no leftover lock file to clean
+    }
+    appendRoutineLog(routine.id, "warn", "run marked failed: not active in this process (crashed/stale)")
+  }
+  if (changed) writeRoutines(routines)
 }
 
 function safeID(value: string) {
