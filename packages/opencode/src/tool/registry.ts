@@ -29,6 +29,7 @@ import { CliResourcesTool } from "./cli-resources"
 import { RoutinesTool } from "./routines"
 import { WorkspaceEnvTool } from "./workspace-env"
 import { WorkspaceTabsTool } from "./workspace-tabs"
+import { ImageGenTool } from "./image-gen-tool"
 import * as Tool from "./tool"
 import { Config } from "@/config/config"
 import { type ToolContext as PluginToolContext, type ToolDefinition } from "@opencode-ai/plugin"
@@ -131,6 +132,7 @@ export const layer = Layer.effect(
     const routines = yield* RoutinesTool
     const workspaceEnv = yield* WorkspaceEnvTool
     const workspaceTabs = yield* WorkspaceTabsTool
+    const imageGen = yield* ImageGenTool
     const agent = yield* Agent.Service
 
     const state = yield* InstanceState.make<State>(
@@ -251,6 +253,7 @@ export const layer = Layer.effect(
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
+          imageGen: Tool.init(imageGen),
         })
         const terminal: Tool.Def = {
           ...tool.shell,
@@ -294,6 +297,7 @@ export const layer = Layer.effect(
             tool.patch,
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
+            ...(flags.experimentalImageGen ? [tool.imageGen] : []),
           ],
           task: tool.task,
           read: tool.read,

@@ -142,6 +142,7 @@ import { collectResourceStatus } from "@/tool/resource-status"
 import { collectCliResourcesStatus, runCliResourceAction } from "@/tool/cli-resources"
 import { createRoutineDraft, ensureRoutinesScheduler, routineLogs, routinesAction, routinesStatus } from "@/tool/routines"
 import { publishAppleBridgeEvent } from "@/tool/ios-bridge-events"
+import { generateImage, imageProviderStatus, isImageProviderID } from "@/tool/image-gen"
 
 // Routines HTTP guards (MUST-FIX #8): reject oversized bodies and throttle run
 // requests. The runner itself also enforces run-enabled/approval/lock, so this
@@ -978,6 +979,38 @@ const tracingStatusRoute = HttpRouter.use((router) =>
           project: tracing.project,
           hasKey: tracing.hasKey,
         })
+      }),
+    )
+  }),
+).pipe(Layer.provide(authOnlyRouterLayer))
+
+// Image generation: provider-agnostic (local FLUX hub, Recraft, Gemini).
+// /providers only ever reports presence/reachability booleans -- never key
+// values -- and /generate never logs a key either (see tool/image-gen.ts).
+const imageGenRoute = HttpRouter.use((router) =>
+  Effect.gen(function* () {
+    yield* router.add("GET", "/experimental/image/providers", () =>
+      Effect.promise(async () => HttpServerResponse.jsonUnsafe(await imageProviderStatus())),
+    )
+
+    yield* router.add("POST", "/experimental/image/generate", (request) =>
+      Effect.gen(function* () {
+        const raw = yield* Effect.orDie(request.text)
+        let body: { prompt?: unknown; provider?: unknown; size?: unknown }
+        try {
+          body = JSON.parse(raw || "{}")
+        } catch {
+          return HttpServerResponse.jsonUnsafe({ ok: false, error: "Invalid JSON body" }, { status: 400 })
+        }
+
+        const prompt = typeof body.prompt === "string" ? body.prompt.trim() : ""
+        if (!prompt) return HttpServerResponse.jsonUnsafe({ ok: false, error: "prompt is required" }, { status: 400 })
+
+        const provider = isImageProviderID(body.provider) ? body.provider : undefined
+        const size = typeof body.size === "string" ? body.size : undefined
+
+        const result = yield* Effect.promise(() => generateImage({ prompt, provider, size }))
+        return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : 502 })
       }),
     )
   }),
@@ -5398,6 +5431,7 @@ export function createRoutes(
     workspaceIndexRoute,
     fileViewerRoute,
     tracingStatusRoute,
+    imageGenRoute,
     workspaceSuiteRoute,
     uiRoute,
   ).pipe(
