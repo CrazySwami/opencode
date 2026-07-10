@@ -523,6 +523,7 @@ export function NewHome() {
               </ScrollView>
             </Match>
           </Switch>
+          <HomeChat />
         </section>
         <HomeUtilityNav
           class="flex lg:hidden"
@@ -532,6 +533,281 @@ export function NewHome() {
           setMode={(mode) => setState("mode", mode)}
           language={language}
         />
+      </div>
+    </div>
+  )
+}
+
+// Milestone-1 home chat: a persistent chat docked on the home view that fronts
+// OpenDesign's chat backend via the /experimental/home-chat/* server proxy.
+// It POSTs a message to /send (getting an OD run id back), then streams that
+// run's events from /events/:runId and renders them live. The project picker +
+// "@" affordance seed which OD project/repo the run targets. Later milestones
+// add real @-tag dispatch, artifact rendering, and multi-turn history.
+type HomeChatProject = { id: string; name: string; baseDir: string | null }
+type HomeChatEntry = { id: number; label: string; text: string; kind: "event" | "error" }
+
+function extractHomeChatText(event: string, data: string): string {
+  try {
+    const parsed = JSON.parse(data) as Record<string, any>
+    const value =
+      parsed.text ??
+      parsed.delta ??
+      parsed.chunk ??
+      parsed.label ??
+      parsed.message ??
+      (event === "end" && parsed.status ? `run ${parsed.status}` : undefined)
+    if (typeof value === "string") return value.replace(/\s+$/, "")
+    if (value != null) return JSON.stringify(value)
+    return data
+  } catch {
+    return data
+  }
+}
+
+function HomeChat() {
+  const [projects, setProjects] = createSignal<HomeChatProject[]>([])
+  const [projectId, setProjectId] = createSignal<string>("")
+  const [offline, setOffline] = createSignal(false)
+  const [message, setMessage] = createSignal("")
+  const [entries, setEntries] = createSignal<HomeChatEntry[]>([])
+  const [running, setRunning] = createSignal(false)
+  const [runId, setRunId] = createSignal<string | undefined>()
+  const [tagOpen, setTagOpen] = createSignal(false)
+  let entrySeq = 0
+  let inputRef: HTMLTextAreaElement | undefined
+  let activeController: AbortController | undefined
+
+  const appendEntry = (label: string, text: string, kind: HomeChatEntry["kind"] = "event") =>
+    setEntries((prev) => [...prev, { id: ++entrySeq, label, text, kind }])
+
+  const loadProjects = async () => {
+    try {
+      const res = await fetch("/experimental/home-chat/projects", { cache: "no-store" })
+      const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean
+        projects?: HomeChatProject[]
+      }
+      if (!res.ok || body.ok === false) {
+        setOffline(true)
+        setProjects([])
+        return
+      }
+      setOffline(false)
+      setProjects(body.projects ?? [])
+    } catch {
+      setOffline(true)
+      setProjects([])
+    }
+  }
+
+  onMount(() => {
+    void loadProjects()
+  })
+  onCleanup(() => activeController?.abort())
+
+  const selectedProject = createMemo(() => projects().find((p) => p.id === projectId()))
+
+  const insertTag = (project: HomeChatProject) => {
+    const token = `@${project.name.replace(/\s+/g, "-")} `
+    setMessage((prev) => (prev.endsWith(" ") || prev.length === 0 ? prev : prev + " ") + token)
+    setProjectId(project.id)
+    setTagOpen(false)
+    inputRef?.focus()
+  }
+
+  // Parse the OD run-events SSE stream frame-by-frame and render each event.
+  const streamRun = async (id: string) => {
+    const controller = new AbortController()
+    activeController = controller
+    try {
+      const res = await fetch(`/experimental/home-chat/events/${encodeURIComponent(id)}`, {
+        headers: { accept: "text/event-stream" },
+        signal: controller.signal,
+      })
+      if (!res.ok || !res.body) {
+        appendEntry("error", `Stream unavailable (${res.status})`, "error")
+        return
+      }
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ""
+      const flushFrame = (frame: string) => {
+        let eventName = "message"
+        const dataLines: string[] = []
+        for (const line of frame.split("\n")) {
+          if (line.startsWith("event:")) eventName = line.slice(6).trim()
+          else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim())
+        }
+        if (dataLines.length === 0) return
+        const data = dataLines.join("\n")
+        appendEntry(eventName, extractHomeChatText(eventName, data), eventName === "error" ? "error" : "event")
+      }
+      while (true) {
+        const chunk = await reader.read()
+        if (chunk.done) break
+        buffer += decoder.decode(chunk.value, { stream: true })
+        let sep: number
+        while ((sep = buffer.indexOf("\n\n")) !== -1) {
+          const frame = buffer.slice(0, sep)
+          buffer = buffer.slice(sep + 2)
+          if (frame.trim()) flushFrame(frame)
+        }
+      }
+      if (buffer.trim()) flushFrame(buffer)
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        appendEntry("error", error instanceof Error ? error.message : String(error), "error")
+      }
+    } finally {
+      if (activeController === controller) activeController = undefined
+      setRunning(false)
+    }
+  }
+
+  const send = async () => {
+    const text = message().trim()
+    if (!text || running()) return
+    setRunning(true)
+    setEntries([])
+    setRunId(undefined)
+    appendEntry("you", text)
+    try {
+      const res = await fetch("/experimental/home-chat/send", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message: text, projectId: projectId() || undefined }),
+      })
+      const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean
+        runId?: string
+        error?: string
+      }
+      if (!res.ok || body.ok === false || !body.runId) {
+        setOffline(body.error === "OpenDesign offline")
+        appendEntry("error", body.error ?? `Send failed (${res.status})`, "error")
+        setRunning(false)
+        return
+      }
+      setOffline(false)
+      setMessage("")
+      setRunId(body.runId)
+      await streamRun(body.runId)
+    } catch (error) {
+      appendEntry("error", error instanceof Error ? error.message : String(error), "error")
+      setRunning(false)
+    }
+  }
+
+  const onInputKeyDown = (event: KeyboardEvent) => {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault()
+      void send()
+    }
+  }
+
+  return (
+    <div class="mt-3 shrink-0 rounded-[10px] border border-v2-border-border-base bg-v2-background-bg-layer-01">
+      <div class="flex min-w-0 items-center justify-between gap-2 border-b border-v2-border-border-base px-3 py-2">
+        <div class={HOME_SECTION_LABEL}>Home chat</div>
+        <div class="flex min-w-0 items-center gap-2">
+          <select
+            class="h-7 max-w-[200px] rounded-[6px] border border-v2-border-border-base bg-v2-background-bg-base px-2 text-[12px] text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+            value={projectId()}
+            onChange={(event) => setProjectId(event.currentTarget.value)}
+            aria-label="OpenDesign project"
+          >
+            <option value="">No project</option>
+            <For each={projects()}>{(project) => <option value={project.id}>{project.name}</option>}</For>
+          </select>
+          <IconButtonV2
+            variant="ghost-muted"
+            size="normal"
+            icon={<IconV2 name="refresh" />}
+            onClick={() => void loadProjects()}
+            aria-label="Refresh OpenDesign projects"
+          />
+        </div>
+      </div>
+      <Show when={offline()}>
+        <div class="border-b border-v2-border-border-base bg-v2-background-bg-base px-3 py-2 text-[12px] leading-5 text-v2-state-fg-danger">
+          OpenDesign is offline. Start the OD daemon (default :7456) to use home chat.
+        </div>
+      </Show>
+      <Show when={entries().length > 0}>
+        <ScrollView class="max-h-[240px] min-h-0">
+          <div class="flex flex-col gap-2 p-3">
+            <For each={entries()}>
+              {(entry) => (
+                <div class="flex min-w-0 flex-col gap-0.5">
+                  <span
+                    class="text-[11px] uppercase tracking-[0.04em] text-v2-text-text-muted"
+                    classList={{ "text-v2-state-fg-danger": entry.kind === "error" }}
+                  >
+                    {entry.label}
+                  </span>
+                  <span
+                    class="min-w-0 whitespace-pre-wrap break-words text-[13px] leading-5 text-v2-text-text-base"
+                    classList={{ "text-v2-state-fg-danger": entry.kind === "error" }}
+                  >
+                    {entry.text}
+                  </span>
+                </div>
+              )}
+            </For>
+            <Show when={running()}>
+              <div class="flex items-center gap-2 text-[12px] text-v2-text-text-muted">
+                <Spinner /> Streaming from OpenDesign…
+              </div>
+            </Show>
+          </div>
+        </ScrollView>
+      </Show>
+      <div class="relative flex items-end gap-2 p-3">
+        <div class="relative">
+          <IconButtonV2
+            variant="ghost-muted"
+            size="large"
+            icon={<IconV2 name="at" />}
+            disabled={projects().length === 0}
+            onClick={() => setTagOpen((open) => !open)}
+            aria-label="Insert project tag"
+          />
+          <Show when={tagOpen() && projects().length > 0}>
+            <div class="absolute bottom-10 left-0 z-10 max-h-[220px] w-[220px] overflow-y-auto rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-base p-1 shadow-[var(--v2-elevation-floating)]">
+              <For each={projects()}>
+                {(project) => (
+                  <button
+                    type="button"
+                    class={`${HOME_ROW} h-8 gap-2 px-2 text-[13px]`}
+                    onClick={() => insertTag(project)}
+                  >
+                    <span class="min-w-0 truncate">@{project.name}</span>
+                  </button>
+                )}
+              </For>
+            </div>
+          </Show>
+        </div>
+        <textarea
+          ref={inputRef}
+          class="min-h-9 max-h-32 min-w-0 flex-1 resize-y rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-base px-3 py-2 text-[13px] leading-5 text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+          placeholder={
+            selectedProject() ? `Message OpenDesign about ${selectedProject()!.name}…` : "Message OpenDesign…"
+          }
+          value={message()}
+          onInput={(event) => setMessage(event.currentTarget.value)}
+          onKeyDown={onInputKeyDown}
+        />
+        <ButtonV2
+          variant="contrast"
+          size="normal"
+          class="h-9 shrink-0 px-3 [font-weight:530]"
+          disabled={running() || !message().trim()}
+          onClick={() => void send()}
+        >
+          {running() ? "Sending" : "Send"}
+        </ButtonV2>
       </div>
     </div>
   )

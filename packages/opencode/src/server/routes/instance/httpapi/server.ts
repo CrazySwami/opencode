@@ -1090,6 +1090,195 @@ const secretsRoute = HttpRouter.use((router) =>
   }),
 ).pipe(Layer.provide(authOnlyRouterLayer))
 
+// Home Chat (milestone-1): front OpenDesign's chat backend from the dashboard
+// home view instead of rebuilding chat/artifacts. OD daemon URL is env-
+// configurable (OPENCODE_OD_URL, default http://127.0.0.1:7456). All routes
+// return a graceful offline shape when OD is down; message contents and secrets
+// are never logged.
+//
+// OD contract (verified live against the daemon 2026-07-09):
+//   POST /api/chat  body {message, agentId, projectId?} -> an SSE stream. The
+//     first frame is `event: start` with data {runId, agentId, projectId, cwd,
+//     ...}. The run is tracked + buffered server-side, so its events survive the
+//     POST client disconnecting and can be replayed by id.
+//   GET  /api/runs/:id/events -> SSE replay of a run's full event log. Named
+//     events seen: start | stderr | stdout | agent | end | error. `agent` data
+//     carries {type,label,...} status/text frames; `end` carries {status,...}.
+//   GET  /api/runs/:id -> run status JSON {id, projectId, status, error, ...}.
+//   GET  /api/projects -> {projects:[{id, name, metadata:{baseDir}, ...}]}.
+//   GET  /api/agents -> {agents:[{id, name, available, ...}]} (executor list).
+const homeChatDefaultAgent = () => process.env.OPENCODE_OD_AGENT || "codex"
+
+type HomeChatStartResult =
+  | { ok: true; runId: string; agentId: string; projectId?: string }
+  | { ok: false; error: string }
+
+// Start an OD chat run and return its run id. We read only enough of the chat
+// SSE stream to capture the `start` frame's runId, then release the connection;
+// OD keeps the run alive and buffers its events for /api/runs/:id/events to
+// replay, so the client subscribes there rather than holding this POST open.
+async function odStartChatRun(input: {
+  message: string
+  projectId?: string
+  agentId?: string
+}): Promise<HomeChatStartResult> {
+  const od = odDaemonUrl()
+  const agentId = input.agentId || homeChatDefaultAgent()
+  const controller = new AbortController()
+  try {
+    const res = await fetch(`${od}/api/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "text/event-stream" },
+      body: JSON.stringify({
+        message: input.message,
+        agentId,
+        ...(input.projectId ? { projectId: input.projectId } : {}),
+      }),
+      signal: controller.signal,
+    })
+    if (!res.ok || !res.body) {
+      controller.abort()
+      return { ok: false, error: "OpenDesign offline" }
+    }
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffered = ""
+    try {
+      while (true) {
+        const chunk = await reader.read()
+        if (chunk.done) break
+        buffered += decoder.decode(chunk.value, { stream: true })
+        const runMatch = buffered.match(/"runId"\s*:\s*"([^"]+)"/)
+        if (runMatch?.[1]) {
+          return { ok: true, runId: runMatch[1], agentId, projectId: input.projectId }
+        }
+        // Safety cap: never buffer an unbounded stream while hunting for runId.
+        if (buffered.length > 64 * 1024) break
+      }
+      // Stream ended before a `start`/runId frame: surface OD's error text if any.
+      const errMatch = buffered.match(/"message"\s*:\s*"([^"]+)"/)
+      return { ok: false, error: errMatch?.[1] || "OpenDesign did not return a run id" }
+    } finally {
+      await reader.cancel().catch(() => undefined)
+      controller.abort()
+    }
+  } catch {
+    controller.abort()
+    return { ok: false, error: "OpenDesign offline" }
+  }
+}
+
+// Build a text/event-stream response that emits a single error frame then ends.
+// Used when OD is offline or the run id is unknown, so the browser's SSE reader
+// sees a structured error instead of a dead socket.
+function homeChatSseError(message: string) {
+  return HttpServerResponse.setHeader(
+    HttpServerResponse.stream(
+      Stream.make(`event: error\ndata: ${JSON.stringify({ error: message })}\n\n`).pipe(Stream.encodeText),
+      { contentType: "text/event-stream" },
+    ),
+    "cache-control",
+    "no-store",
+  )
+}
+
+// Relay OD's run-events SSE to the client. On client disconnect the effect
+// interrupts the stream fiber, which runs the generator's finally block to abort
+// the upstream fetch and cancel the reader (no leaked OD connection).
+async function odRunEventsResponse(runId: string) {
+  const od = odDaemonUrl()
+  const controller = new AbortController()
+  let res: Response
+  try {
+    res = await fetch(`${od}/api/runs/${encodeURIComponent(runId)}/events`, {
+      headers: { accept: "text/event-stream" },
+      signal: controller.signal,
+    })
+  } catch {
+    controller.abort()
+    return homeChatSseError("OpenDesign offline")
+  }
+  if (!res.ok || !res.body) {
+    controller.abort()
+    return homeChatSseError(`run not found (${res.status})`)
+  }
+  const reader = res.body.getReader()
+  return HttpServerResponse.setHeader(
+    HttpServerResponse.stream(
+      Stream.fromAsyncIterable(
+        (async function* () {
+          try {
+            while (true) {
+              const chunk = await reader.read()
+              if (chunk.done) return
+              yield chunk.value
+            }
+          } finally {
+            controller.abort()
+            await reader.cancel().catch(() => undefined)
+          }
+        })(),
+        (cause) => new Error(`home-chat events stream error: ${String(cause)}`),
+      ),
+      { contentType: "text/event-stream" },
+    ),
+    "cache-control",
+    "no-store",
+  )
+}
+
+// List OD projects for the home-chat project picker: id + name + baseDir only.
+async function odHomeChatProjects() {
+  const od = odDaemonUrl()
+  try {
+    const res = await fetch(`${od}/api/projects`, { signal: AbortSignal.timeout(3000) })
+    if (!res.ok) return { ok: false as const, error: "OpenDesign offline", projects: [] }
+    const data = (await res.json()) as { projects?: Array<Record<string, any>> }
+    const projects = (data.projects ?? []).map((p) => ({
+      id: String(p?.id ?? ""),
+      name: String(p?.name ?? "Untitled"),
+      baseDir: typeof p?.metadata?.baseDir === "string" ? p.metadata.baseDir : null,
+    }))
+    return { ok: true as const, daemon: od, generatedAt: new Date().toISOString(), projects }
+  } catch {
+    return { ok: false as const, error: "OpenDesign offline", projects: [] }
+  }
+}
+
+const homeChatRoute = HttpRouter.use((router) =>
+  Effect.gen(function* () {
+    yield* router.add("POST", "/experimental/home-chat/send", (request) =>
+      Effect.gen(function* () {
+        const raw = yield* Effect.orDie(request.text)
+        let body: { message?: unknown; projectId?: unknown; agentId?: unknown }
+        try {
+          body = JSON.parse(raw || "{}")
+        } catch {
+          return HttpServerResponse.jsonUnsafe({ ok: false, error: "Invalid JSON body" }, { status: 400 })
+        }
+        const message = typeof body.message === "string" ? body.message.trim() : ""
+        if (!message) return HttpServerResponse.jsonUnsafe({ ok: false, error: "message is required" }, { status: 400 })
+        const projectId = typeof body.projectId === "string" && body.projectId ? body.projectId : undefined
+        const agentId = typeof body.agentId === "string" && body.agentId ? body.agentId : undefined
+        const result = yield* Effect.promise(() => odStartChatRun({ message, projectId, agentId }))
+        return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : 502 })
+      }),
+    )
+
+    yield* router.add("GET", "/experimental/home-chat/events/:runId", (request) =>
+      Effect.gen(function* () {
+        const runId = decodeParam(request.url, /^\/experimental\/home-chat\/events\/([^/]+)$/)
+        if (!runId) return HttpServerResponse.text("Missing run id", { status: 400 })
+        return yield* Effect.promise(() => odRunEventsResponse(runId))
+      }),
+    )
+
+    yield* router.add("GET", "/experimental/home-chat/projects", () =>
+      Effect.promise(async () => HttpServerResponse.jsonUnsafe(await odHomeChatProjects())),
+    )
+  }),
+).pipe(Layer.provide(authOnlyRouterLayer))
+
 const codexMultiAuthScript = () =>
   process.env.OPENCODE_CODEX_MULTI_AUTH_SCRIPT ||
   "/home/dev/repos/LLM-Experiments/scripts/opencode-codex-multi-auth-profile.mjs"
@@ -5507,6 +5696,7 @@ export function createRoutes(
     tracingStatusRoute,
     imageGenRoute,
     secretsRoute,
+    homeChatRoute,
     workspaceSuiteRoute,
     uiRoute,
   ).pipe(
