@@ -545,7 +545,28 @@ export function NewHome() {
 // "@" affordance seed which OD project/repo the run targets. Later milestones
 // add real @-tag dispatch, artifact rendering, and multi-turn history.
 type HomeChatProject = { id: string; name: string; baseDir: string | null }
-type HomeChatEntry = { id: number; label: string; text: string; kind: "event" | "error" }
+type HomeChatEntry = { id: number; label: string; text: string; kind: "event" | "error"; imageUrl?: string }
+
+// Home-chat M2 artifact rendering (schema-agnostic): if an SSE frame's payload
+// carries an image-looking URL/data-URI in any of the common fields, surface it
+// as an inline image. Purely opportunistic — anything else falls back to text,
+// so this never breaks on an unexpected OD event shape.
+function extractHomeChatImage(data: string): string | undefined {
+  try {
+    const p = JSON.parse(data) as Record<string, any>
+    const candidates = [p.imageUrl, p.image, p.url, p.dataUri, p.artifact?.url, p.artifact?.imageUrl, p.artifact?.dataUri]
+    for (const c of candidates) {
+      if (typeof c !== "string") continue
+      if (c.startsWith("data:image/")) return c
+      if (/^https?:\/\/\S+\.(png|jpe?g|gif|webp|svg)(\?\S*)?$/i.test(c)) return c
+      // OD artifact of kind image with a plain URL.
+      if ((p.kind === "image" || p.artifactKind === "image" || p.type === "image") && /^https?:\/\//.test(c)) return c
+    }
+  } catch {
+    /* not JSON — no image */
+  }
+  return undefined
+}
 
 function extractHomeChatText(event: string, data: string): string {
   try {
@@ -578,8 +599,8 @@ function HomeChat() {
   let inputRef: HTMLTextAreaElement | undefined
   let activeController: AbortController | undefined
 
-  const appendEntry = (label: string, text: string, kind: HomeChatEntry["kind"] = "event") =>
-    setEntries((prev) => [...prev, { id: ++entrySeq, label, text, kind }])
+  const appendEntry = (label: string, text: string, kind: HomeChatEntry["kind"] = "event", imageUrl?: string) =>
+    setEntries((prev) => [...prev, { id: ++entrySeq, label, text, kind, imageUrl }])
 
   const loadProjects = async () => {
     try {
@@ -641,7 +662,12 @@ function HomeChat() {
         }
         if (dataLines.length === 0) return
         const data = dataLines.join("\n")
-        appendEntry(eventName, extractHomeChatText(eventName, data), eventName === "error" ? "error" : "event")
+        appendEntry(
+          eventName,
+          extractHomeChatText(eventName, data),
+          eventName === "error" ? "error" : "event",
+          extractHomeChatImage(data),
+        )
       }
       while (true) {
         const chunk = await reader.read()
@@ -746,12 +772,21 @@ function HomeChat() {
                   >
                     {entry.label}
                   </span>
-                  <span
-                    class="min-w-0 whitespace-pre-wrap break-words text-[13px] leading-5 text-v2-text-text-base"
-                    classList={{ "text-v2-state-fg-danger": entry.kind === "error" }}
-                  >
-                    {entry.text}
-                  </span>
+                  <Show when={entry.text}>
+                    <span
+                      class="min-w-0 whitespace-pre-wrap break-words text-[13px] leading-5 text-v2-text-text-base"
+                      classList={{ "text-v2-state-fg-danger": entry.kind === "error" }}
+                    >
+                      {entry.text}
+                    </span>
+                  </Show>
+                  <Show when={entry.imageUrl}>
+                    <img
+                      src={entry.imageUrl}
+                      alt="chat artifact"
+                      class="mt-1 max-h-64 w-auto max-w-full rounded-md border border-v2-border-border-base object-contain"
+                    />
+                  </Show>
                 </div>
               )}
             </For>
