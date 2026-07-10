@@ -137,7 +137,7 @@ export const RoutinesTool = Tool.define<typeof Parameters, Metadata, never>(
           // We prompt with the resolved command + host so the human sees exactly
           // what will execute. Rejection dies the effect before anything runs.
           let approval: string | undefined
-          let enableApproved = false
+          let enableApproval: string | undefined
           if (action === "run") {
             const routine = readRoutines().find((item) => item.id === safeID(params.id ?? ""))
             const command = routine?.command?.trim() ?? ""
@@ -187,7 +187,9 @@ export const RoutinesTool = Tool.define<typeof Parameters, Metadata, never>(
                   intent: "enable-for-schedule",
                 },
               })
-              enableApproved = true
+              // Bind the approval to exactly what the human saw (Codex High):
+              // command/host/schedule + the routine version at approval time.
+              enableApproval = mintEnableApproval(routine.id, { command, host, schedule, updatedAt: routine.updatedAt })
             }
           }
           const result = yield* Effect.promise(() =>
@@ -205,7 +207,7 @@ export const RoutinesTool = Tool.define<typeof Parameters, Metadata, never>(
               notify: params.notify,
               caller: "tool",
               approval,
-              enableApproved,
+              enableApproval,
             }),
           )
           return {
@@ -268,12 +270,12 @@ export async function routinesAction(input: {
   notify?: readonly string[]
   caller?: RoutineCaller
   approval?: string
-  enableApproved?: boolean
+  enableApproval?: string
   operatorToken?: string
 }) {
   const action = input.action ?? "list"
   const caller = input.caller ?? "http"
-  const authFields = { caller, enableApproved: input.enableApproved, operatorToken: input.operatorToken }
+  const authFields = { caller, enableApproval: input.enableApproval, operatorToken: input.operatorToken }
   if (action === "status") return routinesStatus()
   if (action === "logs") return routineLogs(input.id)
   if (action === "create") return createRoutineDraft(input)
@@ -353,12 +355,30 @@ export async function createRoutineDraft(input: {
 // Is this caller allowed to move a routine into the enabled (schedule-armed)
 // state? tool → only with a fresh ctx.ask approval; http → operator (token when
 // one is configured); internal (scheduler) → yes. Anything else → no.
-function authorizeEnable(input: { caller?: RoutineCaller; enableApproved?: boolean; operatorToken?: string }): boolean {
+function authorizeEnable(
+  input: { caller?: RoutineCaller; enableApproval?: string; operatorToken?: string },
+  verify: { routineId: string; nextCommand?: string; nextHost?: string; nextSchedule?: string; currentUpdatedAt?: string },
+): boolean {
   switch (input.caller ?? "http") {
     case "internal":
       return true
-    case "tool":
-      return input.enableApproved === true
+    case "tool": {
+      // Single-use nonce bound to what the human approved. It authorizes enabling
+      // ONLY IF the routine still matches that exact snapshot — command, host,
+      // schedule, and version (updatedAt) — verified against a fresh read. A
+      // concurrent edit (which bumps updatedAt / changes the command) invalidates it.
+      if (!input.enableApproval) return false
+      const snap = consumeEnableApproval(verify.routineId, input.enableApproval)
+      if (!snap) return false
+      const norm = (x?: string) => (x || "").trim()
+      const sched = (x?: string) => norm(x) || "manual"
+      return (
+        norm(snap.command) === norm(verify.nextCommand) &&
+        snap.host === resolveHostInput(verify.nextHost) &&
+        sched(snap.schedule) === sched(verify.nextSchedule) &&
+        snap.updatedAt === verify.currentUpdatedAt
+      )
+    }
     case "http": {
       const token = routinesOperatorToken()
       return !token || input.operatorToken === token
@@ -381,7 +401,7 @@ export async function updateRoutine(
     tags?: readonly string[]
     notify?: readonly string[]
     caller?: RoutineCaller
-    enableApproved?: boolean
+    enableApproval?: string
     operatorToken?: string
   },
 ) {
@@ -418,7 +438,15 @@ export async function updateRoutine(
   } else if (current.enabled === true && !contentChanged) {
     // already armed and nothing that runs changed → stays enabled
     finalEnabled = true
-  } else if (authorizeEnable(input)) {
+  } else if (
+    authorizeEnable(input, {
+      routineId: safe,
+      nextCommand,
+      nextHost,
+      nextSchedule,
+      currentUpdatedAt: current.updatedAt,
+    })
+  ) {
     finalEnabled = true
   } else if (input.enabled === true) {
     // explicit enable request without authorization → reject
@@ -1024,7 +1052,30 @@ function consumeRunApproval(routineID: string, token: string): RunApprovalSnapsh
   const entry = RUN_APPROVALS.get(routineID)
   RUN_APPROVALS.delete(routineID)
   if (!entry) return undefined
-  if (entry.expires < Date.now()) return undefined
+  if (entry.expires <= Date.now()) return undefined
+  if (entry.token !== token) return undefined
+  return entry.snapshot
+}
+
+// Enable-approval nonce (Codex High finding — enable-path TOCTOU): enabling a
+// routine authorizes the SCHEDULER to auto-run it, so — exactly like the manual
+// run approval — the approval is bound to the {command,host,schedule,updatedAt}
+// the human saw at ctx.ask time. A concurrent edit to the (disabled) draft, which
+// needs no approval, then can't arm a swapped command under a stale enable OK.
+type EnableApprovalSnapshot = { command: string; host: string; schedule: string; updatedAt?: string }
+const ENABLE_APPROVALS = new Map<string, { token: string; expires: number; snapshot: EnableApprovalSnapshot }>()
+
+function mintEnableApproval(routineID: string, snapshot: EnableApprovalSnapshot): string {
+  const token = randomToken()
+  ENABLE_APPROVALS.set(routineID, { token, expires: Date.now() + RUN_APPROVAL_TTL_MS, snapshot })
+  return token
+}
+
+function consumeEnableApproval(routineID: string, token: string): EnableApprovalSnapshot | undefined {
+  const entry = ENABLE_APPROVALS.get(routineID)
+  ENABLE_APPROVALS.delete(routineID)
+  if (!entry) return undefined
+  if (entry.expires <= Date.now()) return undefined
   if (entry.token !== token) return undefined
   return entry.snapshot
 }
@@ -1141,3 +1192,10 @@ function uniqueRoutineID(name: string, routines: Routine[]) {
   }
   return `${base}-${Date.now()}`
 }
+
+// Test-only surface for security regressions (enable-approval TOCTOU). Gated to
+// the test runner (NODE_ENV==="test") so production builds can NOT mint an
+// approval nonce outside the ctx.ask path — otherwise this would re-open the very
+// bypass the nonce closes (Codex re-review). `undefined` at runtime in prod.
+export const __routinesTestHooks =
+  process.env.NODE_ENV === "test" ? { mintEnableApproval, consumeEnableApproval } : undefined
