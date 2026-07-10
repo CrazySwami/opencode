@@ -3189,6 +3189,10 @@ function CodexResourcesSection() {
   )
 }
 
+// Skills tab fronts OpenDesign's skills store via the OD proxy. Install = POST
+// /api/skills/import ({name,description,body,triggers}); Delete = DELETE
+// /api/skills/:id (the daemon writes a shadow copy for built-ins).
+const SKILLS_OD = "/experimental/open-design/proxy/api/skills"
 function SkillsTabContent() {
   const skills = createPolledJson<any>(() => "/experimental/skills", 30000)
   const list = () => skills.data()?.skills ?? []
@@ -3197,8 +3201,60 @@ function SkillsTabContent() {
     for (const s of list()) (groups[s.source] ??= []).push(s)
     return Object.entries(groups)
   })
+  const [busy, setBusy] = createSignal<string | undefined>()
+  const [note, setNote] = createSignal<string | undefined>()
+  const [formOpen, setFormOpen] = createSignal(false)
+  const [form, setForm] = createStore({ name: "", description: "", body: "" })
+
+  const importSkill = async () => {
+    if (!form.name.trim() || !form.body.trim()) {
+      setNote("name and body are required")
+      return
+    }
+    setBusy("import")
+    setNote(undefined)
+    try {
+      const res = await fetch(`${SKILLS_OD}/import`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: form.name.trim(), description: form.description.trim() || undefined, body: form.body }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (res.ok && !body?.error) {
+        setNote(`Imported ${form.name.trim()}`)
+        setForm({ name: "", description: "", body: "" })
+        setFormOpen(false)
+        void skills.refresh()
+      } else {
+        setNote(body?.error?.message ?? `import failed (${res.status})`)
+      }
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(undefined)
+    }
+  }
+  const deleteSkill = async (s: any) => {
+    if (typeof window !== "undefined" && !window.confirm(`Delete skill "${s.name}"?`)) return
+    setBusy(s.id ?? s.name)
+    try {
+      const res = await fetch(`${SKILLS_OD}/${encodeURIComponent(s.id ?? s.name)}`, { method: "DELETE" })
+      setNote(res.ok ? `Deleted ${s.name}` : `delete failed (${res.status})`)
+      void skills.refresh()
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(undefined)
+    }
+  }
+
   return (
-    <TabChrome title="Skills" iconTab={PANEL_SKILLS_TAB} onRefresh={() => void skills.refresh()}>
+    <TabChrome
+      title="Skills"
+      iconTab={PANEL_SKILLS_TAB}
+      onRefresh={() => void skills.refresh()}
+      actions={<Button variant="secondary" onClick={() => setFormOpen((v) => !v)}>{formOpen() ? "Cancel" : "New skill"}</Button>}
+    >
       <div class="flex min-h-0 flex-1 flex-col gap-3">
         <Show when={skills.error()}>
           {(error) => (
@@ -3208,8 +3264,23 @@ function SkillsTabContent() {
         <div class="grid gap-3 xl:grid-cols-3">
           <EnvironmentSummaryCard label="Skills" value={String(list().length)} detail="Across all roots" tone="ready" />
           <EnvironmentSummaryCard label="Sources" value={String(bySource().length)} detail="claude · codex · opencode · project" tone="ready" />
-          <EnvironmentSummaryCard label="Versioning" value="planned" detail="Version + install actions (TODO)" tone="warn" />
+          <EnvironmentSummaryCard label="Backend" value="OpenDesign" detail="import / delete via /api/skills" tone="ready" />
         </div>
+
+        <Show when={formOpen()}>
+          <div class="flex flex-col gap-2 rounded-md border border-border-weaker-base bg-background-stronger p-3">
+            <input class="rounded-md border border-border-weaker-base bg-background-base px-2 py-1 text-12-regular text-text-strong" placeholder="skill name (kebab-case)" value={form.name} onInput={(e) => setForm("name", e.currentTarget.value)} />
+            <input class="rounded-md border border-border-weaker-base bg-background-base px-2 py-1 text-12-regular text-text-strong" placeholder="description" value={form.description} onInput={(e) => setForm("description", e.currentTarget.value)} />
+            <textarea class="min-h-24 rounded-md border border-border-weaker-base bg-background-base px-2 py-1 font-mono text-11-regular text-text-strong" placeholder="SKILL.md body (markdown)" value={form.body} onInput={(e) => setForm("body", e.currentTarget.value)} />
+            <div class="flex justify-end">
+              <Button variant="secondary" disabled={busy() !== undefined} onClick={() => void importSkill()}>{busy() === "import" ? "Importing…" : "Import skill"}</Button>
+            </div>
+          </div>
+        </Show>
+        <Show when={note()}>
+          <div class="rounded-md border border-border-weaker-base bg-background-stronger px-3 py-2 text-12-regular text-text-weak">{note()}</div>
+        </Show>
+
         <div class="min-h-0 flex-1 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger" data-testid="skills-list">
           <For each={bySource()}>
             {([source, items]) => (
@@ -3218,7 +3289,12 @@ function SkillsTabContent() {
                 <For each={items}>
                   {(s: any) => (
                     <div class="flex flex-col gap-0.5 border-b border-border-weaker-base px-3 py-2 last:border-b-0">
-                      <span class="truncate text-13-regular text-text-strong">{s.name}</span>
+                      <div class="flex items-center justify-between gap-3">
+                        <span class="min-w-0 truncate text-13-regular text-text-strong">{s.name}</span>
+                        <Show when={s.source === "user" || s.source === "project"}>
+                          <Button variant="ghost" disabled={busy() !== undefined} onClick={() => void deleteSkill(s)}>Delete</Button>
+                        </Show>
+                      </div>
                       <span class="line-clamp-2 text-11-regular text-text-weak">{s.description || "No description"}</span>
                     </div>
                   )}
