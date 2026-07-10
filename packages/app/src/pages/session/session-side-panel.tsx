@@ -59,6 +59,7 @@ const PANEL_ROUTINES_TAB = "panel://routines" satisfies WorkspacePanelTabID
 const PANEL_ENVIRONMENT_TAB = "panel://environment" satisfies WorkspacePanelTabID
 const PANEL_MCP_REGISTRY_TAB = "panel://mcp-registry" satisfies WorkspacePanelTabID
 const PANEL_TOKEN_MAXING_TAB = "panel://token-maxing" satisfies WorkspacePanelTabID
+const PANEL_SKILLS_TAB = "panel://skills" satisfies WorkspacePanelTabID
 const PANEL_RESOURCES_TAB = "panel://resources" satisfies WorkspacePanelTabID
 const PANEL_ARTIFACTS_TAB = "panel://artifacts" satisfies WorkspacePanelTabID
 const PANEL_FILE_BROWSER_TAB = "panel://file-browser" satisfies WorkspacePanelTabID
@@ -3156,6 +3157,53 @@ function CodexResourcesSection() {
           </div>
         </div>
       </div>
+  )
+}
+
+function SkillsTabContent() {
+  const skills = createPolledJson<any>(() => "/experimental/skills", 30000)
+  const list = () => skills.data()?.skills ?? []
+  const bySource = createMemo(() => {
+    const groups: Record<string, any[]> = {}
+    for (const s of list()) (groups[s.source] ??= []).push(s)
+    return Object.entries(groups)
+  })
+  return (
+    <TabChrome title="Skills" iconTab={PANEL_SKILLS_TAB} onRefresh={() => void skills.refresh()}>
+      <div class="flex min-h-0 flex-1 flex-col gap-3">
+        <Show when={skills.error()}>
+          {(error) => (
+            <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">{error()}</div>
+          )}
+        </Show>
+        <div class="grid gap-3 xl:grid-cols-3">
+          <EnvironmentSummaryCard label="Skills" value={String(list().length)} detail="Across all roots" tone="ready" />
+          <EnvironmentSummaryCard label="Sources" value={String(bySource().length)} detail="claude · codex · opencode · project" tone="ready" />
+          <EnvironmentSummaryCard label="Versioning" value="planned" detail="Version + install actions (TODO)" tone="warn" />
+        </div>
+        <div class="min-h-0 flex-1 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger" data-testid="skills-list">
+          <For each={bySource()}>
+            {([source, items]) => (
+              <div>
+                <div class="sticky top-0 bg-background-base px-3 py-1.5 text-10-medium uppercase tracking-wide text-text-weak">{source} · {items.length}</div>
+                <For each={items}>
+                  {(s: any) => (
+                    <div class="flex flex-col gap-0.5 border-b border-border-weaker-base px-3 py-2 last:border-b-0">
+                      <span class="truncate text-13-regular text-text-strong">{s.name}</span>
+                      <span class="line-clamp-2 text-11-regular text-text-weak">{s.description || "No description"}</span>
+                    </div>
+                  )}
+                </For>
+              </div>
+            )}
+          </For>
+          <Show when={list().length === 0}>
+            <div class="p-4 text-13-regular text-text-weak">No skills found in the known roots.</div>
+          </Show>
+        </div>
+        <StatusRow label="Last checked" value={skills.data()?.generatedAt} />
+      </div>
+    </TabChrome>
   )
 }
 
@@ -6490,6 +6538,15 @@ export function SessionSidePanel(props: {
                       >
                         <Show when={activePanelTab() === PANEL_TOKEN_MAXING_TAB}>
                           <TokenMaxingTabContent />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_SKILLS_TAB}
+                        class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
+                      >
+                        <Show when={activePanelTab() === PANEL_SKILLS_TAB}>
+                          <SkillsTabContent />
                         </Show>
                       </Tabs.Content>
 

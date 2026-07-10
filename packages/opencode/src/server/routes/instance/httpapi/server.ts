@@ -168,6 +168,60 @@ const MCP_REGISTRY_CATALOG: McpCatalogEntry[] = [
   { name: "filesystem", title: "Filesystem", description: "Read/write files under allowlisted roots.", transport: "local", homepage: "https://github.com/modelcontextprotocol/servers", install: "npx -y @modelcontextprotocol/server-filesystem" },
   { name: "fetch", title: "Fetch", description: "Fetch + convert web pages to markdown.", transport: "local", homepage: "https://github.com/modelcontextprotocol/servers", install: "npx -y @modelcontextprotocol/server-fetch" },
 ]
+// Skills Library: scan known skill roots, parse each SKILL.md frontmatter for
+// name + description. All async FS (no request-path sync IO).
+type SkillEntry = { name: string; description: string; source: string; path: string }
+async function listSkills(): Promise<{ ok: boolean; generatedAt: string; roots: string[]; skills: SkillEntry[] }> {
+  const fsp = await import("node:fs/promises")
+  const path = await import("node:path")
+  const home = process.env.HOME || "/home/dev"
+  const roots: { dir: string; source: string }[] = [
+    { dir: path.join(home, ".claude", "skills"), source: "claude" },
+    { dir: path.join(home, ".codex", "skills"), source: "codex" },
+    { dir: path.join(home, ".config", "opencode", "skills"), source: "opencode" },
+    { dir: path.join(process.cwd(), ".claude", "skills"), source: "project" },
+  ]
+  const parseFrontmatter = (text: string) => {
+    const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/)
+    const block = m?.[1] ?? ""
+    const name = block.match(/^name:\s*(.+)$/m)?.[1]?.trim()
+    const description = block.match(/^description:\s*(.+)$/m)?.[1]?.trim()
+    return { name, description }
+  }
+  const seen = new Set<string>()
+  const skills: SkillEntry[] = []
+  for (const { dir, source } of roots) {
+    let entries: import("node:fs").Dirent[]
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      const skillFile = path.join(dir, entry.name, "SKILL.md")
+      let front: { name?: string; description?: string } = {}
+      try {
+        front = parseFrontmatter(await fsp.readFile(skillFile, "utf8"))
+      } catch {
+        continue // no SKILL.md → not a skill dir
+      }
+      const name = front.name || entry.name
+      const key = `${source}:${name}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      skills.push({
+        name,
+        description: (front.description || "").slice(0, 300),
+        source,
+        path: path.join(dir, entry.name),
+      })
+    }
+  }
+  skills.sort((a, b) => a.name.localeCompare(b.name))
+  return { ok: true, generatedAt: new Date().toISOString(), roots: roots.map((r) => r.dir), skills }
+}
+
 function mcpRegistryCatalog() {
   return {
     ok: true,
@@ -2657,6 +2711,13 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
 
     yield* router.add("GET", "/experimental/mcp/registry", () =>
       Effect.sync(() => HttpServerResponse.jsonUnsafe(mcpRegistryCatalog())),
+    )
+
+    // Skills Library tab: enumerate skills across known roots. Async FS only
+    // (sync FS on the request path can wedge the event loop under disk pressure
+    // per CT100 stability notes). Reads each SKILL.md's frontmatter name/desc.
+    yield* router.add("GET", "/experimental/skills", () =>
+      Effect.promise(async () => HttpServerResponse.jsonUnsafe(await listSkills())),
     )
 
     // Token-maxing tab: proxy the local token-maxing daemon's /usage. Daemon URL

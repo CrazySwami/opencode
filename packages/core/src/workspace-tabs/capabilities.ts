@@ -12,6 +12,7 @@ export type WorkspacePanelTabID =
   | "panel://environment"
   | "panel://mcp-registry"
   | "panel://token-maxing"
+  | "panel://skills"
 
 export type WorkspacePanelActionID =
   | "refresh"
@@ -253,6 +254,20 @@ export const WORKSPACE_PANEL_TABS: WorkspacePanelDefinition[] = [
     canSnapshot: false,
     canAttachToChat: true,
     description: "Live usage across all model accounts/profiles + switch controls (backed by the local token-maxing daemon).",
+  },
+  {
+    id: "panel://skills",
+    label: "Skills",
+    badge: "SK",
+    route: "/experimental/skills",
+    toolIDs: ["skill", "workspace_tabs"],
+    mentionIDs: ["skills", "skill", "skill_library"],
+    aliases: ["skills", "skill", "skill_library"],
+    actions: ["refresh", "attach_to_chat", "tools"],
+    safetyPolicy: "Read-only skill catalog across roots. Running or editing a skill remains permission-gated.",
+    canSnapshot: false,
+    canAttachToChat: true,
+    description: "Library of installed skills across Claude/Codex/OpenCode/project roots, with source + description.",
   },
 ]
 
