@@ -3332,6 +3332,53 @@ function AgentFleetTabContent() {
     return Object.entries(groups)
   })
   const cliSummary = () => byCli().map(([cli, items]) => `${cli} ${items.length}`).join(" · ")
+
+  // Continue a session via the /continue SSE bridge. Spawning is gated at the
+  // daemon (FLEET_DRIVE_ENABLED); an error frame surfaces here if it's off.
+  const [continuing, setContinuing] = createSignal<string | undefined>()
+  const [prompt, setPrompt] = createSignal("")
+  const [streamLog, setStreamLog] = createSignal<string[]>([])
+  let abort: AbortController | undefined
+  onCleanup(() => abort?.abort())
+  const continueSession = async (s: any) => {
+    abort?.abort()
+    const key = `${s.cli}:${s.id}`
+    setContinuing(key)
+    setStreamLog([])
+    abort = new AbortController()
+    try {
+      const res = await fetch(`/experimental/fleet/continue/${encodeURIComponent(s.cli)}/${encodeURIComponent(s.id)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prompt: prompt().trim() || undefined }),
+        signal: abort.signal,
+      })
+      if (!res.body) {
+        setStreamLog((l) => [...l, "no stream body"])
+        return
+      }
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ""
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const frames = buf.split("\n\n")
+        buf = frames.pop() ?? ""
+        for (const frame of frames) {
+          const dataLine = frame.split("\n").find((ln) => ln.startsWith("data:"))
+          if (dataLine) setStreamLog((l) => [...l, dataLine.slice(5).trim()].slice(-200))
+        }
+      }
+    } catch (err) {
+      if (!(err instanceof DOMException && err.name === "AbortError")) {
+        setStreamLog((l) => [...l, `error: ${err instanceof Error ? err.message : String(err)}`])
+      }
+    } finally {
+      setContinuing(undefined)
+    }
+  }
   return (
     <TabChrome title="Agent Fleet" iconTab={PANEL_FLEET_TAB} onRefresh={() => void fleet.refresh()}>
       <div class="flex min-h-0 flex-1 flex-col gap-3">
@@ -3355,7 +3402,19 @@ function AgentFleetTabContent() {
                     <div class="flex flex-col gap-0.5 border-b border-border-weaker-base px-3 py-2 last:border-b-0">
                       <div class="flex items-center justify-between gap-3">
                         <span class="min-w-0 truncate text-13-regular text-text-strong">{s.title || s.id}</span>
-                        <span class="shrink-0 text-11-regular text-text-weak">{s.model ?? "unknown model"}</span>
+                        <div class="flex shrink-0 items-center gap-2">
+                          <span class="text-11-regular text-text-weak">{s.model ?? "unknown model"}</span>
+                          <Show when={s.id && s.cli}>
+                            <Button
+                              variant="ghost"
+                              disabled={continuing() !== undefined}
+                              onClick={() => void continueSession(s)}
+                              aria-label={`Continue ${s.cli} session`}
+                            >
+                              {continuing() === `${s.cli}:${s.id}` ? "Streaming…" : "Continue"}
+                            </Button>
+                          </Show>
+                        </div>
                       </div>
                       <div class="flex items-center justify-between gap-3 text-11-regular text-text-weak">
                         <span class="truncate">{s.lastActivityAt ?? s.startedAt ?? "no activity recorded"}</span>
@@ -3371,6 +3430,25 @@ function AgentFleetTabContent() {
             <div class="p-4 text-13-regular text-text-weak">No fleet sessions{online() ? "" : " (fleet service offline)"}.</div>
           </Show>
         </div>
+        <Show when={continuing() !== undefined || streamLog().length > 0}>
+          <div class="flex items-center gap-2">
+            <input
+              class="min-w-0 flex-1 rounded-md border border-border-weaker-base bg-background-stronger px-2 py-1 text-12-regular text-text-strong"
+              placeholder="Optional prompt to send on continue…"
+              value={prompt()}
+              onInput={(e) => setPrompt(e.currentTarget.value)}
+            />
+            <Show when={continuing() !== undefined}>
+              <Button variant="ghost" onClick={() => abort?.abort()} aria-label="Stop stream">Stop</Button>
+            </Show>
+          </div>
+          <div class="max-h-48 min-h-0 overflow-auto rounded-md border border-border-weaker-base bg-background-base p-2 font-mono text-10-regular text-text-weak">
+            <For each={streamLog()}>{(line) => <div class="whitespace-pre-wrap break-words">{line}</div>}</For>
+            <Show when={streamLog().length === 0 && continuing() !== undefined}>
+              <div>waiting for stream…</div>
+            </Show>
+          </div>
+        </Show>
         <StatusRow label="Last checked" value={fleet.data()?.generatedAt} />
       </div>
     </TabChrome>
