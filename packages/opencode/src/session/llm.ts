@@ -26,6 +26,7 @@ import { EffectBridge } from "@/effect/bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import * as Option from "effect/Option"
 import * as OtelTracer from "@effect/opentelemetry/Tracer"
+import { LangSmith } from "@opencode-ai/core/observability/langsmith"
 import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
@@ -205,7 +206,12 @@ const live: Layer.Layer<
         })
       }
 
-      const tracer = cfg.experimental?.openTelemetry
+      // LangSmith tracing is env-gated and OFF by default; see
+      // packages/core/src/observability/langsmith.ts for the presence-check
+      // rules (never logs the key) and the OTLP exporter hook doc.
+      const tracing = LangSmith.tracingConfig()
+      const telemetryEnabled = Boolean(cfg.experimental?.openTelemetry) || tracing.enabled
+      const tracer = telemetryEnabled
         ? Option.getOrUndefined(yield* Effect.serviceOption(OtelTracer.OtelTracer))
         : undefined
       const telemetryTracer = tracer
@@ -342,12 +348,16 @@ const live: Layer.Layer<
             ],
           }),
           experimental_telemetry: {
-            isEnabled: cfg.experimental?.openTelemetry,
+            isEnabled: telemetryEnabled,
             functionId: "session.llm",
             tracer: telemetryTracer,
             metadata: {
               userId: cfg.username ?? "unknown",
-              sessionId: input.sessionID,
+              ...LangSmith.tracingMetadata({
+                sessionId: input.sessionID,
+                model: input.model.id,
+                provider: input.model.providerID,
+              }),
             },
           },
         }),

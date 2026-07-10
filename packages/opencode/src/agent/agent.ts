@@ -24,6 +24,7 @@ import { Effect, Context, Layer, Schema } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import * as Option from "effect/Option"
 import * as OtelTracer from "@effect/opentelemetry/Tracer"
+import { LangSmith } from "@opencode-ai/core/observability/langsmith"
 import { AbsolutePath, type DeepMutable } from "@opencode-ai/core/schema"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -373,7 +374,12 @@ export const layer = Layer.effect(
         const model = input.model ?? (yield* provider.defaultModel())
         const resolved = yield* provider.getModel(model.providerID, model.modelID)
         const language = yield* provider.getLanguage(resolved)
-        const tracer = cfg.experimental?.openTelemetry
+        // LangSmith tracing is env-gated and OFF by default; see
+        // packages/core/src/observability/langsmith.ts for the presence-check
+        // rules (never logs the key) and the OTLP exporter hook doc.
+        const tracing = LangSmith.tracingConfig()
+        const telemetryEnabled = Boolean(cfg.experimental?.openTelemetry) || tracing.enabled
+        const tracer = telemetryEnabled
           ? Option.getOrUndefined(yield* Effect.serviceOption(OtelTracer.OtelTracer))
           : undefined
 
@@ -387,10 +393,14 @@ export const layer = Layer.effect(
 
         const params = {
           experimental_telemetry: {
-            isEnabled: cfg.experimental?.openTelemetry,
+            isEnabled: telemetryEnabled,
             tracer,
             metadata: {
               userId: cfg.username ?? "unknown",
+              ...LangSmith.tracingMetadata({
+                model: model.modelID,
+                provider: model.providerID,
+              }),
             },
           },
           temperature: 0.3,

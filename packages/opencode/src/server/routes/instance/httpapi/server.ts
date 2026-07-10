@@ -16,6 +16,7 @@ import { createRemoteJWKSet, jwtVerify } from "jose"
 import path from "node:path"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import * as Observability from "@opencode-ai/core/observability"
+import { LangSmith } from "@opencode-ai/core/observability/langsmith"
 import { Account } from "@/account/account"
 import { Agent } from "@/agent/agent"
 import { Auth } from "@/auth"
@@ -959,6 +960,25 @@ const fileViewerRoute = HttpRouter.use((router) =>
           await projectsReferencingRoutine(new URL(request.url, "http://localhost").searchParams.get("id")),
         ),
       ),
+    )
+  }),
+).pipe(Layer.provide(authOnlyRouterLayer))
+
+// LangSmith tracing status: env-gated, read-only. Never returns the API key
+// value -- only whether it's present -- see
+// packages/core/src/observability/langsmith.ts for the presence-check rules.
+const tracingStatusRoute = HttpRouter.use((router) =>
+  Effect.gen(function* () {
+    yield* router.add("GET", "/experimental/tracing/status", () =>
+      Effect.sync(() => {
+        const tracing = LangSmith.tracingConfig()
+        return HttpServerResponse.jsonUnsafe({
+          ok: true,
+          enabled: tracing.enabled,
+          project: tracing.project,
+          hasKey: tracing.hasKey,
+        })
+      }),
     )
   }),
 ).pipe(Layer.provide(authOnlyRouterLayer))
@@ -5377,6 +5397,7 @@ export function createRoutes(
     browserPreviewRoute,
     workspaceIndexRoute,
     fileViewerRoute,
+    tracingStatusRoute,
     workspaceSuiteRoute,
     uiRoute,
   ).pipe(
