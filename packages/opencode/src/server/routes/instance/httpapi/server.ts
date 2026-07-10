@@ -3124,6 +3124,47 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
       }),
     )
 
+    // Token-maxing switch: operator-token-gated failover trigger. The token is a
+    // SERVER-side secret (OPENCODE_TOKEN_MAXING_TOKEN) forwarded to the daemon so
+    // it never reaches the browser; without it configured, switching is refused.
+    yield* router.add("POST", "/experimental/token-maxing/switch", (request) =>
+      Effect.gen(function* () {
+        const base = process.env.OPENCODE_TOKEN_MAXING_URL || "http://127.0.0.1:8787"
+        const token = process.env.OPENCODE_TOKEN_MAXING_TOKEN?.trim()
+        if (!token) {
+          return HttpServerResponse.jsonUnsafe(
+            { ok: false, daemon: base, error: "switching not configured (set OPENCODE_TOKEN_MAXING_TOKEN)" },
+            { status: 403 },
+          )
+        }
+        const raw = yield* Effect.orDie(request.text)
+        let body: Record<string, unknown> = {}
+        try {
+          body = JSON.parse(raw || "{}")
+        } catch {
+          return HttpServerResponse.jsonUnsafe({ ok: false, error: "invalid JSON body" }, { status: 400 })
+        }
+        return yield* Effect.promise(async () => {
+          try {
+            const res = await fetch(`${base}/switch`, {
+              method: "POST",
+              headers: { "content-type": "application/json", "x-operator-token": token },
+              body: JSON.stringify({ adapterId: body.adapterId }),
+              signal: AbortSignal.timeout(5000),
+            })
+            const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
+            // Never echo the token back; pass through the daemon's ok/decision only.
+            return HttpServerResponse.jsonUnsafe({ ok: res.ok, daemon: base, ...data }, { status: res.ok ? 200 : res.status })
+          } catch {
+            return HttpServerResponse.jsonUnsafe(
+              { ok: false, daemon: base, error: "token-maxing daemon offline" },
+              { status: 502 },
+            )
+          }
+        })
+      }),
+    )
+
     // Agent Fleet tab: proxy the local fleet-service daemon's /sessions. Daemon
     // URL is env-configurable; if it's offline we return a graceful marked shape
     // so the tab renders "daemon offline" instead of erroring.

@@ -5,6 +5,7 @@ import { createMediaQuery } from "@solid-primitives/media"
 import { Tabs } from "@opencode-ai/ui/tabs"
 import { MenuV2 } from "@opencode-ai/ui/v2/menu-v2"
 import { IconButton } from "@opencode-ai/ui/icon-button"
+import { Button } from "@opencode-ai/ui/button"
 import { Icon } from "@opencode-ai/ui/icon"
 import { TooltipKeybind } from "@opencode-ai/ui/tooltip"
 import { ResizeHandle } from "@opencode-ai/ui/resize-handle"
@@ -3239,6 +3240,30 @@ function TokenMaxingTabContent() {
   const snapshots = () => usage.data()?.snapshots ?? []
   const online = () => usage.data()?.ok === true
   const pct = (s: any) => (s?.limit ? Math.min(100, Math.round((Number(s.used) / Number(s.limit)) * 100)) : null)
+  const [switching, setSwitching] = createSignal<string | undefined>()
+  const [switchNote, setSwitchNote] = createSignal<string | undefined>()
+  const doSwitch = async (adapterId: string) => {
+    setSwitching(adapterId)
+    setSwitchNote(undefined)
+    try {
+      const res = await fetch("/experimental/token-maxing/switch", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ adapterId }),
+      })
+      const body = await res.json().catch(() => ({}))
+      setSwitchNote(
+        body?.ok
+          ? `Switched from ${adapterId}${body?.decision?.toAdapterId ? ` → ${body.decision.toAdapterId}` : ""}`
+          : body?.error ?? `Switch failed (${res.status})`,
+      )
+      void usage.refresh()
+    } catch (err) {
+      setSwitchNote(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSwitching(undefined)
+    }
+  }
   return (
     <TabChrome title="Token Maxing" iconTab={PANEL_TOKEN_MAXING_TAB} onRefresh={() => void usage.refresh()}>
       <div class="flex min-h-0 flex-1 flex-col gap-3">
@@ -3258,7 +3283,19 @@ function TokenMaxingTabContent() {
               <div class="flex flex-col gap-1 border-b border-border-weaker-base px-3 py-3 last:border-b-0">
                 <div class="flex items-center justify-between gap-3">
                   <span class="min-w-0 truncate text-13-regular text-text-strong">{s.provider}<Show when={s.account}><span class="text-text-weak"> · {s.account}</span></Show></span>
-                  <span class="shrink-0 text-11-regular text-text-weak">{s.used ?? "?"}{s.limit ? ` / ${s.limit}` : ""} {s.unit ?? ""}</span>
+                  <div class="flex shrink-0 items-center gap-2">
+                    <span class="text-11-regular text-text-weak">{s.used ?? "?"}{s.limit ? ` / ${s.limit}` : ""} {s.unit ?? ""}</span>
+                    <Show when={s.adapterId ?? s.id}>
+                      <Button
+                        variant="ghost"
+                        disabled={switching() !== undefined}
+                        onClick={() => void doSwitch(s.adapterId ?? s.id)}
+                        aria-label={`Fail over from ${s.provider}`}
+                      >
+                        {switching() === (s.adapterId ?? s.id) ? "Switching…" : "Fail over"}
+                      </Button>
+                    </Show>
+                  </div>
                 </div>
                 <Show when={pct(s) !== null}>
                   <div class="h-1.5 w-full overflow-hidden rounded bg-background-base">
@@ -3273,6 +3310,11 @@ function TokenMaxingTabContent() {
             <div class="p-4 text-13-regular text-text-weak">No usage snapshots{online() ? "" : " (daemon offline)"}.</div>
           </Show>
         </div>
+        <Show when={switchNote()}>
+          <div class="rounded-md border border-border-weaker-base bg-background-stronger px-3 py-2 text-12-regular text-text-weak">
+            {switchNote()}
+          </div>
+        </Show>
         <StatusRow label="Last checked" value={usage.data()?.generatedAt} />
       </div>
     </TabChrome>
