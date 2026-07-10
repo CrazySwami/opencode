@@ -70,6 +70,20 @@ export function tracingConfig(): TracingConfig {
   }
 }
 
+/**
+ * Whether to record full prompt/response CONTENT in exported spans.
+ *
+ * SECURITY/PRIVACY: the AI SDK defaults `recordInputs`/`recordOutputs` to TRUE,
+ * so any enabled trace ships full system+user messages, tool args, and completions
+ * (which may contain pasted secrets, PII, or proprietary code) to whatever OTLP
+ * endpoint is configured (LangSmith cloud by default). We default this OFF so
+ * turning on tracing captures timing/metadata only; operators opt into content
+ * capture explicitly with OPENCODE_TRACE_RECORD_CONTENT=1. Read at call time.
+ */
+export function traceRecordContent(): boolean {
+  return truthy(process.env["OPENCODE_TRACE_RECORD_CONTENT"])
+}
+
 /** Stable, non-secret span/telemetry metadata tags for AI SDK `experimental_telemetry.metadata`. */
 export function tracingMetadata(tags: { sessionId?: string; model?: string; provider?: string }) {
   return {

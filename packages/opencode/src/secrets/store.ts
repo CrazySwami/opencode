@@ -150,14 +150,26 @@ async function masterKey(): Promise<Buffer> {
   }
 
   const key = randomBytes(KEY_BYTES)
-  // Write atomically with restrictive perms, then verify.
-  const tmp = keyFile + "." + randomBytes(6).toString("hex") + ".tmp"
-  await writeFile(tmp, key.toString("base64"), { mode: 0o600 })
-  await rename(tmp, keyFile)
-  await chmod(keyFile, 0o600).catch(() => {})
-  cachedKey = key
-  cachedKeyDir = dir
-  return key
+  try {
+    // Exclusive create (wx): if two processes race on first use, only one wins
+    // the create — the loser must adopt the winner's key, never clobber it (a
+    // clobber would orphan every ciphertext the winner already wrote).
+    await writeFile(keyFile, key.toString("base64"), { mode: 0o600, flag: "wx" })
+    await chmod(keyFile, 0o600).catch(() => {})
+    cachedKey = key
+    cachedKeyDir = dir
+    return key
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException)?.code !== "EEXIST") throw err
+    // Lost the race: another process created the key first — adopt it.
+    const winner = Buffer.from((await readFile(keyFile, "utf8")).trim(), "base64")
+    if (winner.length !== KEY_BYTES) {
+      throw new Error("master key file is present but invalid; refusing to overwrite")
+    }
+    cachedKey = winner
+    cachedKeyDir = dir
+    return winner
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -230,6 +242,7 @@ function decrypt(key: Buffer, entry: StoredEntry): string {
 // Reasonable bounds to avoid abuse / accidental blobs.
 const MAX_NAME = 256
 const MAX_VALUE = 64 * 1024
+const MAX_SCOPE = 256
 const NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 export type SetSecretInput = { name: string; value: string; scope?: string }
@@ -245,6 +258,9 @@ export async function setSecret(input: SetSecretInput): Promise<SecretMetadata> 
   }
   if (input.value.length > MAX_VALUE) {
     throw new SecretsError(`secret value for "${name}" exceeds maximum size`)
+  }
+  if (typeof input.scope === "string" && input.scope.length > MAX_SCOPE) {
+    throw new SecretsError(`scope for "${name}" exceeds maximum size`)
   }
   const scope = normalizeScope(input.scope)
   const value = input.value

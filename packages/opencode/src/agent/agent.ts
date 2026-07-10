@@ -394,6 +394,10 @@ export const layer = Layer.effect(
         const params = {
           experimental_telemetry: {
             isEnabled: telemetryEnabled,
+            // Default OFF: don't ship prompt/response content to the trace backend
+            // unless explicitly opted in (see LangSmith.traceRecordContent).
+            recordInputs: LangSmith.traceRecordContent(),
+            recordOutputs: LangSmith.traceRecordContent(),
             tracer,
             metadata: {
               userId: cfg.username ?? "unknown",

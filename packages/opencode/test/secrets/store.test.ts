@@ -178,4 +178,21 @@ describe("mutations & flag", () => {
     expect(st.mode & 0o777).toBe(0o600)
     await rm(genDir, { recursive: true, force: true })
   })
+
+  test("rejects an oversized scope (abuse bound) without leaking the value", async () => {
+    const hugeScope = "x".repeat(300)
+    await expect(
+      Secrets.setSecret({ name: "SCOPED", value: SECRET_VALUE, scope: hugeScope }),
+    ).rejects.toThrow(/scope .* maximum size/)
+  })
+
+  test("listSecrets returns metadata only — never a plaintext value", async () => {
+    await Secrets.setSecret({ name: "LISTED", value: SECRET_VALUE })
+    const list = await Secrets.listSecrets()
+    const json = JSON.stringify(list)
+    expect(json).not.toContain(SECRET_VALUE)
+    const entry = list.find((s: any) => s.name === "LISTED") as any
+    expect(entry).toBeTruthy()
+    expect(entry.value).toBeUndefined()
+  })
 })

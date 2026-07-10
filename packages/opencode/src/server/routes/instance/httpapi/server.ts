@@ -1046,7 +1046,18 @@ const secretsRoute = HttpRouter.use((router) =>
             { status: 403 },
           )
         }
+        // Reject oversized bodies by declared Content-Length BEFORE buffering, so
+        // a caller can't force us to read/parse an arbitrarily large payload.
+        // Cap = 64KiB value + name/scope + JSON overhead.
+        const SECRETS_MAX_BODY_BYTES = 128 * 1024
+        const declaredLen = Number((request.headers as Record<string, string | undefined>)["content-length"])
+        if (Number.isFinite(declaredLen) && declaredLen > SECRETS_MAX_BODY_BYTES) {
+          return HttpServerResponse.jsonUnsafe({ ok: false, error: "request body too large" }, { status: 413 })
+        }
         const raw = yield* Effect.orDie(request.text)
+        if (Buffer.byteLength(raw, "utf8") > SECRETS_MAX_BODY_BYTES) {
+          return HttpServerResponse.jsonUnsafe({ ok: false, error: "request body too large" }, { status: 413 })
+        }
         let body: { name?: unknown; value?: unknown; scope?: unknown }
         try {
           body = JSON.parse(raw || "{}")

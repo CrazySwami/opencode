@@ -5785,11 +5785,18 @@ function FilePreview(props: { file: any; showHeader?: boolean }) {
             <iframe src={url()} title={file().name} class="h-full min-h-96 w-full border-0" />
           </Match>
           <Match when={file().kind === "html"}>
+            {/*
+             * SECURITY: previews ARBITRARY local/downloaded/scraped HTML. Never
+             * grant allow-same-origin here — combined with allow-scripts it lets
+             * framed JS run in the app's own origin and call /experimental/env/secrets
+             * (same-origin XSS → secret exfiltration). Without it the content is an
+             * opaque origin: scripts still run but can't touch our origin/storage/APIs.
+             */}
             <iframe
               src={url()}
               title={file().name}
               class="h-full min-h-96 w-full border-0 bg-white"
-              sandbox="allow-scripts allow-forms allow-same-origin"
+              sandbox="allow-scripts allow-forms"
             />
           </Match>
           <Match when={file().kind === "json" || file().kind === "text"}>

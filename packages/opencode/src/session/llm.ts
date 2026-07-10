@@ -350,6 +350,10 @@ const live: Layer.Layer<
           experimental_telemetry: {
             isEnabled: telemetryEnabled,
             functionId: "session.llm",
+            // Default OFF: don't ship prompt/response content to the trace backend
+            // unless explicitly opted in (see LangSmith.traceRecordContent).
+            recordInputs: LangSmith.traceRecordContent(),
+            recordOutputs: LangSmith.traceRecordContent(),
             tracer: telemetryTracer,
             metadata: {
               userId: cfg.username ?? "unknown",
