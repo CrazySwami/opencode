@@ -103,7 +103,15 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
   type Queued = QueuedServerEvent
   const FLUSH_FRAME_MS = 16
   const STREAM_YIELD_MS = 8
-  const RECONNECT_DELAY_MS = 250
+  // Reconnect backoff. Previously a FIXED 250ms delay with no jitter: on a server
+  // restart every open tab's stream failed at the same instant and all reconnected
+  // within the same 250ms window → a thundering herd that spiked the server's RSS
+  // (each reconnect also re-bootstraps directories). Now exponential backoff with
+  // random jitter so the herd de-synchronizes; the counter resets once a healthy
+  // event flows again.
+  const RECONNECT_BASE_MS = 250
+  const RECONNECT_MAX_MS = 8_000
+  const RECONNECT_JITTER_MS = 1_000
 
   let queue: Queued[] = []
   let buffer: Queued[] = []
@@ -142,6 +150,7 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
   let run: Promise<void> | undefined
   let started = false
   let generation = 0
+  let reconnectFailures = 0
   const HEARTBEAT_TIMEOUT_MS = 15_000
   let lastEventAt = Date.now()
   let heartbeat: ReturnType<typeof setTimeout> | undefined
@@ -192,6 +201,8 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
           for await (const event of events.stream) {
             resetHeartbeat()
             streamErrorLogged = false
+            // Healthy event flowing → connection is good; reset backoff.
+            reconnectFailures = 0
             if (event.payload.type !== "sync") {
               const directory = event.directory ?? "global"
               const payload = event.payload as Event
@@ -218,7 +229,11 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
         }
 
         if (abort.signal.aborted || !started || generation !== active) return
-        await wait(RECONNECT_DELAY_MS)
+        // Exponential backoff (250ms → cap 8s) + random jitter, so a fleet of tabs
+        // reconnecting after a server restart spreads out instead of stampeding.
+        const backoff = Math.min(RECONNECT_BASE_MS * 2 ** reconnectFailures, RECONNECT_MAX_MS)
+        reconnectFailures++
+        await wait(backoff + Math.random() * RECONNECT_JITTER_MS)
       }
     })().finally(() => {
       if (run !== current) return

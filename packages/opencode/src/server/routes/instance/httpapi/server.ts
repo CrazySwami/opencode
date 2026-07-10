@@ -16,6 +16,7 @@ import { createRemoteJWKSet, jwtVerify } from "jose"
 import path from "node:path"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import * as Observability from "@opencode-ai/core/observability"
+import { LangSmith } from "@opencode-ai/core/observability/langsmith"
 import { Account } from "@/account/account"
 import { Agent } from "@/agent/agent"
 import { Auth } from "@/auth"
@@ -40,6 +41,7 @@ import { Vcs } from "@/project/vcs"
 import { ProviderAuth } from "@/provider/auth"
 import { Provider } from "@/provider/provider"
 import { Question } from "@/question"
+import * as Secrets from "@/secrets/store"
 import { SessionCompaction } from "@/session/compaction"
 import { Instruction } from "@/session/instruction"
 import { LLM } from "@/session/llm"
@@ -139,8 +141,156 @@ import { captureBrowserScreenshot, runBrowserAction, sessionPaths, type BrowserA
 import { readPreviewSurfaceState, runPreviewAction, writePreviewSurfaceState } from "@/tool/preview"
 import { collectResourceStatus } from "@/tool/resource-status"
 import { collectCliResourcesStatus, runCliResourceAction } from "@/tool/cli-resources"
-import { createRoutineDraft, routineLogs, routinesAction, routinesStatus } from "@/tool/routines"
+import { createRoutineDraft, ensureRoutinesScheduler, routineLogs, routinesAction, routinesStatus } from "@/tool/routines"
 import { publishAppleBridgeEvent } from "@/tool/ios-bridge-events"
+import { generateImage, imageProviderStatus, isImageProviderID } from "@/tool/image-gen"
+
+// Routines HTTP guards (MUST-FIX #8): reject oversized bodies and throttle run
+// requests. The runner itself also enforces run-enabled/approval/lock, so this
+// is defense-in-depth on the HTTP surface.
+const ROUTINES_MAX_BODY_BYTES = 16 * 1024
+const ROUTINES_RUN_MIN_INTERVAL_MS = 1000
+let routinesLastRunAt = 0
+function routinesRunRateOk() {
+  const now = Date.now()
+  if (now - routinesLastRunAt < ROUTINES_RUN_MIN_INTERVAL_MS) return false
+  routinesLastRunAt = now
+  return true
+}
+
+// MCP Registry tab: a curated catalog of installable MCP servers. This is the
+// server-side data source for the panel://mcp-registry tab. Static for now;
+// TODO: fetch + cache the official registry (registry.modelcontextprotocol.io)
+// and community catalogs (mcp.so) instead of the hardcoded seed below.
+type McpCatalogEntry = { name: string; title: string; description: string; transport: "local" | "remote"; homepage: string; install?: string }
+const MCP_REGISTRY_CATALOG: McpCatalogEntry[] = [
+  { name: "github", title: "GitHub", description: "Repos, PRs, issues, code search.", transport: "remote", homepage: "https://github.com/github/github-mcp-server" },
+  { name: "context7", title: "Context7", description: "Up-to-date library/framework docs.", transport: "remote", homepage: "https://github.com/upstash/context7" },
+  { name: "supabase", title: "Supabase", description: "Projects, SQL, migrations, edge functions.", transport: "local", homepage: "https://github.com/supabase-community/supabase-mcp", install: "npx -y @supabase/mcp-server-supabase@latest" },
+  { name: "playwright", title: "Playwright", description: "Browser automation + accessibility snapshots.", transport: "local", homepage: "https://github.com/microsoft/playwright-mcp", install: "npx -y @playwright/mcp@latest" },
+  { name: "filesystem", title: "Filesystem", description: "Read/write files under allowlisted roots.", transport: "local", homepage: "https://github.com/modelcontextprotocol/servers", install: "npx -y @modelcontextprotocol/server-filesystem" },
+  { name: "fetch", title: "Fetch", description: "Fetch + convert web pages to markdown.", transport: "local", homepage: "https://github.com/modelcontextprotocol/servers", install: "npx -y @modelcontextprotocol/server-fetch" },
+]
+// Skills Library: scan known skill roots, parse each SKILL.md frontmatter for
+// name + description. All async FS (no request-path sync IO).
+type SkillEntry = { name: string; description: string; source: string; path: string }
+async function listSkills(): Promise<{ ok: boolean; generatedAt: string; roots: string[]; skills: SkillEntry[] }> {
+  // Prefer OpenDesign's skills (the integration backend) when its daemon is up;
+  // fall back to a local SKILL.md scan if OD is offline.
+  try {
+    const res = await fetch(`${odDaemonUrl()}/api/skills`, { signal: AbortSignal.timeout(3000) })
+    const data = (await res.json()) as { skills?: any[] }
+    if (Array.isArray(data.skills)) {
+      const skills: SkillEntry[] = data.skills.map((s) => ({
+        name: s.name ?? s.id,
+        description: String(s.description ?? "").slice(0, 300),
+        source: `opendesign:${s.source ?? "?"}`,
+        path: s.id ?? "",
+      }))
+      return { ok: true, generatedAt: new Date().toISOString(), roots: [`${odDaemonUrl()}/api/skills`], skills }
+    }
+  } catch {
+    // OD offline → local scan below
+  }
+  const fsp = await import("node:fs/promises")
+  const path = await import("node:path")
+  const home = process.env.HOME || "/home/dev"
+  const roots: { dir: string; source: string }[] = [
+    { dir: path.join(home, ".claude", "skills"), source: "claude" },
+    { dir: path.join(home, ".codex", "skills"), source: "codex" },
+    { dir: path.join(home, ".config", "opencode", "skills"), source: "opencode" },
+    { dir: path.join(process.cwd(), ".claude", "skills"), source: "project" },
+  ]
+  const parseFrontmatter = (text: string) => {
+    const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/)
+    const block = m?.[1] ?? ""
+    const name = block.match(/^name:\s*(.+)$/m)?.[1]?.trim()
+    const description = block.match(/^description:\s*(.+)$/m)?.[1]?.trim()
+    return { name, description }
+  }
+  const seen = new Set<string>()
+  const skills: SkillEntry[] = []
+  for (const { dir, source } of roots) {
+    let entries: import("node:fs").Dirent[]
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      const skillFile = path.join(dir, entry.name, "SKILL.md")
+      let front: { name?: string; description?: string } = {}
+      try {
+        front = parseFrontmatter(await fsp.readFile(skillFile, "utf8"))
+      } catch {
+        continue // no SKILL.md → not a skill dir
+      }
+      const name = front.name || entry.name
+      const key = `${source}:${name}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      skills.push({
+        name,
+        description: (front.description || "").slice(0, 300),
+        source,
+        path: path.join(dir, entry.name),
+      })
+    }
+  }
+  skills.sort((a, b) => a.name.localeCompare(b.name))
+  return { ok: true, generatedAt: new Date().toISOString(), roots: roots.map((r) => r.dir), skills }
+}
+
+function odDaemonUrl() {
+  return process.env.OPENCODE_OD_URL || "http://127.0.0.1:7456"
+}
+// MCP registry is sourced from OpenDesign (the integration backend) when its
+// daemon is up: OD's /api/mcp/servers gives configured servers + a rich template
+// catalog. Falls back to the local seed if OD is offline.
+async function mcpRegistryCatalog() {
+  try {
+    const res = await fetch(`${odDaemonUrl()}/api/mcp/servers`, { signal: AbortSignal.timeout(3000) })
+    const data = (await res.json()) as { servers?: unknown[]; templates?: any[] }
+    const servers = (data.templates ?? []).map((t) => ({
+      name: t.id,
+      title: t.label ?? t.id,
+      description: String(t.description ?? "").slice(0, 300),
+      transport: t.transport === "stdio" ? "local" : "remote",
+      homepage: t.homepage ?? "",
+      install: t.url ?? undefined,
+    }))
+    return {
+      ok: true,
+      generatedAt: new Date().toISOString(),
+      source: "opendesign",
+      note: "Sourced from OpenDesign daemon (/api/mcp/servers). Configured servers + template catalog.",
+      registries: [`${odDaemonUrl()}/api/mcp/servers`],
+      configured: data.servers ?? [],
+      servers: servers.length ? servers : MCP_REGISTRY_CATALOG,
+    }
+  } catch {
+    return {
+      ok: true,
+      generatedAt: new Date().toISOString(),
+      source: "seed",
+      note: "OpenDesign daemon offline — showing local seed. Start OD (:7456) for the full catalog.",
+      registries: ["https://registry.modelcontextprotocol.io", "https://mcp.so"],
+      configured: [],
+      servers: MCP_REGISTRY_CATALOG,
+    }
+  }
+}
+// Reject an oversized body BEFORE buffering it (Codex finding #2): check the
+// declared Content-Length first, then verify the actual byte length (not char
+// count, so multi-byte UTF-8 can't slip past the cap).
+function routinesBodyTooLargeByHeader(headers: Record<string, string | undefined>) {
+  const declared = Number(headers["content-length"])
+  return Number.isFinite(declared) && declared > ROUTINES_MAX_BODY_BYTES
+}
+function routinesBodyTooLarge(raw: string) {
+  return Buffer.byteLength(raw, "utf8") > ROUTINES_MAX_BODY_BYTES
+}
 import {
   ackWorkspaceTabsAction,
   updateWorkspaceTabsClientState,
@@ -812,6 +962,378 @@ const fileViewerRoute = HttpRouter.use((router) =>
           await projectsReferencingRoutine(new URL(request.url, "http://localhost").searchParams.get("id")),
         ),
       ),
+    )
+  }),
+).pipe(Layer.provide(authOnlyRouterLayer))
+
+// LangSmith tracing status: env-gated, read-only. Never returns the API key
+// value -- only whether it's present -- see
+// packages/core/src/observability/langsmith.ts for the presence-check rules.
+const tracingStatusRoute = HttpRouter.use((router) =>
+  Effect.gen(function* () {
+    yield* router.add("GET", "/experimental/tracing/status", () =>
+      Effect.sync(() => {
+        const tracing = LangSmith.tracingConfig()
+        return HttpServerResponse.jsonUnsafe({
+          ok: true,
+          enabled: tracing.enabled,
+          project: tracing.project,
+          hasKey: tracing.hasKey,
+        })
+      }),
+    )
+  }),
+).pipe(Layer.provide(authOnlyRouterLayer))
+
+// Image generation: provider-agnostic (local FLUX hub, Recraft, Gemini).
+// /providers only ever reports presence/reachability booleans -- never key
+// values -- and /generate never logs a key either (see tool/image-gen.ts).
+const imageGenRoute = HttpRouter.use((router) =>
+  Effect.gen(function* () {
+    yield* router.add("GET", "/experimental/image/providers", () =>
+      Effect.promise(async () => HttpServerResponse.jsonUnsafe(await imageProviderStatus())),
+    )
+
+    yield* router.add("POST", "/experimental/image/generate", (request) =>
+      Effect.gen(function* () {
+        const raw = yield* Effect.orDie(request.text)
+        let body: { prompt?: unknown; provider?: unknown; size?: unknown }
+        try {
+          body = JSON.parse(raw || "{}")
+        } catch {
+          return HttpServerResponse.jsonUnsafe({ ok: false, error: "Invalid JSON body" }, { status: 400 })
+        }
+
+        const prompt = typeof body.prompt === "string" ? body.prompt.trim() : ""
+        if (!prompt) return HttpServerResponse.jsonUnsafe({ ok: false, error: "prompt is required" }, { status: 400 })
+
+        const provider = isImageProviderID(body.provider) ? body.provider : undefined
+        const size = typeof body.size === "string" ? body.size : undefined
+
+        const result = yield* Effect.promise(() => generateImage({ prompt, provider, size }))
+        return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : 502 })
+      }),
+    )
+  }),
+).pipe(Layer.provide(authOnlyRouterLayer))
+
+// SECURITY-CRITICAL: server-side encrypted env/secrets store.
+//   - GET  /experimental/env/secrets        -> metadata list ONLY (no values).
+//   - POST /experimental/env/secrets        -> set {name,value,scope?}; the
+//                                              value is encrypted + never echoed.
+//   - DELETE /experimental/env/secrets/:name -> delete (scope via ?scope=).
+// Mutations (POST/DELETE) are gated behind OPENCODE_SECRETS_ENABLED. There is
+// deliberately NO route that returns a decrypted value — the only consumer of
+// plaintext is the internal Secrets.secretsEnvFor() used to build a spawned
+// child's env, which is never routed. See src/secrets/store.ts.
+const secretsRoute = HttpRouter.use((router) =>
+  Effect.gen(function* () {
+    yield* router.add("GET", "/experimental/env/secrets", (request) =>
+      Effect.promise(async () => {
+        const url = new URL(request.url, "http://localhost")
+        const scope = url.searchParams.get("scope") ?? undefined
+        const secrets = await Secrets.listSecrets(scope)
+        // Metadata only — never a value.
+        return HttpServerResponse.jsonUnsafe({ enabled: Secrets.secretsEnabled(), secrets })
+      }),
+    )
+
+    yield* router.add("POST", "/experimental/env/secrets", (request) =>
+      Effect.gen(function* () {
+        if (!Secrets.secretsEnabled()) {
+          return HttpServerResponse.jsonUnsafe(
+            { ok: false, error: "secrets are disabled (set OPENCODE_SECRETS_ENABLED=1)" },
+            { status: 403 },
+          )
+        }
+        // Reject oversized bodies by declared Content-Length BEFORE buffering, so
+        // a caller can't force us to read/parse an arbitrarily large payload.
+        // Cap = 64KiB value + name/scope + JSON overhead.
+        const SECRETS_MAX_BODY_BYTES = 128 * 1024
+        const declaredLen = Number((request.headers as Record<string, string | undefined>)["content-length"])
+        if (Number.isFinite(declaredLen) && declaredLen > SECRETS_MAX_BODY_BYTES) {
+          return HttpServerResponse.jsonUnsafe({ ok: false, error: "request body too large" }, { status: 413 })
+        }
+        const raw = yield* Effect.orDie(request.text)
+        if (Buffer.byteLength(raw, "utf8") > SECRETS_MAX_BODY_BYTES) {
+          return HttpServerResponse.jsonUnsafe({ ok: false, error: "request body too large" }, { status: 413 })
+        }
+        let body: { name?: unknown; value?: unknown; scope?: unknown }
+        try {
+          body = JSON.parse(raw || "{}")
+        } catch {
+          return HttpServerResponse.jsonUnsafe({ ok: false, error: "invalid JSON body" }, { status: 400 })
+        }
+        const name = typeof body.name === "string" ? body.name : ""
+        const value = typeof body.value === "string" ? body.value : ""
+        const scope = typeof body.scope === "string" ? body.scope : undefined
+        const result = yield* Effect.promise(async () => {
+          try {
+            const meta = await Secrets.setSecret({ name, value, scope })
+            // Response echoes metadata ONLY — never the value the caller sent.
+            return { status: 201 as const, body: { ok: true as const, secret: meta } }
+          } catch (err: unknown) {
+            // Scrub any secret material out of the error before returning it.
+            const message = String((Secrets.redact as any)(err instanceof Error ? err.message : String(err), [value]))
+            return { status: 400 as const, body: { ok: false as const, error: message } }
+          }
+        })
+        return HttpServerResponse.jsonUnsafe(result.body, { status: result.status })
+      }),
+    )
+
+    yield* router.add("DELETE", "/experimental/env/secrets/:name", (request) =>
+      Effect.promise(async () => {
+        if (!Secrets.secretsEnabled()) {
+          return HttpServerResponse.jsonUnsafe(
+            { ok: false, error: "secrets are disabled (set OPENCODE_SECRETS_ENABLED=1)" },
+            { status: 403 },
+          )
+        }
+        const name = decodeParam(request.url, /^\/experimental\/env\/secrets\/([^/]+)$/)
+        if (!name) return HttpServerResponse.jsonUnsafe({ ok: false, error: "missing secret name" }, { status: 400 })
+        const url = new URL(request.url, "http://localhost")
+        const scope = url.searchParams.get("scope") ?? undefined
+        const deleted = await Secrets.deleteSecret(name, scope)
+        return HttpServerResponse.jsonUnsafe({ ok: true, deleted }, { status: deleted ? 200 : 404 })
+      }),
+    )
+  }),
+).pipe(Layer.provide(authOnlyRouterLayer))
+
+// Home Chat (milestone-1): front OpenDesign's chat backend from the dashboard
+// home view instead of rebuilding chat/artifacts. OD daemon URL is env-
+// configurable (OPENCODE_OD_URL, default http://127.0.0.1:7456). All routes
+// return a graceful offline shape when OD is down; message contents and secrets
+// are never logged.
+//
+// OD contract (verified live against the daemon 2026-07-09):
+//   POST /api/chat  body {message, agentId, projectId?} -> an SSE stream. The
+//     first frame is `event: start` with data {runId, agentId, projectId, cwd,
+//     ...}. The run is tracked + buffered server-side, so its events survive the
+//     POST client disconnecting and can be replayed by id.
+//   GET  /api/runs/:id/events -> SSE replay of a run's full event log. Named
+//     events seen: start | stderr | stdout | agent | end | error. `agent` data
+//     carries {type,label,...} status/text frames; `end` carries {status,...}.
+//   GET  /api/runs/:id -> run status JSON {id, projectId, status, error, ...}.
+//   GET  /api/projects -> {projects:[{id, name, metadata:{baseDir}, ...}]}.
+//   GET  /api/agents -> {agents:[{id, name, available, ...}]} (executor list).
+const homeChatDefaultAgent = () => process.env.OPENCODE_OD_AGENT || "codex"
+
+type HomeChatStartResult =
+  | { ok: true; runId: string; agentId: string; projectId?: string }
+  | { ok: false; error: string }
+
+// Start an OD chat run and return its run id. We read only enough of the chat
+// SSE stream to capture the `start` frame's runId, then release the connection;
+// OD keeps the run alive and buffers its events for /api/runs/:id/events to
+// replay, so the client subscribes there rather than holding this POST open.
+async function odStartChatRun(input: {
+  message: string
+  projectId?: string
+  agentId?: string
+}): Promise<HomeChatStartResult> {
+  const od = odDaemonUrl()
+  const agentId = input.agentId || homeChatDefaultAgent()
+  const controller = new AbortController()
+  try {
+    const res = await fetch(`${od}/api/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "text/event-stream" },
+      body: JSON.stringify({
+        message: input.message,
+        agentId,
+        ...(input.projectId ? { projectId: input.projectId } : {}),
+      }),
+      signal: controller.signal,
+    })
+    if (!res.ok || !res.body) {
+      controller.abort()
+      return { ok: false, error: "OpenDesign offline" }
+    }
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffered = ""
+    try {
+      while (true) {
+        const chunk = await reader.read()
+        if (chunk.done) break
+        buffered += decoder.decode(chunk.value, { stream: true })
+        const runMatch = buffered.match(/"runId"\s*:\s*"([^"]+)"/)
+        if (runMatch?.[1]) {
+          return { ok: true, runId: runMatch[1], agentId, projectId: input.projectId }
+        }
+        // Safety cap: never buffer an unbounded stream while hunting for runId.
+        if (buffered.length > 64 * 1024) break
+      }
+      // Stream ended before a `start`/runId frame: surface OD's error text if any.
+      const errMatch = buffered.match(/"message"\s*:\s*"([^"]+)"/)
+      return { ok: false, error: errMatch?.[1] || "OpenDesign did not return a run id" }
+    } finally {
+      await reader.cancel().catch(() => undefined)
+      controller.abort()
+    }
+  } catch {
+    controller.abort()
+    return { ok: false, error: "OpenDesign offline" }
+  }
+}
+
+// Build a text/event-stream response that emits a single error frame then ends.
+// Used when OD is offline or the run id is unknown, so the browser's SSE reader
+// sees a structured error instead of a dead socket.
+function homeChatSseError(message: string) {
+  return HttpServerResponse.setHeader(
+    HttpServerResponse.stream(
+      Stream.make(`event: error\ndata: ${JSON.stringify({ error: message })}\n\n`).pipe(Stream.encodeText),
+      { contentType: "text/event-stream" },
+    ),
+    "cache-control",
+    "no-store",
+  )
+}
+
+// Relay OD's run-events SSE to the client. On client disconnect the effect
+// interrupts the stream fiber, which runs the generator's finally block to abort
+// the upstream fetch and cancel the reader (no leaked OD connection).
+async function odRunEventsResponse(runId: string) {
+  const od = odDaemonUrl()
+  const controller = new AbortController()
+  let res: Response
+  try {
+    res = await fetch(`${od}/api/runs/${encodeURIComponent(runId)}/events`, {
+      headers: { accept: "text/event-stream" },
+      signal: controller.signal,
+    })
+  } catch {
+    controller.abort()
+    return homeChatSseError("OpenDesign offline")
+  }
+  if (!res.ok || !res.body) {
+    controller.abort()
+    return homeChatSseError(`run not found (${res.status})`)
+  }
+  const reader = res.body.getReader()
+  return HttpServerResponse.setHeader(
+    HttpServerResponse.stream(
+      Stream.fromAsyncIterable(
+        (async function* () {
+          try {
+            while (true) {
+              const chunk = await reader.read()
+              if (chunk.done) return
+              yield chunk.value
+            }
+          } finally {
+            controller.abort()
+            await reader.cancel().catch(() => undefined)
+          }
+        })(),
+        (cause) => new Error(`home-chat events stream error: ${String(cause)}`),
+      ),
+      { contentType: "text/event-stream" },
+    ),
+    "cache-control",
+    "no-store",
+  )
+}
+
+// Relay the fleet daemon's "continue" SSE (a resumed cross-CLI session's live
+// StreamEvents) to the client. Same disconnect-safety as odRunEventsResponse:
+// client disconnect interrupts the fiber → finally aborts the upstream fetch.
+// The daemon itself gates spawning behind FLEET_DRIVE_ENABLED=1 (403 when off).
+async function fleetContinueResponse(cli: string, id: string, bodyJson: string) {
+  const base = process.env.OPENCODE_FLEET_URL || "http://127.0.0.1:8788"
+  const controller = new AbortController()
+  let res: Response
+  try {
+    res = await fetch(`${base}/sessions/${encodeURIComponent(cli)}/${encodeURIComponent(id)}/continue`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "text/event-stream" },
+      body: bodyJson,
+      signal: controller.signal,
+    })
+  } catch {
+    controller.abort()
+    return homeChatSseError("fleet service offline")
+  }
+  if (!res.ok || !res.body) {
+    controller.abort()
+    return homeChatSseError(res.status === 403 ? "fleet drive disabled (set FLEET_DRIVE_ENABLED=1)" : `continue failed (${res.status})`)
+  }
+  const reader = res.body.getReader()
+  return HttpServerResponse.setHeader(
+    HttpServerResponse.stream(
+      Stream.fromAsyncIterable(
+        (async function* () {
+          try {
+            while (true) {
+              const chunk = await reader.read()
+              if (chunk.done) return
+              yield chunk.value
+            }
+          } finally {
+            controller.abort()
+            await reader.cancel().catch(() => undefined)
+          }
+        })(),
+        (cause) => new Error(`fleet continue stream error: ${String(cause)}`),
+      ),
+      { contentType: "text/event-stream" },
+    ),
+    "cache-control",
+    "no-store",
+  )
+}
+
+// List OD projects for the home-chat project picker: id + name + baseDir only.
+async function odHomeChatProjects() {
+  const od = odDaemonUrl()
+  try {
+    const res = await fetch(`${od}/api/projects`, { signal: AbortSignal.timeout(3000) })
+    if (!res.ok) return { ok: false as const, error: "OpenDesign offline", projects: [] }
+    const data = (await res.json()) as { projects?: Array<Record<string, any>> }
+    const projects = (data.projects ?? []).map((p) => ({
+      id: String(p?.id ?? ""),
+      name: String(p?.name ?? "Untitled"),
+      baseDir: typeof p?.metadata?.baseDir === "string" ? p.metadata.baseDir : null,
+    }))
+    return { ok: true as const, daemon: od, generatedAt: new Date().toISOString(), projects }
+  } catch {
+    return { ok: false as const, error: "OpenDesign offline", projects: [] }
+  }
+}
+
+const homeChatRoute = HttpRouter.use((router) =>
+  Effect.gen(function* () {
+    yield* router.add("POST", "/experimental/home-chat/send", (request) =>
+      Effect.gen(function* () {
+        const raw = yield* Effect.orDie(request.text)
+        let body: { message?: unknown; projectId?: unknown; agentId?: unknown }
+        try {
+          body = JSON.parse(raw || "{}")
+        } catch {
+          return HttpServerResponse.jsonUnsafe({ ok: false, error: "Invalid JSON body" }, { status: 400 })
+        }
+        const message = typeof body.message === "string" ? body.message.trim() : ""
+        if (!message) return HttpServerResponse.jsonUnsafe({ ok: false, error: "message is required" }, { status: 400 })
+        const projectId = typeof body.projectId === "string" && body.projectId ? body.projectId : undefined
+        const agentId = typeof body.agentId === "string" && body.agentId ? body.agentId : undefined
+        const result = yield* Effect.promise(() => odStartChatRun({ message, projectId, agentId }))
+        return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : 502 })
+      }),
+    )
+
+    yield* router.add("GET", "/experimental/home-chat/events/:runId", (request) =>
+      Effect.gen(function* () {
+        const runId = decodeParam(request.url, /^\/experimental\/home-chat\/events\/([^/]+)$/)
+        if (!runId) return HttpServerResponse.text("Missing run id", { status: 400 })
+        return yield* Effect.promise(() => odRunEventsResponse(runId))
+      }),
+    )
+
+    yield* router.add("GET", "/experimental/home-chat/projects", () =>
+      Effect.promise(async () => HttpServerResponse.jsonUnsafe(await odHomeChatProjects())),
     )
   }),
 ).pipe(Layer.provide(authOnlyRouterLayer))
@@ -2602,7 +3124,185 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
     )
 
     yield* router.add("GET", "/experimental/routines/status", () =>
-      Effect.promise(async () => HttpServerResponse.jsonUnsafe(await routinesStatus())),
+      Effect.promise(async () => {
+        ensureRoutinesScheduler()
+        return HttpServerResponse.jsonUnsafe(await routinesStatus())
+      }),
+    )
+
+    yield* router.add("GET", "/experimental/mcp/registry", () =>
+      Effect.promise(async () => HttpServerResponse.jsonUnsafe(await mcpRegistryCatalog())),
+    )
+
+    // Skills Library tab: enumerate skills across known roots. Async FS only
+    // (sync FS on the request path can wedge the event loop under disk pressure
+    // per CT100 stability notes). Reads each SKILL.md's frontmatter name/desc.
+    yield* router.add("GET", "/experimental/skills", () =>
+      Effect.promise(async () => HttpServerResponse.jsonUnsafe(await listSkills())),
+    )
+
+    // Token-maxing tab: proxy the local token-maxing daemon's /usage. Daemon URL
+    // is env-configurable; if it's offline we return a graceful marked shape so
+    // the tab renders "daemon offline" instead of erroring.
+    yield* router.add("GET", "/experimental/token-maxing/usage", () =>
+      Effect.promise(async () => {
+        const base = process.env.OPENCODE_TOKEN_MAXING_URL || "http://127.0.0.1:8787"
+        try {
+          const res = await fetch(`${base}/usage`, { signal: AbortSignal.timeout(3000) })
+          if (!res.ok) {
+            return HttpServerResponse.jsonUnsafe({
+              ok: false,
+              daemon: base,
+              error: `token-maxing daemon error (${res.status})`,
+              generatedAt: new Date().toISOString(),
+              snapshots: [],
+            })
+          }
+          const data = (await res.json()) as Record<string, unknown>
+          return HttpServerResponse.jsonUnsafe({ ok: true, daemon: base, generatedAt: new Date().toISOString(), ...data })
+        } catch {
+          return HttpServerResponse.jsonUnsafe({
+            ok: false,
+            daemon: base,
+            error: "token-maxing daemon offline",
+            generatedAt: new Date().toISOString(),
+            snapshots: [],
+          })
+        }
+      }),
+    )
+
+    // Token-maxing switch: operator-token-gated failover trigger. The token is a
+    // SERVER-side secret (OPENCODE_TOKEN_MAXING_TOKEN) forwarded to the daemon so
+    // it never reaches the browser; without it configured, switching is refused.
+    yield* router.add("POST", "/experimental/token-maxing/switch", (request) =>
+      Effect.gen(function* () {
+        const base = process.env.OPENCODE_TOKEN_MAXING_URL || "http://127.0.0.1:8787"
+        const token = process.env.OPENCODE_TOKEN_MAXING_TOKEN?.trim()
+        if (!token) {
+          return HttpServerResponse.jsonUnsafe(
+            { ok: false, daemon: base, error: "switching not configured (set OPENCODE_TOKEN_MAXING_TOKEN)" },
+            { status: 403 },
+          )
+        }
+        const raw = yield* Effect.orDie(request.text)
+        let body: Record<string, unknown> = {}
+        try {
+          body = JSON.parse(raw || "{}")
+        } catch {
+          return HttpServerResponse.jsonUnsafe({ ok: false, error: "invalid JSON body" }, { status: 400 })
+        }
+        return yield* Effect.promise(async () => {
+          try {
+            const res = await fetch(`${base}/switch`, {
+              method: "POST",
+              headers: { "content-type": "application/json", "x-operator-token": token },
+              body: JSON.stringify({ adapterId: body.adapterId }),
+              signal: AbortSignal.timeout(5000),
+            })
+            const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
+            // Never echo the token back; pass through the daemon's ok/decision only.
+            return HttpServerResponse.jsonUnsafe({ ok: res.ok, daemon: base, ...data }, { status: res.ok ? 200 : res.status })
+          } catch {
+            return HttpServerResponse.jsonUnsafe(
+              { ok: false, daemon: base, error: "token-maxing daemon offline" },
+              { status: 502 },
+            )
+          }
+        })
+      }),
+    )
+
+    // Agent Fleet tab: proxy the local fleet-service daemon's /sessions. Daemon
+    // URL is env-configurable; if it's offline we return a graceful marked shape
+    // so the tab renders "daemon offline" instead of erroring.
+    yield* router.add("GET", "/experimental/fleet/sessions", () =>
+      Effect.promise(async () => {
+        const fleet = process.env.OPENCODE_FLEET_URL || "http://127.0.0.1:8788"
+        try {
+          const res = await fetch(`${fleet}/sessions?limit=200`, { signal: AbortSignal.timeout(3000) })
+          // A reachable-but-erroring daemon (5xx/4xx) must not be reported as ok:true.
+          if (!res.ok) {
+            return HttpServerResponse.jsonUnsafe({
+              ok: false,
+              fleet,
+              error: `fleet service error (${res.status})`,
+              generatedAt: new Date().toISOString(),
+              sessions: [],
+              count: 0,
+            })
+          }
+          const data = (await res.json()) as Record<string, unknown>
+          return HttpServerResponse.jsonUnsafe({ ok: true, fleet, generatedAt: new Date().toISOString(), ...data })
+        } catch {
+          return HttpServerResponse.jsonUnsafe({
+            ok: false,
+            fleet,
+            error: "fleet service offline",
+            generatedAt: new Date().toISOString(),
+            sessions: [],
+            count: 0,
+          })
+        }
+      }),
+    )
+
+    // Auto-improve tab: proxy the (standalone, default-OFF) auto-improve daemon's
+    // /status — designated projects + per-project gate/run state. Graceful offline.
+    yield* router.add("GET", "/experimental/auto-improve/status", () =>
+      Effect.promise(async () => {
+        const base = process.env.OPENCODE_AUTO_IMPROVE_URL || "http://127.0.0.1:8789"
+        try {
+          const res = await fetch(`${base}/status`, { signal: AbortSignal.timeout(3000) })
+          if (!res.ok) {
+            return HttpServerResponse.jsonUnsafe({
+              ok: false,
+              daemon: base,
+              error: `auto-improve daemon error (${res.status})`,
+              generatedAt: new Date().toISOString(),
+              projects: [],
+            })
+          }
+          const data = (await res.json()) as Record<string, unknown>
+          return HttpServerResponse.jsonUnsafe({ ok: true, daemon: base, generatedAt: new Date().toISOString(), ...data })
+        } catch {
+          return HttpServerResponse.jsonUnsafe({
+            ok: false,
+            daemon: base,
+            error: "auto-improve daemon offline",
+            generatedAt: new Date().toISOString(),
+            projects: [],
+          })
+        }
+      }),
+    )
+
+    // Cross-CLI continue: resume a session on its native CLI via the fleet daemon
+    // and relay the live StreamEvent SSE. Spawning is gated at the daemon
+    // (FLEET_DRIVE_ENABLED); this proxy just streams whatever it returns.
+    yield* router.add("POST", "/experimental/fleet/continue/:cli/:id", (request) =>
+      Effect.gen(function* () {
+        const m = request.url.match(/^\/experimental\/fleet\/continue\/([^/]+)\/([^/]+)/)
+        if (!m) return HttpServerResponse.text("Missing cli/id", { status: 400 })
+        let cli: string
+        let id: string
+        try {
+          cli = decodeURIComponent(m[1]!)
+          id = decodeURIComponent(m[2]!)
+        } catch {
+          return HttpServerResponse.text("Malformed cli/id", { status: 400 })
+        }
+        const raw = yield* Effect.orDie(request.text)
+        // Pass the client's body through as-is (prompt etc.); default to {}.
+        const bodyJson = (() => {
+          try {
+            return JSON.stringify(JSON.parse(raw || "{}"))
+          } catch {
+            return "{}"
+          }
+        })()
+        return yield* Effect.promise(() => fleetContinueResponse(cli, id, bodyJson))
+      }),
     )
 
     yield* router.add("GET", "/experimental/routines/jobs", () =>
@@ -2611,24 +3311,22 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
 
     yield* router.add("POST", "/experimental/routines/jobs", (request) =>
       Effect.gen(function* () {
+        if (routinesBodyTooLargeByHeader(request.headers)) return HttpServerResponse.text("Body too large", { status: 413 })
         const raw = yield* Effect.orDie(request.text)
-        let body: {
+        if (routinesBodyTooLarge(raw)) return HttpServerResponse.text("Body too large", { status: 413 })
+        type RoutineCreateBody = {
           name?: string
           description?: string
           schedule?: string
           command?: string
+          host?: string
+          icon?: string
           tags?: string[]
           notify?: string[]
         }
+        let body: RoutineCreateBody
         try {
-          body = JSON.parse(raw || "{}") as {
-            name?: string
-            description?: string
-            schedule?: string
-            command?: string
-            tags?: string[]
-            notify?: string[]
-          }
+          body = JSON.parse(raw || "{}") as RoutineCreateBody
         } catch {
           return HttpServerResponse.text("Invalid JSON body", { status: 400 })
         }
@@ -2644,13 +3342,17 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
     yield* router.add("PATCH", "/experimental/routines/jobs/:id", (request) =>
       Effect.gen(function* () {
         const id = decodeParam(request.url, /^\/experimental\/routines\/jobs\/([^/]+)$/)
+        if (routinesBodyTooLargeByHeader(request.headers)) return HttpServerResponse.text("Body too large", { status: 413 })
         const raw = yield* Effect.orDie(request.text)
+        if (routinesBodyTooLarge(raw)) return HttpServerResponse.text("Body too large", { status: 413 })
         type RoutineUpdateBody = {
           name?: string
           description?: string
           schedule?: string
           command?: string
           enabled?: boolean
+          host?: string
+          icon?: string
           tags?: string[]
           notify?: string[]
         }
@@ -2660,7 +3362,17 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
         } catch {
           return HttpServerResponse.text("Invalid JSON body", { status: 400 })
         }
-        const result = yield* Effect.promise(() => routinesAction({ action: "update", id, ...body }))
+        const operatorToken =
+          request.headers["x-opencode-routines-token"] ?? request.headers["x-opencode-routines-operator-token"]
+        const result = yield* Effect.promise(() =>
+          routinesAction({
+            action: "update",
+            id,
+            ...body,
+            caller: "http",
+            operatorToken: typeof operatorToken === "string" ? operatorToken : undefined,
+          }),
+        )
         publishAppleBridgeEvent("routines", "routine.updated", summarizeRoutineEvent("update", result, id))
         const error = result.ok ? undefined : (result as { error?: string }).error
         return HttpServerResponse.jsonUnsafe(result, {
@@ -2672,7 +3384,23 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
     yield* router.add("POST", "/experimental/routines/jobs/:id/run", (request) =>
       Effect.promise(async () => {
         const id = decodeParam(request.url, /^\/experimental\/routines\/jobs\/([^/]+)\/run$/)
-        const result = await routinesAction({ action: "run", id })
+        // Rate-limit run requests (MUST-FIX #8): a minimum interval between any
+        // two run attempts on this server, cheap in-memory guard on top of the
+        // per-routine run-lock in the runner.
+        if (!routinesRunRateOk()) {
+          return HttpServerResponse.jsonUnsafe(
+            { ok: false, error: "Too many run requests; slow down.", mutationPolicy: "rate_limited" },
+            { status: 429 },
+          )
+        }
+        const operatorToken =
+          request.headers["x-opencode-routines-token"] ?? request.headers["x-opencode-routines-operator-token"]
+        const result = await routinesAction({
+          action: "run",
+          id,
+          caller: "http",
+          operatorToken: typeof operatorToken === "string" ? operatorToken : undefined,
+        })
         publishAppleBridgeEvent("routines", "routine.run_requested", summarizeRoutineEvent("run", result, id))
         return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : 403 })
       }),
@@ -5143,6 +5871,10 @@ export function createRoutes(
     browserPreviewRoute,
     workspaceIndexRoute,
     fileViewerRoute,
+    tracingStatusRoute,
+    imageGenRoute,
+    secretsRoute,
+    homeChatRoute,
     workspaceSuiteRoute,
     uiRoute,
   ).pipe(

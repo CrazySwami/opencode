@@ -22,6 +22,23 @@ import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner
 import { ShellPrompt, type Parameters } from "./shell/prompt"
 import { BashArity } from "@/permission/arity"
 import { workspaceEnvForProcess } from "@opencode-ai/core/workspace-env"
+import * as Secrets from "@/secrets/store"
+
+// Env vars that alter HOW/WHAT a process executes — never sourced from a stored
+// secret, so an accidental or hostile secret can't hijack tool execution.
+const SECRET_ENV_DENYLIST = new Set([
+  "PATH",
+  "LD_PRELOAD",
+  "LD_LIBRARY_PATH",
+  "DYLD_INSERT_LIBRARIES",
+  "DYLD_LIBRARY_PATH",
+  "NODE_OPTIONS",
+  "BASH_ENV",
+  "ENV",
+  "SHELLOPTS",
+  "IFS",
+  "PROMPT_COMMAND",
+])
 
 export { Parameters } from "./shell/prompt"
 
@@ -420,6 +437,19 @@ export const ShellTool = Tool.define(
         cwd,
         surface: "terminal",
       })
+      // Server-side secrets store (gated by OPENCODE_SECRETS_ENABLED): inject the
+      // user's stored vars so spawned commands can use them. Decrypted values are
+      // placed directly into the child env and never logged; an explicit
+      // workspace-env or plugin var still wins over a stored secret of the same name.
+      // Exec-influencing vars are NEVER taken from a secret (a stored PATH/LD_PRELOAD/
+      // etc. must not silently change which binaries a spawned command runs).
+      const secretsEnv = Secrets.secretsEnabled()
+        ? Object.fromEntries(
+            Object.entries(yield* Effect.promise(() => Secrets.secretsEnvFor())).filter(
+              ([name]) => !SECRET_ENV_DENYLIST.has(name.toUpperCase()),
+            ),
+          )
+        : {}
       const extra = yield* plugin.trigger(
         "shell.env",
         { cwd, sessionID: ctx.sessionID, callID: ctx.callID },
@@ -427,6 +457,7 @@ export const ShellTool = Tool.define(
       )
       return {
         ...process.env,
+        ...secretsEnv,
         ...workspaceEnv,
         ...extra.env,
       }

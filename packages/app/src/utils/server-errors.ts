@@ -35,6 +35,35 @@ export function formatServerError(error: unknown, translate?: Translator, fallba
   return tr(translate, "error.chain.unknown", "Unknown error")
 }
 
+// Transient gateway / connectivity failures — the backend is momentarily
+// unreachable (a 502/503/504 from Cloudflare while opencode restarts, or a raw
+// network drop), NOT a real application error. Callers use this to soft-fail
+// (auto-retry on reconnect) instead of showing an error toast. See
+// withTransientRetry in utils/server.ts, which already retries these for ~40s;
+// this catches the case where even that budget is exhausted mid-restart.
+const TRANSIENT_STATUS = new Set([502, 503, 504])
+
+export function isTransientGatewayError(error: unknown): boolean {
+  // Structured: wrapClientError puts { body, status } on Error.cause.
+  if (error instanceof Error && error.cause && typeof error.cause === "object") {
+    const status = (error.cause as Record<string, unknown>).status
+    if (typeof status === "number" && TRANSIENT_STATUS.has(status)) return true
+    // Network failure with no response → wrapClientError sets status undefined
+    // and a "network error (no response)" message.
+    if (status === undefined && /network error \(no response\)/i.test(error.message)) return true
+  }
+  // Direct status field (some callers pass the response-ish object).
+  if (typeof error === "object" && error !== null) {
+    const status = (error as Record<string, unknown>).status
+    if (typeof status === "number" && TRANSIENT_STATUS.has(status)) return true
+  }
+  // Message / body heuristics: browser fetch offline + Cloudflare 502 HTML.
+  const text = error instanceof Error ? error.message : typeof error === "string" ? error : ""
+  if (/\b50[234]\b|bad gateway|service (temporarily )?unavailable|gateway time-?out/i.test(text)) return true
+  if (/failed to fetch|networkerror|load failed|connection refused|econnrefused|err_network/i.test(text)) return true
+  return false
+}
+
 function unwrapNamedError(error: unknown): unknown {
   if (error instanceof Error && error.cause && typeof error.cause === "object" && "body" in error.cause) {
     return (error.cause as Record<string, unknown>).body

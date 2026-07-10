@@ -523,6 +523,7 @@ export function NewHome() {
               </ScrollView>
             </Match>
           </Switch>
+          <HomeChat />
         </section>
         <HomeUtilityNav
           class="flex lg:hidden"
@@ -532,6 +533,316 @@ export function NewHome() {
           setMode={(mode) => setState("mode", mode)}
           language={language}
         />
+      </div>
+    </div>
+  )
+}
+
+// Milestone-1 home chat: a persistent chat docked on the home view that fronts
+// OpenDesign's chat backend via the /experimental/home-chat/* server proxy.
+// It POSTs a message to /send (getting an OD run id back), then streams that
+// run's events from /events/:runId and renders them live. The project picker +
+// "@" affordance seed which OD project/repo the run targets. Later milestones
+// add real @-tag dispatch, artifact rendering, and multi-turn history.
+type HomeChatProject = { id: string; name: string; baseDir: string | null }
+type HomeChatEntry = { id: number; label: string; text: string; kind: "event" | "error"; imageUrl?: string }
+
+// Home-chat M2 artifact rendering (schema-agnostic): if an SSE frame's payload
+// carries an image-looking URL/data-URI in any of the common fields, surface it
+// as an inline image. Purely opportunistic — anything else falls back to text,
+// so this never breaks on an unexpected OD event shape.
+function extractHomeChatImage(data: string): string | undefined {
+  try {
+    const p = JSON.parse(data) as Record<string, any>
+    const candidates = [p.imageUrl, p.image, p.url, p.dataUri, p.artifact?.url, p.artifact?.imageUrl, p.artifact?.dataUri]
+    for (const c of candidates) {
+      if (typeof c !== "string") continue
+      if (c.startsWith("data:image/")) return c
+      if (/^https?:\/\/\S+\.(png|jpe?g|gif|webp|svg)(\?\S*)?$/i.test(c)) return c
+      // OD artifact of kind image with a plain URL.
+      if ((p.kind === "image" || p.artifactKind === "image" || p.type === "image") && /^https?:\/\//.test(c)) return c
+    }
+  } catch {
+    /* not JSON — no image */
+  }
+  return undefined
+}
+
+function extractHomeChatText(event: string, data: string): string {
+  try {
+    const parsed = JSON.parse(data) as Record<string, any>
+    const value =
+      parsed.text ??
+      parsed.delta ??
+      parsed.chunk ??
+      parsed.label ??
+      parsed.message ??
+      (event === "end" && parsed.status ? `run ${parsed.status}` : undefined)
+    if (typeof value === "string") return value.replace(/\s+$/, "")
+    if (value != null) return JSON.stringify(value)
+    return data
+  } catch {
+    return data
+  }
+}
+
+function HomeChat() {
+  const [projects, setProjects] = createSignal<HomeChatProject[]>([])
+  const [projectId, setProjectId] = createSignal<string>("")
+  const [offline, setOffline] = createSignal(false)
+  const [message, setMessage] = createSignal("")
+  const [entries, setEntries] = createSignal<HomeChatEntry[]>([])
+  const [running, setRunning] = createSignal(false)
+  const [runId, setRunId] = createSignal<string | undefined>()
+  const [tagOpen, setTagOpen] = createSignal(false)
+  let entrySeq = 0
+  let inputRef: HTMLTextAreaElement | undefined
+  let activeController: AbortController | undefined
+
+  const appendEntry = (label: string, text: string, kind: HomeChatEntry["kind"] = "event", imageUrl?: string) =>
+    setEntries((prev) => [...prev, { id: ++entrySeq, label, text, kind, imageUrl }])
+
+  const loadProjects = async () => {
+    try {
+      const res = await fetch("/experimental/home-chat/projects", { cache: "no-store" })
+      const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean
+        projects?: HomeChatProject[]
+      }
+      if (!res.ok || body.ok === false) {
+        setOffline(true)
+        setProjects([])
+        return
+      }
+      setOffline(false)
+      setProjects(body.projects ?? [])
+    } catch {
+      setOffline(true)
+      setProjects([])
+    }
+  }
+
+  onMount(() => {
+    void loadProjects()
+  })
+  onCleanup(() => activeController?.abort())
+
+  const selectedProject = createMemo(() => projects().find((p) => p.id === projectId()))
+
+  const insertTag = (project: HomeChatProject) => {
+    const token = `@${project.name.replace(/\s+/g, "-")} `
+    setMessage((prev) => (prev.endsWith(" ") || prev.length === 0 ? prev : prev + " ") + token)
+    setProjectId(project.id)
+    setTagOpen(false)
+    inputRef?.focus()
+  }
+
+  // Parse the OD run-events SSE stream frame-by-frame and render each event.
+  const streamRun = async (id: string) => {
+    const controller = new AbortController()
+    activeController = controller
+    try {
+      const res = await fetch(`/experimental/home-chat/events/${encodeURIComponent(id)}`, {
+        headers: { accept: "text/event-stream" },
+        signal: controller.signal,
+      })
+      if (!res.ok || !res.body) {
+        appendEntry("error", `Stream unavailable (${res.status})`, "error")
+        return
+      }
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ""
+      const flushFrame = (frame: string) => {
+        let eventName = "message"
+        const dataLines: string[] = []
+        for (const line of frame.split("\n")) {
+          if (line.startsWith("event:")) eventName = line.slice(6).trim()
+          else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim())
+        }
+        if (dataLines.length === 0) return
+        const data = dataLines.join("\n")
+        appendEntry(
+          eventName,
+          extractHomeChatText(eventName, data),
+          eventName === "error" ? "error" : "event",
+          extractHomeChatImage(data),
+        )
+      }
+      while (true) {
+        const chunk = await reader.read()
+        if (chunk.done) break
+        buffer += decoder.decode(chunk.value, { stream: true })
+        let sep: number
+        while ((sep = buffer.indexOf("\n\n")) !== -1) {
+          const frame = buffer.slice(0, sep)
+          buffer = buffer.slice(sep + 2)
+          if (frame.trim()) flushFrame(frame)
+        }
+      }
+      if (buffer.trim()) flushFrame(buffer)
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        appendEntry("error", error instanceof Error ? error.message : String(error), "error")
+      }
+    } finally {
+      if (activeController === controller) activeController = undefined
+      setRunning(false)
+    }
+  }
+
+  const send = async () => {
+    const text = message().trim()
+    if (!text || running()) return
+    setRunning(true)
+    setEntries([])
+    setRunId(undefined)
+    appendEntry("you", text)
+    try {
+      const res = await fetch("/experimental/home-chat/send", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message: text, projectId: projectId() || undefined }),
+      })
+      const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean
+        runId?: string
+        error?: string
+      }
+      if (!res.ok || body.ok === false || !body.runId) {
+        setOffline(body.error === "OpenDesign offline")
+        appendEntry("error", body.error ?? `Send failed (${res.status})`, "error")
+        setRunning(false)
+        return
+      }
+      setOffline(false)
+      setMessage("")
+      setRunId(body.runId)
+      await streamRun(body.runId)
+    } catch (error) {
+      appendEntry("error", error instanceof Error ? error.message : String(error), "error")
+      setRunning(false)
+    }
+  }
+
+  const onInputKeyDown = (event: KeyboardEvent) => {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault()
+      void send()
+    }
+  }
+
+  return (
+    <div class="mt-3 shrink-0 rounded-[10px] border border-v2-border-border-base bg-v2-background-bg-layer-01">
+      <div class="flex min-w-0 items-center justify-between gap-2 border-b border-v2-border-border-base px-3 py-2">
+        <div class={HOME_SECTION_LABEL}>Home chat</div>
+        <div class="flex min-w-0 items-center gap-2">
+          <select
+            class="h-7 max-w-[200px] rounded-[6px] border border-v2-border-border-base bg-v2-background-bg-base px-2 text-[12px] text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+            value={projectId()}
+            onChange={(event) => setProjectId(event.currentTarget.value)}
+            aria-label="OpenDesign project"
+          >
+            <option value="">No project</option>
+            <For each={projects()}>{(project) => <option value={project.id}>{project.name}</option>}</For>
+          </select>
+          <IconButtonV2
+            variant="ghost-muted"
+            size="normal"
+            icon={<IconV2 name="refresh" />}
+            onClick={() => void loadProjects()}
+            aria-label="Refresh OpenDesign projects"
+          />
+        </div>
+      </div>
+      <Show when={offline()}>
+        <div class="border-b border-v2-border-border-base bg-v2-background-bg-base px-3 py-2 text-[12px] leading-5 text-v2-state-fg-danger">
+          OpenDesign is offline. Start the OD daemon (default :7456) to use home chat.
+        </div>
+      </Show>
+      <Show when={entries().length > 0}>
+        <ScrollView class="max-h-[240px] min-h-0">
+          <div class="flex flex-col gap-2 p-3">
+            <For each={entries()}>
+              {(entry) => (
+                <div class="flex min-w-0 flex-col gap-0.5">
+                  <span
+                    class="text-[11px] uppercase tracking-[0.04em] text-v2-text-text-muted"
+                    classList={{ "text-v2-state-fg-danger": entry.kind === "error" }}
+                  >
+                    {entry.label}
+                  </span>
+                  <Show when={entry.text}>
+                    <span
+                      class="min-w-0 whitespace-pre-wrap break-words text-[13px] leading-5 text-v2-text-text-base"
+                      classList={{ "text-v2-state-fg-danger": entry.kind === "error" }}
+                    >
+                      {entry.text}
+                    </span>
+                  </Show>
+                  <Show when={entry.imageUrl}>
+                    <img
+                      src={entry.imageUrl}
+                      alt="chat artifact"
+                      class="mt-1 max-h-64 w-auto max-w-full rounded-md border border-v2-border-border-base object-contain"
+                    />
+                  </Show>
+                </div>
+              )}
+            </For>
+            <Show when={running()}>
+              <div class="flex items-center gap-2 text-[12px] text-v2-text-text-muted">
+                <Spinner /> Streaming from OpenDesign…
+              </div>
+            </Show>
+          </div>
+        </ScrollView>
+      </Show>
+      <div class="relative flex items-end gap-2 p-3">
+        <div class="relative">
+          <IconButtonV2
+            variant="ghost-muted"
+            size="large"
+            icon={<IconV2 name="at" />}
+            disabled={projects().length === 0}
+            onClick={() => setTagOpen((open) => !open)}
+            aria-label="Insert project tag"
+          />
+          <Show when={tagOpen() && projects().length > 0}>
+            <div class="absolute bottom-10 left-0 z-10 max-h-[220px] w-[220px] overflow-y-auto rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-base p-1 shadow-[var(--v2-elevation-floating)]">
+              <For each={projects()}>
+                {(project) => (
+                  <button
+                    type="button"
+                    class={`${HOME_ROW} h-8 gap-2 px-2 text-[13px]`}
+                    onClick={() => insertTag(project)}
+                  >
+                    <span class="min-w-0 truncate">@{project.name}</span>
+                  </button>
+                )}
+              </For>
+            </div>
+          </Show>
+        </div>
+        <textarea
+          ref={inputRef}
+          class="min-h-9 max-h-32 min-w-0 flex-1 resize-y rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-base px-3 py-2 text-[13px] leading-5 text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+          placeholder={
+            selectedProject() ? `Message OpenDesign about ${selectedProject()!.name}…` : "Message OpenDesign…"
+          }
+          value={message()}
+          onInput={(event) => setMessage(event.currentTarget.value)}
+          onKeyDown={onInputKeyDown}
+        />
+        <ButtonV2
+          variant="contrast"
+          size="normal"
+          class="h-9 shrink-0 px-3 [font-weight:530]"
+          disabled={running() || !message().trim()}
+          onClick={() => void send()}
+        >
+          {running() ? "Sending" : "Send"}
+        </ButtonV2>
       </div>
     </div>
   )
@@ -664,6 +975,8 @@ function HomeRoutinesDashboard() {
   const [draftSchedule, setDraftSchedule] = createSignal("daily 09:00")
   const [draftDescription, setDraftDescription] = createSignal("")
   const [draftCommand, setDraftCommand] = createSignal("")
+  const [draftHost, setDraftHost] = createSignal("local")
+  const [draftIcon, setDraftIcon] = createSignal("")
   const [draftSaving, setDraftSaving] = createSignal(false)
   const [draftError, setDraftError] = createSignal<string | undefined>()
   const [editOpen, setEditOpen] = createSignal(false)
@@ -671,11 +984,17 @@ function HomeRoutinesDashboard() {
   const [editSchedule, setEditSchedule] = createSignal("")
   const [editDescription, setEditDescription] = createSignal("")
   const [editCommand, setEditCommand] = createSignal("")
+  const [editHost, setEditHost] = createSignal("local")
+  const [editIcon, setEditIcon] = createSignal("")
   const [actionBusy, setActionBusy] = createSignal<string | undefined>()
   const [actionError, setActionError] = createSignal<string | undefined>()
   const jobs = createMemo(() => routines.data.value?.routines ?? [])
   const selected = createMemo(() => jobs().find((job: any) => job.id === selectedID()) ?? jobs()[0])
   const mutationsEnabled = createMemo(() => routines.data.value?.status?.mutationsEnabled ?? false)
+  const hosts = createMemo<Array<{ id: string; label: string; remote?: boolean }>>(
+    () => routines.data.value?.status?.hosts ?? [{ id: "local", label: "This machine", remote: false }],
+  )
+  const hostLabel = (id?: string) => hosts().find((h) => h.id === (id ?? "local"))?.label ?? id ?? "local"
 
   createEffect(() => {
     const first = jobs()[0]?.id
@@ -687,6 +1006,8 @@ function HomeRoutinesDashboard() {
     setDraftSchedule("daily 09:00")
     setDraftDescription("")
     setDraftCommand("")
+    setDraftHost("local")
+    setDraftIcon("")
     setDraftError(undefined)
     setDraftOpen(true)
   }
@@ -728,6 +1049,8 @@ function HomeRoutinesDashboard() {
     setEditSchedule(routine.schedule ?? "manual")
     setEditDescription(routine.description ?? "")
     setEditCommand(routine.command ?? "")
+    setEditHost(routine.host ?? "local")
+    setEditIcon(routine.icon ?? "")
     setActionError(undefined)
     setEditOpen(true)
   }
@@ -743,6 +1066,8 @@ function HomeRoutinesDashboard() {
         schedule: editSchedule(),
         description: editDescription(),
         command: editCommand(),
+        host: editHost(),
+        icon: editIcon(),
       },
       successTitle: "Routine updated",
     })
@@ -783,6 +1108,8 @@ function HomeRoutinesDashboard() {
           schedule: draftSchedule(),
           description: draftDescription(),
           command: draftCommand(),
+          host: draftHost(),
+          icon: draftIcon(),
         }),
       })
       const body = await response.json().catch(() => ({}))
@@ -832,13 +1159,17 @@ function HomeRoutinesDashboard() {
                   onClick={() => setSelectedID(routine.id)}
                 >
                   <div class="flex min-w-0 items-center justify-between gap-3">
-                    <span class="min-w-0 truncate text-v2-text-text-base [font-weight:530]">{routine.name}</span>
+                    <span class="flex min-w-0 items-center gap-1.5">
+                      <Show when={routine.icon}><span class="shrink-0">{routine.icon}</span></Show>
+                      <span class="min-w-0 truncate text-v2-text-text-base [font-weight:530]">{routine.name}</span>
+                    </span>
                     <span class="shrink-0 rounded-[4px] bg-v2-background-bg-layer-02 px-1.5 py-0.5 text-[11px] text-v2-text-text-muted">
                       {routine.enabled ? "enabled" : "off"}
                     </span>
                   </div>
-                  <span class="min-w-0 truncate text-left text-[12px] text-v2-text-text-muted">
-                    {routine.schedule ?? "No schedule"}
+                  <span class="flex min-w-0 items-center gap-2 text-left text-[12px] text-v2-text-text-muted">
+                    <span class="min-w-0 truncate">{routine.schedule ?? "No schedule"}</span>
+                    <span class="shrink-0 rounded-[4px] bg-v2-background-bg-layer-02 px-1.5 py-0.5 text-[11px]">{hostLabel(routine.host)}</span>
                   </span>
                 </button>
               )}
@@ -867,7 +1198,11 @@ function HomeRoutinesDashboard() {
                 <div class="border-b border-v2-border-border-base px-4 py-3">
                   <div class="flex min-w-0 items-center justify-between gap-3">
                     <div class="min-w-0">
-                      <div class="truncate text-[14px] text-v2-text-text-base [font-weight:600]">{routine().name}</div>
+                      <div class="flex items-center gap-2 truncate text-[14px] text-v2-text-text-base [font-weight:600]">
+                        <Show when={routine().icon}><span class="shrink-0">{routine().icon}</span></Show>
+                        <span class="truncate">{routine().name}</span>
+                        <span class="shrink-0 rounded-[4px] bg-v2-background-bg-layer-02 px-1.5 py-0.5 text-[11px] [font-weight:400] text-v2-text-text-muted">{hostLabel(routine().host)}</span>
+                      </div>
                       <div class="mt-1 text-[12px] text-v2-text-text-muted">
                         {routine().description ?? "No description"}
                       </div>
@@ -976,6 +1311,27 @@ function HomeRoutinesDashboard() {
                     onInput={(event) => setEditCommand(event.currentTarget.value)}
                   />
                 </label>
+                <div class="grid grid-cols-2 gap-3">
+                  <label class="grid gap-1 text-[12px] text-v2-text-text-muted">
+                    Host
+                    <select
+                      class="h-9 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-layer-01 px-3 text-[13px] text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+                      value={editHost()}
+                      onChange={(event) => setEditHost(event.currentTarget.value)}
+                    >
+                      <For each={hosts()}>{(h) => <option value={h.id}>{h.label}{h.remote ? " (remote)" : ""}</option>}</For>
+                    </select>
+                  </label>
+                  <label class="grid gap-1 text-[12px] text-v2-text-text-muted">
+                    Icon (optional)
+                    <input
+                      class="h-9 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-layer-01 px-3 text-[13px] text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+                      value={editIcon()}
+                      onInput={(event) => setEditIcon(event.currentTarget.value)}
+                      placeholder="🩺"
+                    />
+                  </label>
+                </div>
               </div>
               <Show when={actionError()}>
                 {(error) => (
@@ -1058,6 +1414,27 @@ function HomeRoutinesDashboard() {
                       placeholder="curl -fsS https://code.hustletogether.com/__health"
                     />
                   </label>
+                  <div class="grid grid-cols-2 gap-3">
+                    <label class="grid gap-1 text-[12px] text-v2-text-text-muted">
+                      Host
+                      <select
+                        class="h-9 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-layer-01 px-3 text-[13px] text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+                        value={draftHost()}
+                        onChange={(event) => setDraftHost(event.currentTarget.value)}
+                      >
+                        <For each={hosts()}>{(h) => <option value={h.id}>{h.label}{h.remote ? " (remote)" : ""}</option>}</For>
+                      </select>
+                    </label>
+                    <label class="grid gap-1 text-[12px] text-v2-text-text-muted">
+                      Icon (optional)
+                      <input
+                        class="h-9 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-layer-01 px-3 text-[13px] text-v2-text-text-base outline-none focus:border-v2-border-border-strong"
+                        value={draftIcon()}
+                        onInput={(event) => setDraftIcon(event.currentTarget.value)}
+                        placeholder="🩺"
+                      />
+                    </label>
+                  </div>
                   <div class="rounded-[8px] bg-v2-background-bg-layer-01 p-3 text-[12px] leading-5 text-v2-text-text-muted">
                     New routines are saved disabled. Enabling schedules and manual runs remain separate controls.
                   </div>

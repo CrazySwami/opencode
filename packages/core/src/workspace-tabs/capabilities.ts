@@ -10,6 +10,13 @@ export type WorkspacePanelTabID =
   | "panel://file-browser"
   | "panel://routines"
   | "panel://environment"
+  | "panel://mcp-registry"
+  | "panel://token-maxing"
+  | "panel://skills"
+  | "panel://fleet"
+  | "panel://env-secrets"
+  | "panel://auto-improve"
+  | "panel://image-gen"
 
 export type WorkspacePanelActionID =
   | "refresh"
@@ -222,6 +229,108 @@ export const WORKSPACE_PANEL_TABS: WorkspacePanelDefinition[] = [
     canSnapshot: false,
     canAttachToChat: true,
     description: "Live route, service, release, and environment topology.",
+  },
+  {
+    id: "panel://mcp-registry",
+    label: "MCP Registry",
+    badge: "MCP",
+    icon: "puzzle",
+    route: "/experimental/mcp/registry",
+    toolIDs: ["workspace_tabs"],
+    mentionIDs: ["mcp", "mcp_registry", "plugins", "connectors"],
+    aliases: ["mcp", "mcp_registry", "plugins", "connectors"],
+    actions: ["refresh", "attach_to_chat", "tools"],
+    safetyPolicy: "Read-only catalog + configured MCP list. Adding/enabling a server is a separate config action; never leak header/token values.",
+    canSnapshot: false,
+    canAttachToChat: true,
+    description: "Browse configured MCP servers and a catalog of installable ones; add custom MCPs.",
+  },
+  {
+    id: "panel://token-maxing",
+    label: "Token Maxing",
+    badge: "TM",
+    route: "/experimental/token-maxing/usage",
+    toolIDs: ["workspace_tabs"],
+    mentionIDs: ["token_maxing", "token-maxing", "usage", "quota", "tokens"],
+    aliases: ["token_maxing", "token-maxing", "usage", "quota", "tokens"],
+    actions: ["refresh", "attach_to_chat", "tools"],
+    safetyPolicy: "Read-only usage view across accounts via the local token-maxing daemon. Account switching is a separate operator-gated action; never leak keys or tokens.",
+    canSnapshot: false,
+    canAttachToChat: true,
+    description: "Live usage across all model accounts/profiles + switch controls (backed by the local token-maxing daemon).",
+  },
+  {
+    id: "panel://skills",
+    label: "Skills",
+    badge: "SK",
+    route: "/experimental/skills",
+    toolIDs: ["skill", "workspace_tabs"],
+    mentionIDs: ["skills", "skill", "skill_library"],
+    aliases: ["skills", "skill", "skill_library"],
+    actions: ["refresh", "attach_to_chat", "tools"],
+    safetyPolicy: "Read-only skill catalog across roots. Running or editing a skill remains permission-gated.",
+    canSnapshot: false,
+    canAttachToChat: true,
+    description: "Library of installed skills across Claude/Codex/OpenCode/project roots, with source + description.",
+  },
+  {
+    id: "panel://fleet",
+    label: "Agent Fleet",
+    badge: "FLT",
+    route: "/experimental/fleet/sessions",
+    toolIDs: ["workspace_tabs"],
+    mentionIDs: ["fleet", "agents", "sessions"],
+    aliases: ["fleet", "agents", "sessions"],
+    actions: ["refresh", "attach_to_chat", "tools"],
+    safetyPolicy: "Read-only view of the cross-CLI session fleet via the local fleet-service daemon. Never leak session content beyond title/model/status metadata.",
+    canSnapshot: false,
+    canAttachToChat: true,
+    description: "Cross-CLI session fleet (opencode/codex/claude) surfaced from the local fleet-service daemon.",
+  },
+  {
+    id: "panel://env-secrets",
+    label: "Secrets",
+    badge: "ENV",
+    route: "/experimental/env/secrets",
+    toolIDs: ["workspace_tabs"],
+    mentionIDs: ["secrets", "env", "keys"],
+    aliases: ["secrets", "env", "keys"],
+    actions: ["refresh", "attach_to_chat", "tools"],
+    safetyPolicy:
+      "Secret values are NEVER displayed or exposed through this tab or any read route -- only name/scope/present/updatedAt/lastFour metadata is shown. Writing or deleting a secret is gated behind OPENCODE_SECRETS_ENABLED on the server and is a separate mutation from viewing.",
+    canSnapshot: false,
+    canAttachToChat: true,
+    description: "Server-side encrypted env/secrets store: metadata-only listing plus gated add/delete, backed by the local secrets store.",
+  },
+  {
+    id: "panel://auto-improve",
+    label: "Auto-Improve",
+    badge: "IMP",
+    route: "/experimental/auto-improve/status",
+    toolIDs: ["workspace_tabs"],
+    mentionIDs: ["auto-improve", "improve", "autonomous"],
+    aliases: ["auto-improve", "improve", "autonomous"],
+    actions: ["refresh", "attach_to_chat", "tools"],
+    safetyPolicy:
+      "Read-only view of the autonomous-improvement engine's designated projects and per-project gate/run state. The engine itself is gated OFF by default (AUTO_IMPROVE_ENABLED) and never mutates a repo from this tab.",
+    canSnapshot: false,
+    canAttachToChat: true,
+    description: "Autonomous-improvement engine status: designated projects, per-project enable/rate-limit state, last run — fronting the local auto-improve daemon (OFF by default).",
+  },
+  {
+    id: "panel://image-gen",
+    label: "Image",
+    badge: "IMG",
+    route: "/experimental/image/providers",
+    toolIDs: ["workspace_tabs", "image_gen"],
+    mentionIDs: ["image", "image-gen", "flux", "recraft"],
+    aliases: ["image", "image-gen", "flux", "recraft"],
+    actions: ["refresh", "attach_to_chat", "tools"],
+    safetyPolicy:
+      "Generates images via the configured providers (local FLUX hub / Recraft / Gemini). Provider status reports reachability booleans only, never key values; generation is flag-gated (OPENCODE_EXPERIMENTAL_IMAGE_GEN) on the server.",
+    canSnapshot: false,
+    canAttachToChat: true,
+    description: "In-app image generation: pick a provider, prompt, and render the result — a second surface for the image_gen tool.",
   },
 ]
 

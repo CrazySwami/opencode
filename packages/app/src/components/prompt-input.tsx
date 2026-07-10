@@ -266,7 +266,12 @@ const BUILT_IN_TOOL_IDS = new Set([
 
 const classifyToolMention = (id: string): ToolPartSource => {
   const normalized = id.toLowerCase()
-  if (normalized === "swami" || normalized === "alfonso-os" || normalized === "alfonso_os" || normalized === "alfonsoos")
+  if (
+    normalized === "swami" ||
+    normalized === "alfonso-os" ||
+    normalized === "alfonso_os" ||
+    normalized === "alfonsoos"
+  )
     return "swami"
   if (
     normalized === "browser" ||
@@ -275,7 +280,8 @@ const classifyToolMention = (id: string): ToolPartSource => {
     normalized === "preview" ||
     normalized === "project_preview" ||
     normalized === "viewer"
-  ) return "browser"
+  )
+    return "browser"
   if (normalized === "terminal" || normalized === "bash") return "terminal"
   if (normalized === "open_design" || normalized.startsWith("open_design_")) return "open_design"
   if (normalized === "mac_view" || normalized.startsWith("mac_view_")) return "mac_view"
@@ -283,7 +289,8 @@ const classifyToolMention = (id: string): ToolPartSource => {
   if (normalized === "artifact" || normalized.startsWith("artifact_")) return "artifact"
   if (normalized === "file_browser" || normalized.startsWith("file_browser_")) return "file_browser"
   if (normalized === "account_status" || normalized.startsWith("account_")) return "account"
-  if (normalized === "routines" || normalized === "routine_status" || normalized.startsWith("routine_")) return "routines"
+  if (normalized === "routines" || normalized === "routine_status" || normalized.startsWith("routine_"))
+    return "routines"
   if (normalized.startsWith("mcp") || normalized.includes("mcp") || !BUILT_IN_TOOL_IDS.has(normalized)) return "mcp"
   return "tool"
 }

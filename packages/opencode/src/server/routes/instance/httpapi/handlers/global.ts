@@ -35,8 +35,10 @@ function eventResponse() {
     yield* Effect.logInfo("global event connected")
     // Explicitly bounded, sliding buffer so a stalled / half-open global-event
     // client can't retain every GlobalBus event in memory (same leak class as the
-    // instance /event handler). 4096 tolerates bursts for healthy clients while a
-    // dead consumer drops oldest instead of growing without limit.
+    // instance /event handler). Kept small (512): the cost is per-connection, and a
+    // reconnect storm (server restart → every tab reconnects) briefly multiplies it
+    // by ~200 connections — 4096 ballooned RSS to GBs. 512 still absorbs bursts for
+    // healthy clients (which hold ~0 events) and slide-drops for dead ones.
     const events = Stream.callback<GlobalBusEvent>(
       (queue) => {
         const handler = (event: GlobalBusEvent) => Queue.offerUnsafe(queue, event)
@@ -45,7 +47,7 @@ function eventResponse() {
           () => Effect.sync(() => GlobalBus.off("event", handler)),
         )
       },
-      { bufferSize: 4096, strategy: "sliding" },
+      { bufferSize: 512, strategy: "sliding" },
     )
     const heartbeat = Stream.tick("10 seconds").pipe(
       Stream.drop(1),

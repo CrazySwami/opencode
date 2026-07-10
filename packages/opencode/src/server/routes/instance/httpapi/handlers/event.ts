@@ -35,10 +35,16 @@ function eventResponse(events: EventV2.Interface) {
     // leak that grew opencode to ~4GB. Now: (1) filter in the listen callback so a
     // connection only buffers events for its own directory/workspace, and (2) use a
     // sliding queue so a dead consumer drops oldest events instead of ballooning.
+    // Size is deliberately small: a reconnect storm (server restart → every tab
+    // reconnects at once) can briefly open ~200 SSE connections, and the buffer cost
+    // is per-connection × this size. 4096 × 200 ballooned RSS to ~3.6GB; 512 keeps
+    // the storm peak ~8x lower while still absorbing bursts for healthy clients (which
+    // normally hold ~0 events) — a stalled client just slide-drops sooner and re-syncs
+    // on reconnect anyway.
     const matchesInstance = (event: EventV2.Payload) =>
       event.location?.directory === instance.directory &&
       (event.location.workspaceID === undefined || event.location.workspaceID === workspaceID)
-    const queue = yield* Queue.sliding<EventV2.Payload>(4096)
+    const queue = yield* Queue.sliding<EventV2.Payload>(512)
     const unsubscribe = yield* events.listen((event) =>
       Effect.sync(() => {
         if (matchesInstance(event)) Queue.offerUnsafe(queue, event)

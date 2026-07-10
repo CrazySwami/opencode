@@ -5,6 +5,7 @@ import { createMediaQuery } from "@solid-primitives/media"
 import { Tabs } from "@opencode-ai/ui/tabs"
 import { MenuV2 } from "@opencode-ai/ui/v2/menu-v2"
 import { IconButton } from "@opencode-ai/ui/icon-button"
+import { Button } from "@opencode-ai/ui/button"
 import { Icon } from "@opencode-ai/ui/icon"
 import { TooltipKeybind } from "@opencode-ai/ui/tooltip"
 import { ResizeHandle } from "@opencode-ai/ui/resize-handle"
@@ -58,6 +59,13 @@ const PANEL_OPEN_DESIGN_TAB = "panel://open-design" satisfies WorkspacePanelTabI
 const PANEL_MAC_VIEW_TAB = "panel://mac-view" satisfies WorkspacePanelTabID
 const PANEL_ROUTINES_TAB = "panel://routines" satisfies WorkspacePanelTabID
 const PANEL_ENVIRONMENT_TAB = "panel://environment" satisfies WorkspacePanelTabID
+const PANEL_MCP_REGISTRY_TAB = "panel://mcp-registry" satisfies WorkspacePanelTabID
+const PANEL_TOKEN_MAXING_TAB = "panel://token-maxing" satisfies WorkspacePanelTabID
+const PANEL_SKILLS_TAB = "panel://skills" satisfies WorkspacePanelTabID
+const PANEL_FLEET_TAB = "panel://fleet" satisfies WorkspacePanelTabID
+const PANEL_ENV_SECRETS_TAB = "panel://env-secrets" satisfies WorkspacePanelTabID
+const PANEL_AUTO_IMPROVE_TAB = "panel://auto-improve" satisfies WorkspacePanelTabID
+const PANEL_IMAGE_GEN_TAB = "panel://image-gen" satisfies WorkspacePanelTabID
 const PANEL_RESOURCES_TAB = "panel://resources" satisfies WorkspacePanelTabID
 const PANEL_ARTIFACTS_TAB = "panel://artifacts" satisfies WorkspacePanelTabID
 const PANEL_FILE_BROWSER_TAB = "panel://file-browser" satisfies WorkspacePanelTabID
@@ -1961,6 +1969,22 @@ function TabChrome(props: {
   )
 }
 
+// Keep-alive wrapper for the lightweight iframe tabs (OpenDesign, Preview).
+// Previously each tab body was gated by `<Show when={active}>`, so switching tabs
+// UNMOUNTED it — destroying the iframe and tearing down its streams, then fully
+// re-booting them on the next visit (the tab-switch lag). This mounts the subtree
+// while the tab is OPEN and keeps it alive across active/inactive switches: the
+// parent `<Tabs.Content forceMount>` stays in the DOM and the caller's inline
+// `display:none` (not Kobalte) hides it when it isn't the active tab, so the
+// loaded iframe/poll persists and re-showing is instant. It unmounts when the tab
+// is CLOSED (leaves the open set) — a closed tab's iframe/poll is torn down, not
+// left running forever. NOTE: only used for lightweight iframe tabs; heavy
+// live-stream tabs (Browser CDP, Mac View video) still unmount on switch so their
+// streams don't run while hidden.
+function KeepAlive(props: { open: boolean; children: JSX.Element }) {
+  return <Show when={props.open}>{props.children}</Show>
+}
+
 function OpenDesignTabContent(
   props: {
     bridgeState?: () => any
@@ -2229,6 +2253,10 @@ function MacViewTabContent() {
   const [bitrate, setBitrate] = createSignal(6000)
   const [transport, setTransport] = createSignal<"webrtc" | "video" | "mjpeg">("webrtc")
   const [transportTouched, setTransportTouched] = createSignal(false)
+  // Privacy gate: a live desktop stream can leak whatever is on screen (personal
+  // apps, notifications, other accounts) during a screen-share/shoulder-surf.
+  // Default HIDDEN — the user must explicitly reveal, and can re-hide anytime.
+  const [exposed, setExposed] = createSignal(false)
   const streamReconnectMs = 30_000
 
   const reconnect = setInterval(() => setStreamKey(Date.now()), streamReconnectMs)
@@ -2446,7 +2474,27 @@ function MacViewTabContent() {
           </div>
         }
       >
-        <div class="min-h-0 flex-1 overflow-auto bg-background-base">
+        <Show
+          when={exposed()}
+          fallback={
+            <div class="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+              <div class="text-13-medium text-text-base">Live desktop hidden</div>
+              <div class="max-w-sm text-12-regular text-text-weak">
+                Revealing streams your Mac screen into this panel — anything visible (notifications,
+                messages, other accounts) may be exposed if you're sharing or being watched.
+              </div>
+              <Button variant="secondary" onClick={() => setExposed(true)}>
+                Reveal live screen
+              </Button>
+            </div>
+          }
+        >
+          <div class="flex items-center justify-end px-2 pt-1">
+            <Button variant="ghost" onClick={() => setExposed(false)} aria-label="Hide live screen">
+              Hide screen
+            </Button>
+          </div>
+          <div class="min-h-0 flex-1 overflow-auto bg-background-base">
           <Switch>
             <Match when={transport() === "webrtc"}>
               <iframe
@@ -2490,7 +2538,8 @@ function MacViewTabContent() {
               />
             </Match>
           </Switch>
-        </div>
+          </div>
+        </Show>
       </Show>
     </TabChrome>
   )
@@ -3142,6 +3191,880 @@ function CodexResourcesSection() {
   )
 }
 
+// Skills tab fronts OpenDesign's skills store via the OD proxy. Install = POST
+// /api/skills/import ({name,description,body,triggers}); Delete = DELETE
+// /api/skills/:id (the daemon writes a shadow copy for built-ins).
+const SKILLS_OD = "/experimental/open-design/proxy/api/skills"
+function SkillsTabContent() {
+  const skills = createPolledJson<any>(() => "/experimental/skills", 30000)
+  const list = () => skills.data()?.skills ?? []
+  const bySource = createMemo(() => {
+    const groups: Record<string, any[]> = {}
+    for (const s of list()) (groups[s.source] ??= []).push(s)
+    return Object.entries(groups)
+  })
+  const [busy, setBusy] = createSignal<string | undefined>()
+  const [note, setNote] = createSignal<string | undefined>()
+  const [formOpen, setFormOpen] = createSignal(false)
+  const [form, setForm] = createStore({ name: "", description: "", body: "" })
+
+  const importSkill = async () => {
+    if (!form.name.trim() || !form.body.trim()) {
+      setNote("name and body are required")
+      return
+    }
+    setBusy("import")
+    setNote(undefined)
+    try {
+      const res = await fetch(`${SKILLS_OD}/import`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: form.name.trim(), description: form.description.trim() || undefined, body: form.body }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (res.ok && !body?.error) {
+        setNote(`Imported ${form.name.trim()}`)
+        setForm({ name: "", description: "", body: "" })
+        setFormOpen(false)
+        void skills.refresh()
+      } else {
+        setNote(body?.error?.message ?? `import failed (${res.status})`)
+      }
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(undefined)
+    }
+  }
+  const deleteSkill = async (s: any) => {
+    if (typeof window !== "undefined" && !window.confirm(`Delete skill "${s.name}"?`)) return
+    setBusy(s.id ?? s.name)
+    try {
+      const res = await fetch(`${SKILLS_OD}/${encodeURIComponent(s.id ?? s.name)}`, { method: "DELETE" })
+      setNote(res.ok ? `Deleted ${s.name}` : `delete failed (${res.status})`)
+      void skills.refresh()
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(undefined)
+    }
+  }
+
+  return (
+    <TabChrome
+      title="Skills"
+      iconTab={PANEL_SKILLS_TAB}
+      onRefresh={() => void skills.refresh()}
+      actions={<Button variant="secondary" onClick={() => setFormOpen((v) => !v)}>{formOpen() ? "Cancel" : "New skill"}</Button>}
+    >
+      <div class="flex min-h-0 flex-1 flex-col gap-3">
+        <Show when={skills.error()}>
+          {(error) => (
+            <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">{error()}</div>
+          )}
+        </Show>
+        <div class="grid gap-3 xl:grid-cols-3">
+          <EnvironmentSummaryCard label="Skills" value={String(list().length)} detail="Across all roots" tone="ready" />
+          <EnvironmentSummaryCard label="Sources" value={String(bySource().length)} detail="claude · codex · opencode · project" tone="ready" />
+          <EnvironmentSummaryCard label="Backend" value="OpenDesign" detail="import / delete via /api/skills" tone="ready" />
+        </div>
+
+        <Show when={formOpen()}>
+          <div class="flex flex-col gap-2 rounded-md border border-border-weaker-base bg-background-stronger p-3">
+            <input class="rounded-md border border-border-weaker-base bg-background-base px-2 py-1 text-12-regular text-text-strong" placeholder="skill name (kebab-case)" value={form.name} onInput={(e) => setForm("name", e.currentTarget.value)} />
+            <input class="rounded-md border border-border-weaker-base bg-background-base px-2 py-1 text-12-regular text-text-strong" placeholder="description" value={form.description} onInput={(e) => setForm("description", e.currentTarget.value)} />
+            <textarea class="min-h-24 rounded-md border border-border-weaker-base bg-background-base px-2 py-1 font-mono text-11-regular text-text-strong" placeholder="SKILL.md body (markdown)" value={form.body} onInput={(e) => setForm("body", e.currentTarget.value)} />
+            <div class="flex justify-end">
+              <Button variant="secondary" disabled={busy() !== undefined} onClick={() => void importSkill()}>{busy() === "import" ? "Importing…" : "Import skill"}</Button>
+            </div>
+          </div>
+        </Show>
+        <Show when={note()}>
+          <div class="rounded-md border border-border-weaker-base bg-background-stronger px-3 py-2 text-12-regular text-text-weak">{note()}</div>
+        </Show>
+
+        <div class="min-h-0 flex-1 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger" data-testid="skills-list">
+          <For each={bySource()}>
+            {([source, items]) => (
+              <div>
+                <div class="sticky top-0 bg-background-base px-3 py-1.5 text-10-medium uppercase tracking-wide text-text-weak">{source} · {items.length}</div>
+                <For each={items}>
+                  {(s: any) => (
+                    <div class="flex flex-col gap-0.5 border-b border-border-weaker-base px-3 py-2 last:border-b-0">
+                      <div class="flex items-center justify-between gap-3">
+                        <span class="min-w-0 truncate text-13-regular text-text-strong">{s.name}</span>
+                        <Show when={s.source === "user" || s.source === "project"}>
+                          <Button variant="ghost" disabled={busy() !== undefined} onClick={() => void deleteSkill(s)}>Delete</Button>
+                        </Show>
+                      </div>
+                      <span class="line-clamp-2 text-11-regular text-text-weak">{s.description || "No description"}</span>
+                    </div>
+                  )}
+                </For>
+              </div>
+            )}
+          </For>
+          <Show when={list().length === 0}>
+            <div class="p-4 text-13-regular text-text-weak">No skills found in the known roots.</div>
+          </Show>
+        </div>
+        <StatusRow label="Last checked" value={skills.data()?.generatedAt} />
+      </div>
+    </TabChrome>
+  )
+}
+
+function TokenMaxingTabContent() {
+  const usage = createPolledJson<any>(() => "/experimental/token-maxing/usage", 10000)
+  const snapshots = () => usage.data()?.snapshots ?? []
+  const online = () => usage.data()?.ok === true
+  const pct = (s: any) => (s?.limit ? Math.min(100, Math.round((Number(s.used) / Number(s.limit)) * 100)) : null)
+  const [switching, setSwitching] = createSignal<string | undefined>()
+  const [switchNote, setSwitchNote] = createSignal<string | undefined>()
+  const doSwitch = async (adapterId: string) => {
+    setSwitching(adapterId)
+    setSwitchNote(undefined)
+    try {
+      const res = await fetch("/experimental/token-maxing/switch", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ adapterId }),
+      })
+      const body = await res.json().catch(() => ({}))
+      setSwitchNote(
+        body?.ok
+          ? `Switched from ${adapterId}${body?.decision?.toAdapterId ? ` → ${body.decision.toAdapterId}` : ""}`
+          : body?.error ?? `Switch failed (${res.status})`,
+      )
+      void usage.refresh()
+    } catch (err) {
+      setSwitchNote(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSwitching(undefined)
+    }
+  }
+  return (
+    <TabChrome title="Token Maxing" iconTab={PANEL_TOKEN_MAXING_TAB} onRefresh={() => void usage.refresh()}>
+      <div class="flex min-h-0 flex-1 flex-col gap-3">
+        <Show when={!online()}>
+          <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-12-regular text-orange-100">
+            Token-maxing daemon offline ({usage.data()?.daemon ?? "127.0.0.1:8787"}). Start it locally or set OPENCODE_TOKEN_MAXING_URL.
+          </div>
+        </Show>
+        <div class="grid gap-3 xl:grid-cols-3">
+          <EnvironmentSummaryCard label="Accounts" value={String(snapshots().length)} detail="Tracked usage snapshots" tone={online() ? "ready" : "warn"} />
+          <EnvironmentSummaryCard label="Daemon" value={online() ? "online" : "offline"} detail={usage.data()?.daemon ?? "127.0.0.1:8787"} tone={online() ? "ready" : "blocked"} />
+          <EnvironmentSummaryCard label="Switching" value="operator-gated" detail="Subscription auto-rotation off by default" tone="warn" />
+        </div>
+        <div class="min-h-0 flex-1 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger" data-testid="token-maxing-list">
+          <For each={snapshots()}>
+            {(s: any) => (
+              <div class="flex flex-col gap-1 border-b border-border-weaker-base px-3 py-3 last:border-b-0">
+                <div class="flex items-center justify-between gap-3">
+                  <span class="min-w-0 truncate text-13-regular text-text-strong">{s.provider}<Show when={s.account}><span class="text-text-weak"> · {s.account}</span></Show></span>
+                  <div class="flex shrink-0 items-center gap-2">
+                    <span class="text-11-regular text-text-weak">{s.used ?? "?"}{s.limit ? ` / ${s.limit}` : ""} {s.unit ?? ""}</span>
+                    <Show when={s.adapterId ?? s.id}>
+                      <Button
+                        variant="ghost"
+                        disabled={switching() !== undefined}
+                        onClick={() => void doSwitch(s.adapterId ?? s.id)}
+                        aria-label={`Fail over from ${s.provider}`}
+                      >
+                        {switching() === (s.adapterId ?? s.id) ? "Switching…" : "Fail over"}
+                      </Button>
+                    </Show>
+                  </div>
+                </div>
+                <Show when={pct(s) !== null}>
+                  <div class="h-1.5 w-full overflow-hidden rounded bg-background-base">
+                    <div class="h-full rounded bg-[#f97316]" style={{ width: `${pct(s)}%` }} />
+                  </div>
+                </Show>
+                <Show when={s.source}><span class="text-10-regular text-text-weak">{s.source}{s.stale ? " · stale" : ""}</span></Show>
+              </div>
+            )}
+          </For>
+          <Show when={snapshots().length === 0}>
+            <div class="p-4 text-13-regular text-text-weak">No usage snapshots{online() ? "" : " (daemon offline)"}.</div>
+          </Show>
+        </div>
+        <Show when={switchNote()}>
+          <div class="rounded-md border border-border-weaker-base bg-background-stronger px-3 py-2 text-12-regular text-text-weak">
+            {switchNote()}
+          </div>
+        </Show>
+        <StatusRow label="Last checked" value={usage.data()?.generatedAt} />
+      </div>
+    </TabChrome>
+  )
+}
+
+function AgentFleetTabContent() {
+  const fleet = createPolledJson<any>(() => "/experimental/fleet/sessions", 10000)
+  const online = () => fleet.data()?.ok === true
+  const sessions = () => fleet.data()?.sessions ?? []
+  const byCli = createMemo(() => {
+    const groups: Record<string, any[]> = {}
+    for (const s of sessions()) (groups[s.cli ?? "unknown"] ??= []).push(s)
+    return Object.entries(groups)
+  })
+  const cliSummary = () => byCli().map(([cli, items]) => `${cli} ${items.length}`).join(" · ")
+
+  // Continue a session via the /continue SSE bridge. Spawning is gated at the
+  // daemon (FLEET_DRIVE_ENABLED); an error frame surfaces here if it's off.
+  const [continuing, setContinuing] = createSignal<string | undefined>()
+  const [prompt, setPrompt] = createSignal("")
+  const [streamLog, setStreamLog] = createSignal<any[]>([])
+  const [streamSession, setStreamSession] = createSignal<any>()
+  // A resumed session "answers" a question by resuming again with the answer as
+  // the prompt (resumeCommand(id, prompt) keeps the same session context). So a
+  // pending question = the last stream event is a question and we're idle.
+  const pendingQuestion = createMemo(() => {
+    if (continuing() !== undefined) return undefined
+    const last = streamLog()[streamLog().length - 1]
+    return last?.type === "question" ? (last.text ?? "the agent's question") : undefined
+  })
+  let abort: AbortController | undefined
+  onCleanup(() => abort?.abort())
+  const continueSession = async (s: any) => {
+    setStreamSession(s)
+    abort?.abort()
+    const key = `${s.cli}:${s.id}`
+    setContinuing(key)
+    setStreamLog([])
+    abort = new AbortController()
+    try {
+      const res = await fetch(`/experimental/fleet/continue/${encodeURIComponent(s.cli)}/${encodeURIComponent(s.id)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prompt: prompt().trim() || undefined }),
+        signal: abort.signal,
+      })
+      if (!res.body) {
+        setStreamLog((l) => [...l, { type: "error", text: "no stream body" }])
+        return
+      }
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ""
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const frames = buf.split("\n\n")
+        buf = frames.pop() ?? ""
+        for (const frame of frames) {
+          const dataLine = frame.split("\n").find((ln) => ln.startsWith("data:"))
+          if (!dataLine) continue
+          const raw = dataLine.slice(5).trim()
+          let ev: any
+          try {
+            ev = JSON.parse(raw)
+          } catch {
+            ev = { type: "message", text: raw }
+          }
+          setStreamLog((l) => [...l, ev].slice(-200))
+        }
+      }
+    } catch (err) {
+      if (!(err instanceof DOMException && err.name === "AbortError")) {
+        setStreamLog((l) => [...l, { type: "error", text: err instanceof Error ? err.message : String(err) }])
+      }
+    } finally {
+      setContinuing(undefined)
+      // Clear the shared prompt so an answer/prompt isn't silently re-sent on the
+      // next Continue (the input is reused across sessions).
+      setPrompt("")
+    }
+  }
+  return (
+    <TabChrome title="Agent Fleet" iconTab={PANEL_FLEET_TAB} onRefresh={() => void fleet.refresh()}>
+      <div class="flex min-h-0 flex-1 flex-col gap-3">
+        <Show when={!online()}>
+          <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-12-regular text-orange-100">
+            Fleet service offline ({fleet.data()?.fleet ?? "127.0.0.1:8788"}). Start it locally or set OPENCODE_FLEET_URL.
+          </div>
+        </Show>
+        <div class="grid gap-3 xl:grid-cols-3">
+          <EnvironmentSummaryCard label="Sessions" value={String(sessions().length)} detail="Across all CLIs" tone={online() ? "ready" : "warn"} />
+          <EnvironmentSummaryCard label="CLIs" value={String(byCli().length)} detail={cliSummary() || "No sessions"} tone="ready" />
+          <EnvironmentSummaryCard label="Daemon" value={online() ? "online" : "offline"} detail={fleet.data()?.fleet ?? "127.0.0.1:8788"} tone={online() ? "ready" : "blocked"} />
+        </div>
+        <div class="min-h-0 flex-1 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger" data-testid="fleet-list">
+          <For each={byCli()}>
+            {([cli, items]) => (
+              <div>
+                <div class="sticky top-0 bg-background-base px-3 py-1.5 text-10-medium uppercase tracking-wide text-text-weak">{cli} · {items.length}</div>
+                <For each={items}>
+                  {(s: any) => (
+                    <div class="flex flex-col gap-0.5 border-b border-border-weaker-base px-3 py-2 last:border-b-0">
+                      <div class="flex items-center justify-between gap-3">
+                        <span class="min-w-0 truncate text-13-regular text-text-strong">{s.title || s.id}</span>
+                        <div class="flex shrink-0 items-center gap-2">
+                          <span class="text-11-regular text-text-weak">{s.model ?? "unknown model"}</span>
+                          <Show when={s.id && s.cli}>
+                            <Button
+                              variant="ghost"
+                              disabled={continuing() !== undefined}
+                              onClick={() => void continueSession(s)}
+                              aria-label={`Continue ${s.cli} session`}
+                            >
+                              {continuing() === `${s.cli}:${s.id}` ? "Streaming…" : "Continue"}
+                            </Button>
+                          </Show>
+                        </div>
+                      </div>
+                      <div class="flex items-center justify-between gap-3 text-11-regular text-text-weak">
+                        <span class="truncate">{s.lastActivityAt ?? s.startedAt ?? "no activity recorded"}</span>
+                        <span class="shrink-0">{s.messageCount ?? 0} msgs</span>
+                      </div>
+                    </div>
+                  )}
+                </For>
+              </div>
+            )}
+          </For>
+          <Show when={sessions().length === 0}>
+            <div class="p-4 text-13-regular text-text-weak">No fleet sessions{online() ? "" : " (fleet service offline)"}.</div>
+          </Show>
+        </div>
+        <Show when={continuing() !== undefined || streamLog().length > 0}>
+          <Show when={pendingQuestion()}>
+            <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-11-regular text-orange-100">
+              ❓ Awaiting your answer{streamSession() ? ` for ${streamSession().cli} session` : ""}: <span class="text-orange-50">{pendingQuestion()}</span>
+            </div>
+          </Show>
+          <div class="flex items-center gap-2">
+            <input
+              class="min-w-0 flex-1 rounded-md border border-border-weaker-base bg-background-stronger px-2 py-1 text-12-regular text-text-strong"
+              placeholder={pendingQuestion() ? "Type your answer and press Answer…" : "Optional prompt to send on continue…"}
+              value={prompt()}
+              onInput={(e) => setPrompt(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && pendingQuestion() && streamSession() && prompt().trim()) void continueSession(streamSession())
+              }}
+            />
+            <Show when={pendingQuestion() && streamSession()}>
+              <Button variant="secondary" disabled={!prompt().trim()} onClick={() => void continueSession(streamSession())} aria-label="Answer the question">Answer</Button>
+            </Show>
+            <Show when={continuing() !== undefined}>
+              <Button variant="ghost" onClick={() => abort?.abort()} aria-label="Stop stream">Stop</Button>
+            </Show>
+          </div>
+          <div class="max-h-48 min-h-0 overflow-auto rounded-md border border-border-weaker-base bg-background-base p-2 text-10-regular text-text-weak">
+            <For each={streamLog()}>
+              {(ev: any) => {
+                const type = ev?.type ?? "message"
+                const body = ev?.text ?? (ev?.data !== undefined ? JSON.stringify(ev.data) : "")
+                const isQ = type === "question"
+                const isErr = type === "error"
+                return (
+                  <div
+                    class="flex gap-2 border-b border-border-weaker-base/40 py-0.5 last:border-b-0"
+                    classList={{ "text-orange-200": isQ, "text-red-300": isErr }}
+                  >
+                    <span
+                      class="shrink-0 rounded bg-background-stronger px-1 text-9-medium uppercase tracking-wide"
+                      classList={{ "bg-orange-500/20 text-orange-100": isQ }}
+                    >
+                      {type === "tool_call" || type === "tool_result" ? (ev?.name ?? type) : type}
+                    </span>
+                    <span class="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono">
+                      {isQ ? "❓ " : ""}
+                      {body || (ev?.role ? `(${ev.role})` : "")}
+                    </span>
+                  </div>
+                )
+              }}
+            </For>
+            <Show when={streamLog().length === 0 && continuing() !== undefined}>
+              <div>waiting for stream…</div>
+            </Show>
+          </div>
+        </Show>
+        <StatusRow label="Last checked" value={fleet.data()?.generatedAt} />
+      </div>
+    </TabChrome>
+  )
+}
+
+function AutoImproveTabContent() {
+  const status = createPolledJson<any>(() => "/experimental/auto-improve/status", 15000)
+  const online = () => status.data()?.ok === true
+  const globalEnabled = () => status.data()?.enabled === true
+  const projects = () => status.data()?.projects ?? []
+  return (
+    <TabChrome title="Auto-Improve" iconTab={PANEL_AUTO_IMPROVE_TAB} onRefresh={() => void status.refresh()}>
+      <div class="flex min-h-0 flex-1 flex-col gap-3">
+        <Show when={!online()}>
+          <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-12-regular text-orange-100">
+            Auto-improve daemon offline ({status.data()?.daemon ?? "127.0.0.1:8789"}). Start it locally or set OPENCODE_AUTO_IMPROVE_URL.
+          </div>
+        </Show>
+        <div class="grid gap-3 xl:grid-cols-3">
+          <EnvironmentSummaryCard label="Projects" value={String(projects().length)} detail="Designated improve targets" tone={online() ? "ready" : "warn"} />
+          <EnvironmentSummaryCard label="Global gate" value={globalEnabled() ? "ENABLED" : "OFF"} detail="AUTO_IMPROVE_ENABLED" tone={globalEnabled() ? "warn" : "ready"} />
+          <EnvironmentSummaryCard label="Daemon" value={online() ? "online" : "offline"} detail={status.data()?.daemon ?? "127.0.0.1:8789"} tone={online() ? "ready" : "blocked"} />
+        </div>
+        <div class="min-h-0 flex-1 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger">
+          <For each={projects()}>
+            {(p: any) => (
+              <div class="flex flex-col gap-1 border-b border-border-weaker-base px-3 py-3 last:border-b-0">
+                <div class="flex items-center justify-between gap-3">
+                  <span class="min-w-0 truncate text-13-regular text-text-strong">{p.name ?? p.id}</span>
+                  <span class="shrink-0 text-11-regular" classList={{ "text-green-300": p.enabled, "text-text-weak": !p.enabled }}>
+                    {p.enabled ? "enabled" : "disabled"}
+                  </span>
+                </div>
+                <Show when={p.vision}><span class="text-11-regular text-text-weak line-clamp-2">{p.vision}</span></Show>
+                <span class="text-10-regular text-text-weak">
+                  runs: {p.runCount ?? 0}{p.lastResult ? ` · last: ${p.lastResult}` : ""}{p.requireReview ? " · review-required" : ""}
+                </span>
+              </div>
+            )}
+          </For>
+          <Show when={projects().length === 0}>
+            <div class="p-4 text-13-regular text-text-weak">No designated projects{online() ? "" : " (daemon offline)"}.</div>
+          </Show>
+        </div>
+        <StatusRow label="Last checked" value={status.data()?.generatedAt} />
+      </div>
+    </TabChrome>
+  )
+}
+
+function ImageGenTabContent() {
+  const providers = createPolledJson<any>(() => "/experimental/image/providers", 30000)
+  const [provider, setProvider] = createSignal<string>("")
+  const [imgPrompt, setImgPrompt] = createSignal("")
+  const [size, setSize] = createSignal("768x768")
+  const [busy, setBusy] = createSignal(false)
+  const [result, setResult] = createSignal<any>()
+  const [error, setError] = createSignal<string | undefined>()
+  const providerList = createMemo<Array<{ id: string; reachable: boolean }>>(() => {
+    const data = providers.data()
+    if (!data) return []
+    return Object.values(data).filter((v: any) => v && typeof v === "object" && "id" in v) as any
+  })
+  const generate = async () => {
+    if (!imgPrompt().trim()) {
+      setError("prompt is required")
+      return
+    }
+    setBusy(true)
+    setError(undefined)
+    setResult(undefined)
+    try {
+      const res = await fetch("/experimental/image/generate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prompt: imgPrompt().trim(), provider: provider() || undefined, size: size() }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (body?.ok) setResult(body)
+      else setError(body?.error ?? `generation failed (${res.status})`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const imageSrc = () => {
+    const src = result()?.dataUri ?? result()?.url
+    if (typeof src !== "string") return undefined
+    // Scheme allowlist: only render data:image or http(s) sources.
+    return src.startsWith("data:image/") || /^https?:\/\//i.test(src) ? src : undefined
+  }
+  return (
+    <TabChrome title="Image" iconTab={PANEL_IMAGE_GEN_TAB} onRefresh={() => void providers.refresh()}>
+      <div class="flex min-h-0 flex-1 flex-col gap-3">
+        <div class="grid gap-3 xl:grid-cols-3">
+          <For each={providerList()}>
+            {(p: any) => (
+              <EnvironmentSummaryCard label={p.id} value={p.reachable ? "ready" : "off"} detail={p.reachable ? "reachable" : "not configured"} tone={p.reachable ? "ready" : "warn"} />
+            )}
+          </For>
+        </div>
+        <div class="flex flex-col gap-2 rounded-md border border-border-weaker-base bg-background-stronger p-3">
+          <textarea
+            class="min-h-16 rounded-md border border-border-weaker-base bg-background-base px-2 py-1 text-12-regular text-text-strong"
+            placeholder="Describe the image…"
+            value={imgPrompt()}
+            onInput={(e) => setImgPrompt(e.currentTarget.value)}
+          />
+          <div class="flex items-center gap-2">
+            <select class="rounded-md border border-border-weaker-base bg-background-base px-2 py-1 text-12-regular text-text-strong" value={provider()} onChange={(e) => setProvider(e.currentTarget.value)}>
+              <option value="">auto</option>
+              <For each={providerList()}>{(p: any) => <option value={p.id}>{p.id}</option>}</For>
+            </select>
+            <select class="rounded-md border border-border-weaker-base bg-background-base px-2 py-1 text-12-regular text-text-strong" value={size()} onChange={(e) => setSize(e.currentTarget.value)}>
+              <For each={["512x512", "768x768", "1024x1024"]}>{(sz) => <option value={sz}>{sz}</option>}</For>
+            </select>
+            <Button variant="secondary" disabled={busy() || !imgPrompt().trim()} onClick={() => void generate()}>{busy() ? "Generating…" : "Generate"}</Button>
+          </div>
+        </div>
+        <Show when={error()}>
+          <div class="rounded-md border border-red-500/20 bg-red-500/10 px-3 py-2 text-12-regular text-red-100">{error()}</div>
+        </Show>
+        <div class="min-h-0 flex-1 overflow-auto rounded-md border border-border-weaker-base bg-background-base">
+          <Show when={imageSrc()} fallback={<div class="flex h-full min-h-32 items-center justify-center p-4 text-12-regular text-text-weak">{busy() ? "Generating…" : "No image yet."}</div>}>
+            <img src={imageSrc()} alt={imgPrompt()} class="block h-auto max-h-full w-full object-contain" />
+          </Show>
+        </div>
+        <Show when={result()?.provider}>
+          <StatusRow label="Provider" value={result()?.provider} />
+        </Show>
+      </div>
+    </TabChrome>
+  )
+}
+
+// EnvSecretsTabContent renders metadata ONLY (name / scope / present / lastFour /
+// updatedAt) from the server-side encrypted secrets store. It must never render
+// or retain a secret value: the write form's value input is the only place a
+// value ever lives client-side, and it is cleared immediately after submit
+// (success or failure) and never included in any other state, log, or memo.
+function EnvSecretsTabContent() {
+  const secrets = createPolledJson<any>(() => "/experimental/env/secrets", 15000)
+  const enabled = () => secrets.data()?.enabled === true
+  const list = () => secrets.data()?.secrets ?? []
+  const byScope = createMemo(() => {
+    const groups: Record<string, any[]> = {}
+    for (const s of list()) (groups[s.scope ?? "default"] ??= []).push(s)
+    return Object.entries(groups)
+  })
+
+  const [lastChecked, setLastChecked] = createSignal<string | undefined>()
+  createEffect(() => {
+    if (secrets.data()) setLastChecked(new Date().toLocaleTimeString())
+  })
+
+  const [name, setName] = createSignal("")
+  const [value, setValue] = createSignal("")
+  const [scope, setScope] = createSignal("")
+  const [formPending, setFormPending] = createSignal(false)
+  const [formError, setFormError] = createSignal<string | undefined>()
+  const [formNote, setFormNote] = createSignal<string | undefined>()
+  const [storeDisabled, setStoreDisabled] = createSignal(false)
+
+  const maskLastFour = (s: any) => (s.lastFour ? `••••${s.lastFour}` : "••••")
+  const formatUpdatedAt = (ms: unknown) => (typeof ms === "number" ? new Date(ms).toLocaleString() : "unknown")
+
+  const submitSecret = async (event: Event) => {
+    event.preventDefault()
+    const trimmedName = name().trim()
+    const currentValue = value()
+    if (!trimmedName || !currentValue) return
+    setFormPending(true)
+    setFormError(undefined)
+    setFormNote(undefined)
+    try {
+      const payload: Record<string, string> = { name: trimmedName, value: currentValue }
+      const trimmedScope = scope().trim()
+      if (trimmedScope) payload.scope = trimmedScope
+      const response = await fetch("/experimental/env/secrets", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      const body = await response.json().catch(() => ({}))
+      if (response.status === 403) {
+        setStoreDisabled(true)
+        setFormError(body?.error ?? "Secrets store is disabled (set OPENCODE_SECRETS_ENABLED=1).")
+        return
+      }
+      if (!response.ok || body?.ok === false) throw new Error(body?.error ?? `Set secret failed (${response.status})`)
+      setStoreDisabled(false)
+      setFormNote(`Saved "${trimmedName}"`)
+      setName("")
+      setScope("")
+      void secrets.refresh()
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : String(error))
+    } finally {
+      // Never retain the secret value beyond this transient submit.
+      setValue("")
+      setFormPending(false)
+    }
+  }
+
+  const deleteSecret = async (s: any) => {
+    if (typeof window !== "undefined" && !window.confirm(`Delete secret "${s.name}"${s.scope ? ` (scope: ${s.scope})` : ""}?`)) return
+    setFormError(undefined)
+    setFormNote(undefined)
+    try {
+      const qs = s.scope ? `?scope=${encodeURIComponent(s.scope)}` : ""
+      const response = await fetch(`/experimental/env/secrets/${encodeURIComponent(s.name)}${qs}`, { method: "DELETE" })
+      const body = await response.json().catch(() => ({}))
+      if (response.status === 403) {
+        setStoreDisabled(true)
+        setFormError(body?.error ?? "Secrets store is disabled (set OPENCODE_SECRETS_ENABLED=1).")
+        return
+      }
+      if (!response.ok || body?.ok === false) throw new Error(body?.error ?? `Delete failed (${response.status})`)
+      setStoreDisabled(false)
+      setFormNote(`Deleted "${s.name}"`)
+      void secrets.refresh()
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  return (
+    <TabChrome title="Secrets" iconTab={PANEL_ENV_SECRETS_TAB} onRefresh={() => void secrets.refresh()}>
+      <div class="flex min-h-0 flex-1 flex-col gap-3">
+        <Show when={secrets.error()}>
+          {(error) => (
+            <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">{error()}</div>
+          )}
+        </Show>
+        <Show when={storeDisabled() || (secrets.data() !== undefined && !enabled())}>
+          <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-12-regular text-orange-100">
+            Store disabled -- set OPENCODE_SECRETS_ENABLED=1 on the server to add or delete secrets. Existing metadata below can still be viewed.
+          </div>
+        </Show>
+        <div class="grid gap-3 xl:grid-cols-3">
+          <EnvironmentSummaryCard label="Secrets" value={String(list().length)} detail="Tracked names (metadata only)" tone="ready" />
+          <EnvironmentSummaryCard
+            label="Scopes"
+            value={String(byScope().length)}
+            detail={byScope().map(([s, items]) => `${s} ${items.length}`).join(" · ") || "None"}
+            tone="ready"
+          />
+          <EnvironmentSummaryCard label="Store" value={enabled() ? "enabled" : "disabled"} detail="Mutations require OPENCODE_SECRETS_ENABLED" tone={enabled() ? "ready" : "warn"} />
+        </div>
+
+        <form class="flex flex-col gap-2 rounded-md border border-border-weaker-base bg-background-stronger p-3" onSubmit={submitSecret}>
+          <div class="text-13-medium text-text-strong">Add secret</div>
+          <div class="grid gap-2 sm:grid-cols-3">
+            <input
+              class="h-9 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
+              placeholder="NAME"
+              value={name()}
+              onInput={(event) => setName(event.currentTarget.value)}
+              required
+            />
+            <input
+              class="h-9 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
+              type="password"
+              autocomplete="off"
+              placeholder="value"
+              value={value()}
+              onInput={(event) => setValue(event.currentTarget.value)}
+              required
+            />
+            <input
+              class="h-9 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
+              placeholder="scope (optional)"
+              value={scope()}
+              onInput={(event) => setScope(event.currentTarget.value)}
+            />
+          </div>
+          <div class="flex items-center justify-between gap-2">
+            <div class="min-w-0 truncate text-11-regular">
+              <Show when={formError()}>
+                <span class="text-orange-300">{formError()}</span>
+              </Show>
+              <Show when={!formError() && formNote()}>
+                <span class="text-text-weak">{formNote()}</span>
+              </Show>
+            </div>
+            <button
+              type="submit"
+              class="shrink-0 rounded border border-border-weaker-base bg-background-base px-3 py-1.5 text-12-medium text-text-strong disabled:opacity-50"
+              disabled={formPending() || !name().trim() || !value()}
+            >
+              {formPending() ? "Saving…" : "Save secret"}
+            </button>
+          </div>
+        </form>
+
+        <div class="min-h-0 flex-1 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger" data-testid="env-secrets-list">
+          <For each={byScope()}>
+            {([scopeName, items]) => (
+              <div>
+                <div class="sticky top-0 bg-background-base px-3 py-1.5 text-10-medium uppercase tracking-wide text-text-weak">{scopeName} · {items.length}</div>
+                <For each={items}>
+                  {(s: any) => (
+                    <div class="flex items-center justify-between gap-3 border-b border-border-weaker-base px-3 py-2 last:border-b-0">
+                      <div class="flex min-w-0 flex-col gap-0.5">
+                        <span class="truncate text-13-regular text-text-strong">{s.name}</span>
+                        <span class="text-11-regular text-text-weak">{maskLastFour(s)} · updated {formatUpdatedAt(s.updatedAt)}</span>
+                      </div>
+                      <button
+                        type="button"
+                        class="shrink-0 rounded border border-border-weaker-base px-2 py-1 text-11-regular text-text-weak hover:text-text-strong"
+                        onClick={() => void deleteSecret(s)}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  )}
+                </For>
+              </div>
+            )}
+          </For>
+          <Show when={list().length === 0}>
+            <div class="p-4 text-13-regular text-text-weak">No secrets stored.</div>
+          </Show>
+        </div>
+        <StatusRow label="Last checked" value={lastChecked()} />
+      </div>
+    </TabChrome>
+  )
+}
+
+// The MCP Registry tab fronts OpenDesign's MCP store via the OD proxy. OD is the
+// source of truth: GET/PUT /api/mcp/servers (PUT replaces the whole list) and
+// POST /api/mcp/oauth/start ({serverId} -> {authorizeUrl}) drives the daemon-owned
+// OAuth dance. Add = append a template-derived config + PUT; Connect = start OAuth.
+const MCP_OD = "/experimental/open-design/proxy/api/mcp"
+function MCPRegistryTabContent() {
+  const store = createPolledJson<any>(() => `${MCP_OD}/servers`, 20000)
+  const servers = () => store.data()?.servers ?? []
+  const templates = () => store.data()?.templates ?? []
+  const [busy, setBusy] = createSignal<string | undefined>()
+  const [note, setNote] = createSignal<string | undefined>()
+  const configuredIds = createMemo(() => new Set(servers().map((s: any) => s.id)))
+
+  const putServers = async (next: any[]) => {
+    const res = await fetch(`${MCP_OD}/servers`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ servers: next }),
+    })
+    if (!res.ok) throw new Error(`save failed (${res.status})`)
+    void store.refresh()
+  }
+  const addTemplate = async (t: any) => {
+    setBusy(t.id)
+    setNote(undefined)
+    try {
+      const cfg = {
+        id: t.id,
+        label: t.label ?? t.id,
+        templateId: t.id,
+        transport: t.transport ?? "http",
+        enabled: true,
+        authMode: t.authMode,
+        url: t.url,
+      }
+      await putServers([...servers().filter((s: any) => s.id !== t.id), cfg])
+      setNote(`Added ${cfg.label}${t.authMode === "oauth" ? " — click Connect to authorize" : ""}`)
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(undefined)
+    }
+  }
+  const removeServer = async (s: any) => {
+    setBusy(s.id)
+    try {
+      await putServers(servers().filter((x: any) => x.id !== s.id))
+      setNote(`Removed ${s.label ?? s.id}`)
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(undefined)
+    }
+  }
+  const connect = async (s: any) => {
+    setBusy(s.id)
+    setNote(undefined)
+    try {
+      const res = await fetch(`${MCP_OD}/oauth/start`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ serverId: s.id }),
+      })
+      const body = await res.json().catch(() => ({}))
+      // Only ever navigate to an http(s) URL — never a javascript:/data: scheme,
+      // even from the (trusted, local) daemon, since window.open executes them.
+      if (res.ok && typeof body?.authorizeUrl === "string" && /^https?:\/\//i.test(body.authorizeUrl)) {
+        window.open(body.authorizeUrl, "_blank", "noopener,noreferrer")
+        setNote(`Opened OAuth for ${s.label ?? s.id} — complete it in the new tab.`)
+      } else if (res.ok && body?.authorizeUrl) {
+        setNote("Refused to open a non-http(s) OAuth URL.")
+      } else {
+        setNote(body?.error ?? `connect failed (${res.status})`)
+      }
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(undefined)
+    }
+  }
+
+  return (
+    <TabChrome title="MCP Registry" iconTab={PANEL_MCP_REGISTRY_TAB} onRefresh={() => void store.refresh()}>
+      <div class="flex min-h-0 flex-1 flex-col gap-3">
+        <Show when={store.data() && store.data()?.servers === undefined}>
+          <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-12-regular text-orange-100">
+            OpenDesign daemon offline — MCP servers are managed there (127.0.0.1:7456).
+          </div>
+        </Show>
+        <div class="grid gap-3 xl:grid-cols-3">
+          <EnvironmentSummaryCard label="Configured" value={String(servers().length)} detail="Servers in OpenDesign" tone="ready" />
+          <EnvironmentSummaryCard label="Catalog" value={String(templates().length)} detail="Templates available" tone="ready" />
+          <EnvironmentSummaryCard label="Backend" value="OpenDesign" detail="/api/mcp/servers (fanned to all CLIs)" tone="ready" />
+        </div>
+
+        <Show when={note()}>
+          <div class="rounded-md border border-border-weaker-base bg-background-stronger px-3 py-2 text-12-regular text-text-weak">{note()}</div>
+        </Show>
+
+        <div class="min-h-0 flex-1 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger" data-testid="mcp-registry-list">
+          <Show when={servers().length > 0}>
+            <div class="sticky top-0 bg-background-base px-3 py-1.5 text-10-medium uppercase tracking-wide text-text-weak">Configured</div>
+            <For each={servers()}>
+              {(s: any) => (
+                <div class="flex flex-col gap-1 border-b border-border-weaker-base px-3 py-2 last:border-b-0">
+                  <div class="flex items-center justify-between gap-3">
+                    <span class="min-w-0 truncate text-13-regular text-text-strong">{s.label ?? s.id}</span>
+                    <div class="flex shrink-0 items-center gap-2">
+                      <span class="rounded bg-background-base px-2 py-0.5 text-10-medium uppercase tracking-wide" classList={{ "text-green-300": s.enabled, "text-text-weak": !s.enabled }}>{s.enabled ? "enabled" : "off"}</span>
+                      <Show when={s.authMode === "oauth"}>
+                        <Button variant="ghost" disabled={busy() !== undefined} onClick={() => void connect(s)}>{busy() === s.id ? "…" : "Connect"}</Button>
+                      </Show>
+                      <Button variant="ghost" disabled={busy() !== undefined} onClick={() => void removeServer(s)}>Remove</Button>
+                    </div>
+                  </div>
+                  <Show when={s.url}><code class="truncate rounded bg-background-base px-2 py-1 font-mono text-11-regular text-text-strong">{s.url}</code></Show>
+                </div>
+              )}
+            </For>
+          </Show>
+          <div class="sticky top-0 bg-background-base px-3 py-1.5 text-10-medium uppercase tracking-wide text-text-weak">Catalog</div>
+          <For each={templates()}>
+            {(t: any) => (
+              <div class="flex flex-col gap-1 border-b border-border-weaker-base px-3 py-3 last:border-b-0">
+                <div class="flex items-center justify-between gap-3">
+                  <span class="min-w-0 truncate text-13-regular text-text-strong">{t.label ?? t.id}</span>
+                  <div class="flex shrink-0 items-center gap-2">
+                    <span class="rounded bg-background-base px-2 py-0.5 text-10-medium uppercase tracking-wide text-text-weak">{t.transport}</span>
+                    <Button variant="ghost" disabled={busy() !== undefined || configuredIds().has(t.id)} onClick={() => void addTemplate(t)}>
+                      {configuredIds().has(t.id) ? "Added" : busy() === t.id ? "Adding…" : "Add"}
+                    </Button>
+                  </div>
+                </div>
+                <div class="text-11-regular text-text-weak line-clamp-2">{t.description}</div>
+                <Show when={t.homepage}>
+                  <a href={t.homepage} target="_blank" rel="noreferrer" class="text-11-regular text-[#f97316] hover:underline">{t.homepage}</a>
+                </Show>
+              </div>
+            )}
+          </For>
+          <Show when={servers().length === 0 && templates().length === 0}>
+            <div class="p-4 text-13-regular text-text-weak">No servers or templates (OpenDesign offline?).</div>
+          </Show>
+        </div>
+        <StatusRow label="Backend" value={`${MCP_OD}/servers`} />
+      </div>
+    </TabChrome>
+  )
+}
+
 function RoutinesTabContent() {
   const jobs = createPolledJson<any>(() => "/experimental/routines/jobs", 10000)
   const [selectedID, setSelectedID] = createSignal<string | undefined>()
@@ -3169,8 +4092,12 @@ function RoutinesTabContent() {
   const [actionNote, setActionNote] = createSignal<string | undefined>()
   const [formOpen, setFormOpen] = createSignal(false)
   const [formMode, setFormMode] = createSignal<"create" | "edit">("create")
-  const emptyForm = { name: "", schedule: "manual", command: "", description: "" }
+  const emptyForm = { name: "", schedule: "manual", command: "", description: "", host: "local", icon: "" }
   const [form, setForm] = createStore({ ...emptyForm })
+  const hosts = createMemo<Array<{ id: string; label: string; remote?: boolean }>>(
+    () => jobs.data()?.status?.hosts ?? [{ id: "local", label: "This machine", remote: false }],
+  )
+  const hostLabel = (id?: string) => hosts().find((h) => h.id === (id ?? "local"))?.label ?? id ?? "local"
 
   const routineAction = async (label: string, fn: () => Promise<Response>, successNote: string) => {
     setActionPending(label)
@@ -3203,11 +4130,20 @@ function RoutinesTabContent() {
       schedule: routine.schedule ?? "manual",
       command: routine.command ?? "",
       description: routine.description ?? "",
+      host: routine.host ?? "local",
+      icon: routine.icon ?? "",
     })
     setFormOpen(true)
   }
   const submitForm = async () => {
-    const payload = { name: form.name, schedule: form.schedule, command: form.command, description: form.description }
+    const payload = {
+      name: form.name,
+      schedule: form.schedule,
+      command: form.command,
+      description: form.description,
+      host: form.host,
+      icon: form.icon,
+    }
     if (formMode() === "create") {
       const body = await routineAction("create", () =>
         fetch("/experimental/routines/jobs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) }),
@@ -3318,6 +4254,20 @@ function RoutinesTabContent() {
             </div>
             <input class="mt-2 h-8 w-full rounded border border-border-weaker-base bg-background-stronger px-2 font-mono text-11-regular text-text-strong outline-none" data-testid="routine-form-command" placeholder="Command" value={form.command} onInput={(e) => setForm("command", e.currentTarget.value)} />
             <input class="mt-2 h-8 w-full rounded border border-border-weaker-base bg-background-stronger px-2 text-12-regular text-text-strong outline-none" data-testid="routine-form-description" placeholder="Description (optional)" value={form.description} onInput={(e) => setForm("description", e.currentTarget.value)} />
+            <div class="mt-2 grid gap-2 sm:grid-cols-2">
+              <label class="flex flex-col gap-1 text-11-regular text-text-weak">
+                Host
+                <select class="h-8 rounded border border-border-weaker-base bg-background-stronger px-2 text-12-regular text-text-strong outline-none" data-testid="routine-form-host" value={form.host} onChange={(e) => setForm("host", e.currentTarget.value)}>
+                  <For each={hosts()}>
+                    {(h) => <option value={h.id}>{h.label}{h.remote ? " (remote)" : ""}</option>}
+                  </For>
+                </select>
+              </label>
+              <label class="flex flex-col gap-1 text-11-regular text-text-weak">
+                Icon (emoji / name, optional)
+                <input class="h-8 rounded border border-border-weaker-base bg-background-stronger px-2 text-12-regular text-text-strong outline-none" data-testid="routine-form-icon" placeholder="e.g. 🩺 or health" value={form.icon} onInput={(e) => setForm("icon", e.currentTarget.value)} />
+              </label>
+            </div>
             <div class="mt-2 flex items-center gap-2">
               <button type="button" class="rounded border border-[#f97316]/40 bg-[#f97316]/10 px-3 py-1 text-12-regular text-text-strong hover:bg-[#f97316]/20 disabled:opacity-50" data-testid="routine-form-save" disabled={!form.name.trim() || !!actionPending()} onClick={() => void submitForm()}>
                 {actionPending() === "create" || actionPending() === "edit" ? "Saving..." : formMode() === "create" ? "Create draft" : "Save changes"}
@@ -3338,7 +4288,10 @@ function RoutinesTabContent() {
                   onClick={() => setSelectedID(routine.id)}
                 >
                   <div class="flex items-center justify-between gap-3">
-                    <span class="min-w-0 truncate text-13-regular text-text-strong" data-testid="routine-row-name">{routine.name}</span>
+                    <span class="flex min-w-0 items-center gap-1.5">
+                      <Show when={routine.icon}><span class="shrink-0 text-13-regular" data-testid="routine-row-icon">{routine.icon}</span></Show>
+                      <span class="min-w-0 truncate text-13-regular text-text-strong" data-testid="routine-row-name">{routine.name}</span>
+                    </span>
                     <span
                       class="shrink-0 rounded px-2 py-0.5 text-10-medium uppercase tracking-wide"
                       classList={{ "bg-green-500/15 text-green-200": routine.enabled, "bg-background-base text-text-weak": !routine.enabled }}
@@ -3346,7 +4299,10 @@ function RoutinesTabContent() {
                       {routine.enabled ? "enabled" : "off"}
                     </span>
                   </div>
-                  <div class="truncate text-11-regular text-text-weak">{routine.schedule ?? "No schedule"}</div>
+                  <div class="flex items-center gap-2 truncate text-11-regular text-text-weak">
+                    <span class="truncate">{routine.schedule ?? "No schedule"}</span>
+                    <span class="shrink-0 rounded bg-background-base px-1.5 py-0.5 text-10-regular" data-testid="routine-row-host">{hostLabel(routine.host)}</span>
+                  </div>
                   <div class="flex items-center gap-2 text-10-regular text-text-weak">
                     <span>last: {routine.lastStatus ?? "never"}</span>
                     <Show when={routine.nextRunAt}><span>· next: {formatShortDate(routine.nextRunAt)}</span></Show>
@@ -3368,7 +4324,10 @@ function RoutinesTabContent() {
                 <div class="flex flex-col gap-3">
                   <div class="flex items-start justify-between gap-3">
                     <div class="min-w-0">
-                      <div class="truncate text-14-medium text-text-strong">{routine().name}</div>
+                      <div class="flex items-center gap-2 truncate text-14-medium text-text-strong">
+                        <Show when={routine().icon}><span class="shrink-0" data-testid="routine-detail-icon">{routine().icon}</span></Show>
+                        <span class="truncate">{routine().name}</span>
+                      </div>
                       <div class="mt-1 text-12-regular text-text-weak">{routine().description ?? "No description"}</div>
                     </div>
                     <EnvironmentPill
@@ -3379,6 +4338,7 @@ function RoutinesTabContent() {
 
                   <div class="grid gap-2 sm:grid-cols-2">
                     <EnvironmentInfoRow label="Schedule" value={routine().schedule} />
+                    <EnvironmentInfoRow label="Host" value={hostLabel(routine().host)} />
                     <EnvironmentInfoRow label="Last status" value={routine().lastStatus ?? "never"} />
                     <EnvironmentInfoRow label="Last run" value={routine().lastRunAt} />
                     <EnvironmentInfoRow label="Next run" value={routine().nextRunAt} />
@@ -5339,11 +6299,18 @@ function FilePreview(props: { file: any; showHeader?: boolean }) {
             <iframe src={url()} title={file().name} class="h-full min-h-96 w-full border-0" />
           </Match>
           <Match when={file().kind === "html"}>
+            {/*
+             * SECURITY: previews ARBITRARY local/downloaded/scraped HTML. Never
+             * grant allow-same-origin here — combined with allow-scripts it lets
+             * framed JS run in the app's own origin and call /experimental/env/secrets
+             * (same-origin XSS → secret exfiltration). Without it the content is an
+             * opaque origin: scripts still run but can't touch our origin/storage/APIs.
+             */}
             <iframe
               src={url()}
               title={file().name}
               class="h-full min-h-96 w-full border-0 bg-white"
-              sandbox="allow-scripts allow-forms allow-same-origin"
+              sandbox="allow-scripts allow-forms"
             />
           </Match>
           <Match when={file().kind === "json" || file().kind === "text"}>
@@ -5863,15 +6830,10 @@ export function SessionSidePanel(props: {
     }
   }
 
-  createEffect(() => {
-    if (typeof window === "undefined") return
-    const state = openDesignBridgeState()
-    const target = window as Window & {
-      __opencodeOpenDesignBridgeState?: unknown
-    }
-    target.__opencodeOpenDesignBridgeState = state
-    window.dispatchEvent(new CustomEvent("opencode:open-design-bridge-state", { detail: state }))
-  })
+  // The in-chat Open Design bridge was removed (flaky container opencode-cli route):
+  // we no longer broadcast bridge state to the composer, so the Design-Mode strip +
+  // mirror never activate. The OpenDesign TAB keeps its own local bridge state. OD is
+  // now driven from the main chat via the OD MCP daemon instead.
 
   createEffect(() => {
     if (typeof window === "undefined") return
@@ -6287,22 +7249,26 @@ export function SessionSidePanel(props: {
                       <Tabs.Content
                         value={PANEL_PREVIEW_TAB}
                         class={WORKSPACE_PANEL_CONTENT_LAYOUT_CLASS}
+                        forceMount
+                        style={{ display: activePanelTab() === PANEL_PREVIEW_TAB ? undefined : "none" }}
                       >
-                        <Show when={activePanelTab() === PANEL_PREVIEW_TAB}>
+                        <KeepAlive open={openedPanelTabs().includes(PANEL_PREVIEW_TAB)}>
                           <PreviewTabContent sessionID={params.id} />
-                        </Show>
+                        </KeepAlive>
                       </Tabs.Content>
 
                       <Tabs.Content
                         value={PANEL_OPEN_DESIGN_TAB}
                         class={WORKSPACE_PANEL_CONTENT_LAYOUT_CLASS}
+                        forceMount
+                        style={{ display: activePanelTab() === PANEL_OPEN_DESIGN_TAB ? undefined : "none" }}
                       >
-                        <Show when={activePanelTab() === PANEL_OPEN_DESIGN_TAB}>
+                        <KeepAlive open={openedPanelTabs().includes(PANEL_OPEN_DESIGN_TAB)}>
                           <OpenDesignTabContent
                             bridgeState={openDesignBridgeState}
                             onBridgeState={setOpenDesignBridgeState}
                           />
-                        </Show>
+                        </KeepAlive>
                       </Tabs.Content>
 
                       <Tabs.Content
@@ -6329,6 +7295,69 @@ export function SessionSidePanel(props: {
                       >
                         <Show when={activePanelTab() === PANEL_ENVIRONMENT_TAB}>
                           <EnvironmentTabContent />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_MCP_REGISTRY_TAB}
+                        class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
+                      >
+                        <Show when={activePanelTab() === PANEL_MCP_REGISTRY_TAB}>
+                          <MCPRegistryTabContent />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_TOKEN_MAXING_TAB}
+                        class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
+                      >
+                        <Show when={activePanelTab() === PANEL_TOKEN_MAXING_TAB}>
+                          <TokenMaxingTabContent />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_SKILLS_TAB}
+                        class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
+                      >
+                        <Show when={activePanelTab() === PANEL_SKILLS_TAB}>
+                          <SkillsTabContent />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_FLEET_TAB}
+                        class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
+                      >
+                        <Show when={activePanelTab() === PANEL_FLEET_TAB}>
+                          <AgentFleetTabContent />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_ENV_SECRETS_TAB}
+                        class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
+                      >
+                        <Show when={activePanelTab() === PANEL_ENV_SECRETS_TAB}>
+                          <EnvSecretsTabContent />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_AUTO_IMPROVE_TAB}
+                        class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
+                      >
+                        <Show when={activePanelTab() === PANEL_AUTO_IMPROVE_TAB}>
+                          <AutoImproveTabContent />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_IMAGE_GEN_TAB}
+                        class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
+                      >
+                        <Show when={activePanelTab() === PANEL_IMAGE_GEN_TAB}>
+                          <ImageGenTabContent />
                         </Show>
                       </Tabs.Content>
 

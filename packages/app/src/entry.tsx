@@ -304,6 +304,9 @@ const getCurrentUrl = () => {
 const getDefaultUrl = () => {
   const lsDefault = readDefaultServerUrl()
   if (lsDefault) return lsDefault
+  // Local dev UI connects to the LIVE main workspace (all projects/providers),
+  // not an empty local backend. Set a `defaultServerUrl` in settings to override.
+  if (import.meta.env.DEV) return CT100_SERVER_URL
   return getCurrentUrl()
 }
 
