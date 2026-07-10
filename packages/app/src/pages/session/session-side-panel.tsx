@@ -64,6 +64,7 @@ const PANEL_SKILLS_TAB = "panel://skills" satisfies WorkspacePanelTabID
 const PANEL_FLEET_TAB = "panel://fleet" satisfies WorkspacePanelTabID
 const PANEL_ENV_SECRETS_TAB = "panel://env-secrets" satisfies WorkspacePanelTabID
 const PANEL_AUTO_IMPROVE_TAB = "panel://auto-improve" satisfies WorkspacePanelTabID
+const PANEL_IMAGE_GEN_TAB = "panel://image-gen" satisfies WorkspacePanelTabID
 const PANEL_RESOURCES_TAB = "panel://resources" satisfies WorkspacePanelTabID
 const PANEL_ARTIFACTS_TAB = "panel://artifacts" satisfies WorkspacePanelTabID
 const PANEL_FILE_BROWSER_TAB = "panel://file-browser" satisfies WorkspacePanelTabID
@@ -3624,6 +3625,87 @@ function AutoImproveTabContent() {
           </Show>
         </div>
         <StatusRow label="Last checked" value={status.data()?.generatedAt} />
+      </div>
+    </TabChrome>
+  )
+}
+
+function ImageGenTabContent() {
+  const providers = createPolledJson<any>(() => "/experimental/image/providers", 30000)
+  const [provider, setProvider] = createSignal<string>("")
+  const [imgPrompt, setImgPrompt] = createSignal("")
+  const [size, setSize] = createSignal("768x768")
+  const [busy, setBusy] = createSignal(false)
+  const [result, setResult] = createSignal<any>()
+  const [error, setError] = createSignal<string | undefined>()
+  const providerList = createMemo<Array<{ id: string; reachable: boolean }>>(() => {
+    const data = providers.data()
+    if (!data) return []
+    return Object.values(data).filter((v: any) => v && typeof v === "object" && "id" in v) as any
+  })
+  const generate = async () => {
+    if (!imgPrompt().trim()) {
+      setError("prompt is required")
+      return
+    }
+    setBusy(true)
+    setError(undefined)
+    setResult(undefined)
+    try {
+      const res = await fetch("/experimental/image/generate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prompt: imgPrompt().trim(), provider: provider() || undefined, size: size() }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (body?.ok) setResult(body)
+      else setError(body?.error ?? `generation failed (${res.status})`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const imageSrc = () => result()?.dataUri ?? result()?.url
+  return (
+    <TabChrome title="Image" iconTab={PANEL_IMAGE_GEN_TAB} onRefresh={() => void providers.refresh()}>
+      <div class="flex min-h-0 flex-1 flex-col gap-3">
+        <div class="grid gap-3 xl:grid-cols-3">
+          <For each={providerList()}>
+            {(p: any) => (
+              <EnvironmentSummaryCard label={p.id} value={p.reachable ? "ready" : "off"} detail={p.reachable ? "reachable" : "not configured"} tone={p.reachable ? "ready" : "warn"} />
+            )}
+          </For>
+        </div>
+        <div class="flex flex-col gap-2 rounded-md border border-border-weaker-base bg-background-stronger p-3">
+          <textarea
+            class="min-h-16 rounded-md border border-border-weaker-base bg-background-base px-2 py-1 text-12-regular text-text-strong"
+            placeholder="Describe the image…"
+            value={imgPrompt()}
+            onInput={(e) => setImgPrompt(e.currentTarget.value)}
+          />
+          <div class="flex items-center gap-2">
+            <select class="rounded-md border border-border-weaker-base bg-background-base px-2 py-1 text-12-regular text-text-strong" value={provider()} onChange={(e) => setProvider(e.currentTarget.value)}>
+              <option value="">auto</option>
+              <For each={providerList()}>{(p: any) => <option value={p.id}>{p.id}</option>}</For>
+            </select>
+            <select class="rounded-md border border-border-weaker-base bg-background-base px-2 py-1 text-12-regular text-text-strong" value={size()} onChange={(e) => setSize(e.currentTarget.value)}>
+              <For each={["512x512", "768x768", "1024x1024"]}>{(sz) => <option value={sz}>{sz}</option>}</For>
+            </select>
+            <Button variant="secondary" disabled={busy() || !imgPrompt().trim()} onClick={() => void generate()}>{busy() ? "Generating…" : "Generate"}</Button>
+          </div>
+        </div>
+        <Show when={error()}>
+          <div class="rounded-md border border-red-500/20 bg-red-500/10 px-3 py-2 text-12-regular text-red-100">{error()}</div>
+        </Show>
+        <div class="min-h-0 flex-1 overflow-auto rounded-md border border-border-weaker-base bg-background-base">
+          <Show when={imageSrc()} fallback={<div class="flex h-full min-h-32 items-center justify-center p-4 text-12-regular text-text-weak">{busy() ? "Generating…" : "No image yet."}</div>}>
+            <img src={imageSrc()} alt={imgPrompt()} class="block h-auto max-h-full w-full object-contain" />
+          </Show>
+        </div>
+        <Show when={result()?.provider}>
+          <StatusRow label="Provider" value={result()?.provider} />
+        </Show>
       </div>
     </TabChrome>
   )
@@ -7252,6 +7334,15 @@ export function SessionSidePanel(props: {
                       >
                         <Show when={activePanelTab() === PANEL_AUTO_IMPROVE_TAB}>
                           <AutoImproveTabContent />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_IMAGE_GEN_TAB}
+                        class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
+                      >
+                        <Show when={activePanelTab() === PANEL_IMAGE_GEN_TAB}>
+                          <ImageGenTabContent />
                         </Show>
                       </Tabs.Content>
 

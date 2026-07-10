@@ -16,6 +16,7 @@ export type WorkspacePanelTabID =
   | "panel://fleet"
   | "panel://env-secrets"
   | "panel://auto-improve"
+  | "panel://image-gen"
 
 export type WorkspacePanelActionID =
   | "refresh"
@@ -315,6 +316,21 @@ export const WORKSPACE_PANEL_TABS: WorkspacePanelDefinition[] = [
     canSnapshot: false,
     canAttachToChat: true,
     description: "Autonomous-improvement engine status: designated projects, per-project enable/rate-limit state, last run — fronting the local auto-improve daemon (OFF by default).",
+  },
+  {
+    id: "panel://image-gen",
+    label: "Image",
+    badge: "IMG",
+    route: "/experimental/image/providers",
+    toolIDs: ["workspace_tabs", "image_gen"],
+    mentionIDs: ["image", "image-gen", "flux", "recraft"],
+    aliases: ["image", "image-gen", "flux", "recraft"],
+    actions: ["refresh", "attach_to_chat", "tools"],
+    safetyPolicy:
+      "Generates images via the configured providers (local FLUX hub / Recraft / Gemini). Provider status reports reachability booleans only, never key values; generation is flag-gated (OPENCODE_EXPERIMENTAL_IMAGE_GEN) on the server.",
+    canSnapshot: false,
+    canAttachToChat: true,
+    description: "In-app image generation: pick a provider, prompt, and render the result — a second surface for the image_gen tool.",
   },
 ]
 
