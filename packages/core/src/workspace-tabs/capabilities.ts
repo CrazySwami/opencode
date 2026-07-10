@@ -14,6 +14,7 @@ export type WorkspacePanelTabID =
   | "panel://token-maxing"
   | "panel://skills"
   | "panel://fleet"
+  | "panel://env-secrets"
 
 export type WorkspacePanelActionID =
   | "refresh"
@@ -283,6 +284,21 @@ export const WORKSPACE_PANEL_TABS: WorkspacePanelDefinition[] = [
     canSnapshot: false,
     canAttachToChat: true,
     description: "Cross-CLI session fleet (opencode/codex/claude) surfaced from the local fleet-service daemon.",
+  },
+  {
+    id: "panel://env-secrets",
+    label: "Secrets",
+    badge: "ENV",
+    route: "/experimental/env/secrets",
+    toolIDs: ["workspace_tabs"],
+    mentionIDs: ["secrets", "env", "keys"],
+    aliases: ["secrets", "env", "keys"],
+    actions: ["refresh", "attach_to_chat", "tools"],
+    safetyPolicy:
+      "Secret values are NEVER displayed or exposed through this tab or any read route -- only name/scope/present/updatedAt/lastFour metadata is shown. Writing or deleting a secret is gated behind OPENCODE_SECRETS_ENABLED on the server and is a separate mutation from viewing.",
+    canSnapshot: false,
+    canAttachToChat: true,
+    description: "Server-side encrypted env/secrets store: metadata-only listing plus gated add/delete, backed by the local secrets store.",
   },
 ]
 

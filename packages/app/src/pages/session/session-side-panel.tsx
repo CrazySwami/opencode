@@ -61,6 +61,7 @@ const PANEL_MCP_REGISTRY_TAB = "panel://mcp-registry" satisfies WorkspacePanelTa
 const PANEL_TOKEN_MAXING_TAB = "panel://token-maxing" satisfies WorkspacePanelTabID
 const PANEL_SKILLS_TAB = "panel://skills" satisfies WorkspacePanelTabID
 const PANEL_FLEET_TAB = "panel://fleet" satisfies WorkspacePanelTabID
+const PANEL_ENV_SECRETS_TAB = "panel://env-secrets" satisfies WorkspacePanelTabID
 const PANEL_RESOURCES_TAB = "panel://resources" satisfies WorkspacePanelTabID
 const PANEL_ARTIFACTS_TAB = "panel://artifacts" satisfies WorkspacePanelTabID
 const PANEL_FILE_BROWSER_TAB = "panel://file-browser" satisfies WorkspacePanelTabID
@@ -3303,6 +3304,201 @@ function AgentFleetTabContent() {
           </Show>
         </div>
         <StatusRow label="Last checked" value={fleet.data()?.generatedAt} />
+      </div>
+    </TabChrome>
+  )
+}
+
+// EnvSecretsTabContent renders metadata ONLY (name / scope / present / lastFour /
+// updatedAt) from the server-side encrypted secrets store. It must never render
+// or retain a secret value: the write form's value input is the only place a
+// value ever lives client-side, and it is cleared immediately after submit
+// (success or failure) and never included in any other state, log, or memo.
+function EnvSecretsTabContent() {
+  const secrets = createPolledJson<any>(() => "/experimental/env/secrets", 15000)
+  const enabled = () => secrets.data()?.enabled === true
+  const list = () => secrets.data()?.secrets ?? []
+  const byScope = createMemo(() => {
+    const groups: Record<string, any[]> = {}
+    for (const s of list()) (groups[s.scope ?? "default"] ??= []).push(s)
+    return Object.entries(groups)
+  })
+
+  const [lastChecked, setLastChecked] = createSignal<string | undefined>()
+  createEffect(() => {
+    if (secrets.data()) setLastChecked(new Date().toLocaleTimeString())
+  })
+
+  const [name, setName] = createSignal("")
+  const [value, setValue] = createSignal("")
+  const [scope, setScope] = createSignal("")
+  const [formPending, setFormPending] = createSignal(false)
+  const [formError, setFormError] = createSignal<string | undefined>()
+  const [formNote, setFormNote] = createSignal<string | undefined>()
+  const [storeDisabled, setStoreDisabled] = createSignal(false)
+
+  const maskLastFour = (s: any) => (s.lastFour ? `••••${s.lastFour}` : "••••")
+  const formatUpdatedAt = (ms: unknown) => (typeof ms === "number" ? new Date(ms).toLocaleString() : "unknown")
+
+  const submitSecret = async (event: Event) => {
+    event.preventDefault()
+    const trimmedName = name().trim()
+    const currentValue = value()
+    if (!trimmedName || !currentValue) return
+    setFormPending(true)
+    setFormError(undefined)
+    setFormNote(undefined)
+    try {
+      const payload: Record<string, string> = { name: trimmedName, value: currentValue }
+      const trimmedScope = scope().trim()
+      if (trimmedScope) payload.scope = trimmedScope
+      const response = await fetch("/experimental/env/secrets", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      const body = await response.json().catch(() => ({}))
+      if (response.status === 403) {
+        setStoreDisabled(true)
+        setFormError(body?.error ?? "Secrets store is disabled (set OPENCODE_SECRETS_ENABLED=1).")
+        return
+      }
+      if (!response.ok || body?.ok === false) throw new Error(body?.error ?? `Set secret failed (${response.status})`)
+      setStoreDisabled(false)
+      setFormNote(`Saved "${trimmedName}"`)
+      setName("")
+      setScope("")
+      void secrets.refresh()
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : String(error))
+    } finally {
+      // Never retain the secret value beyond this transient submit.
+      setValue("")
+      setFormPending(false)
+    }
+  }
+
+  const deleteSecret = async (s: any) => {
+    if (typeof window !== "undefined" && !window.confirm(`Delete secret "${s.name}"${s.scope ? ` (scope: ${s.scope})` : ""}?`)) return
+    setFormError(undefined)
+    setFormNote(undefined)
+    try {
+      const qs = s.scope ? `?scope=${encodeURIComponent(s.scope)}` : ""
+      const response = await fetch(`/experimental/env/secrets/${encodeURIComponent(s.name)}${qs}`, { method: "DELETE" })
+      const body = await response.json().catch(() => ({}))
+      if (response.status === 403) {
+        setStoreDisabled(true)
+        setFormError(body?.error ?? "Secrets store is disabled (set OPENCODE_SECRETS_ENABLED=1).")
+        return
+      }
+      if (!response.ok || body?.ok === false) throw new Error(body?.error ?? `Delete failed (${response.status})`)
+      setStoreDisabled(false)
+      setFormNote(`Deleted "${s.name}"`)
+      void secrets.refresh()
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  return (
+    <TabChrome title="Secrets" iconTab={PANEL_ENV_SECRETS_TAB} onRefresh={() => void secrets.refresh()}>
+      <div class="flex min-h-0 flex-1 flex-col gap-3">
+        <Show when={secrets.error()}>
+          {(error) => (
+            <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">{error()}</div>
+          )}
+        </Show>
+        <Show when={storeDisabled() || (secrets.data() !== undefined && !enabled())}>
+          <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-12-regular text-orange-100">
+            Store disabled -- set OPENCODE_SECRETS_ENABLED=1 on the server to add or delete secrets. Existing metadata below can still be viewed.
+          </div>
+        </Show>
+        <div class="grid gap-3 xl:grid-cols-3">
+          <EnvironmentSummaryCard label="Secrets" value={String(list().length)} detail="Tracked names (metadata only)" tone="ready" />
+          <EnvironmentSummaryCard
+            label="Scopes"
+            value={String(byScope().length)}
+            detail={byScope().map(([s, items]) => `${s} ${items.length}`).join(" · ") || "None"}
+            tone="ready"
+          />
+          <EnvironmentSummaryCard label="Store" value={enabled() ? "enabled" : "disabled"} detail="Mutations require OPENCODE_SECRETS_ENABLED" tone={enabled() ? "ready" : "warn"} />
+        </div>
+
+        <form class="flex flex-col gap-2 rounded-md border border-border-weaker-base bg-background-stronger p-3" onSubmit={submitSecret}>
+          <div class="text-13-medium text-text-strong">Add secret</div>
+          <div class="grid gap-2 sm:grid-cols-3">
+            <input
+              class="h-9 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
+              placeholder="NAME"
+              value={name()}
+              onInput={(event) => setName(event.currentTarget.value)}
+              required
+            />
+            <input
+              class="h-9 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
+              type="password"
+              autocomplete="off"
+              placeholder="value"
+              value={value()}
+              onInput={(event) => setValue(event.currentTarget.value)}
+              required
+            />
+            <input
+              class="h-9 rounded border border-border-weaker-base bg-background-base px-2 text-13-regular text-text-strong outline-none"
+              placeholder="scope (optional)"
+              value={scope()}
+              onInput={(event) => setScope(event.currentTarget.value)}
+            />
+          </div>
+          <div class="flex items-center justify-between gap-2">
+            <div class="min-w-0 truncate text-11-regular">
+              <Show when={formError()}>
+                <span class="text-orange-300">{formError()}</span>
+              </Show>
+              <Show when={!formError() && formNote()}>
+                <span class="text-text-weak">{formNote()}</span>
+              </Show>
+            </div>
+            <button
+              type="submit"
+              class="shrink-0 rounded border border-border-weaker-base bg-background-base px-3 py-1.5 text-12-medium text-text-strong disabled:opacity-50"
+              disabled={formPending() || !name().trim() || !value()}
+            >
+              {formPending() ? "Saving…" : "Save secret"}
+            </button>
+          </div>
+        </form>
+
+        <div class="min-h-0 flex-1 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger" data-testid="env-secrets-list">
+          <For each={byScope()}>
+            {([scopeName, items]) => (
+              <div>
+                <div class="sticky top-0 bg-background-base px-3 py-1.5 text-10-medium uppercase tracking-wide text-text-weak">{scopeName} · {items.length}</div>
+                <For each={items}>
+                  {(s: any) => (
+                    <div class="flex items-center justify-between gap-3 border-b border-border-weaker-base px-3 py-2 last:border-b-0">
+                      <div class="flex min-w-0 flex-col gap-0.5">
+                        <span class="truncate text-13-regular text-text-strong">{s.name}</span>
+                        <span class="text-11-regular text-text-weak">{maskLastFour(s)} · updated {formatUpdatedAt(s.updatedAt)}</span>
+                      </div>
+                      <button
+                        type="button"
+                        class="shrink-0 rounded border border-border-weaker-base px-2 py-1 text-11-regular text-text-weak hover:text-text-strong"
+                        onClick={() => void deleteSecret(s)}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  )}
+                </For>
+              </div>
+            )}
+          </For>
+          <Show when={list().length === 0}>
+            <div class="p-4 text-13-regular text-text-weak">No secrets stored.</div>
+          </Show>
+        </div>
+        <StatusRow label="Last checked" value={lastChecked()} />
       </div>
     </TabChrome>
   )
@@ -6612,6 +6808,15 @@ export function SessionSidePanel(props: {
                       >
                         <Show when={activePanelTab() === PANEL_FLEET_TAB}>
                           <AgentFleetTabContent />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_ENV_SECRETS_TAB}
+                        class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
+                      >
+                        <Show when={activePanelTab() === PANEL_ENV_SECRETS_TAB}>
+                          <EnvSecretsTabContent />
                         </Show>
                       </Tabs.Content>
 
