@@ -3695,48 +3695,147 @@ function EnvSecretsTabContent() {
   )
 }
 
+// The MCP Registry tab fronts OpenDesign's MCP store via the OD proxy. OD is the
+// source of truth: GET/PUT /api/mcp/servers (PUT replaces the whole list) and
+// POST /api/mcp/oauth/start ({serverId} -> {authorizeUrl}) drives the daemon-owned
+// OAuth dance. Add = append a template-derived config + PUT; Connect = start OAuth.
+const MCP_OD = "/experimental/open-design/proxy/api/mcp"
 function MCPRegistryTabContent() {
-  const registry = createPolledJson<any>(() => "/experimental/mcp/registry", 30000)
-  const servers = () => registry.data()?.servers ?? []
+  const store = createPolledJson<any>(() => `${MCP_OD}/servers`, 20000)
+  const servers = () => store.data()?.servers ?? []
+  const templates = () => store.data()?.templates ?? []
+  const [busy, setBusy] = createSignal<string | undefined>()
+  const [note, setNote] = createSignal<string | undefined>()
+  const configuredIds = createMemo(() => new Set(servers().map((s: any) => s.id)))
+
+  const putServers = async (next: any[]) => {
+    const res = await fetch(`${MCP_OD}/servers`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ servers: next }),
+    })
+    if (!res.ok) throw new Error(`save failed (${res.status})`)
+    void store.refresh()
+  }
+  const addTemplate = async (t: any) => {
+    setBusy(t.id)
+    setNote(undefined)
+    try {
+      const cfg = {
+        id: t.id,
+        label: t.label ?? t.id,
+        templateId: t.id,
+        transport: t.transport ?? "http",
+        enabled: true,
+        authMode: t.authMode,
+        url: t.url,
+      }
+      await putServers([...servers().filter((s: any) => s.id !== t.id), cfg])
+      setNote(`Added ${cfg.label}${t.authMode === "oauth" ? " — click Connect to authorize" : ""}`)
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(undefined)
+    }
+  }
+  const removeServer = async (s: any) => {
+    setBusy(s.id)
+    try {
+      await putServers(servers().filter((x: any) => x.id !== s.id))
+      setNote(`Removed ${s.label ?? s.id}`)
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(undefined)
+    }
+  }
+  const connect = async (s: any) => {
+    setBusy(s.id)
+    setNote(undefined)
+    try {
+      const res = await fetch(`${MCP_OD}/oauth/start`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ serverId: s.id }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (res.ok && body?.authorizeUrl) {
+        window.open(body.authorizeUrl, "_blank", "noopener,noreferrer")
+        setNote(`Opened OAuth for ${s.label ?? s.id} — complete it in the new tab.`)
+      } else {
+        setNote(body?.error ?? `connect failed (${res.status})`)
+      }
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(undefined)
+    }
+  }
+
   return (
-    <TabChrome title="MCP Registry" iconTab={PANEL_MCP_REGISTRY_TAB} onRefresh={() => void registry.refresh()}>
+    <TabChrome title="MCP Registry" iconTab={PANEL_MCP_REGISTRY_TAB} onRefresh={() => void store.refresh()}>
       <div class="flex min-h-0 flex-1 flex-col gap-3">
-        <Show when={registry.error()}>
-          {(error) => (
-            <div class="rounded-md border border-border-weaker-base bg-background-stronger p-3 text-12-regular text-text-weak">
-              {error()}
-            </div>
-          )}
+        <Show when={store.data() && store.data()?.servers === undefined}>
+          <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-12-regular text-orange-100">
+            OpenDesign daemon offline — MCP servers are managed there (127.0.0.1:7456).
+          </div>
         </Show>
         <div class="grid gap-3 xl:grid-cols-3">
-          <EnvironmentSummaryCard label="Catalog" value={String(servers().length)} detail="Installable MCP servers" tone="ready" />
-          <EnvironmentSummaryCard label="Source" value={registry.data()?.source ?? "…"} detail="Curated seed (registry pull: TODO)" tone="warn" />
-          <EnvironmentSummaryCard label="Add custom" value="opencode.jsonc" detail="mcp{} block (type:local | type:remote)" tone="ready" />
+          <EnvironmentSummaryCard label="Configured" value={String(servers().length)} detail="Servers in OpenDesign" tone="ready" />
+          <EnvironmentSummaryCard label="Catalog" value={String(templates().length)} detail="Templates available" tone="ready" />
+          <EnvironmentSummaryCard label="Backend" value="OpenDesign" detail="/api/mcp/servers (fanned to all CLIs)" tone="ready" />
         </div>
+
+        <Show when={note()}>
+          <div class="rounded-md border border-border-weaker-base bg-background-stronger px-3 py-2 text-12-regular text-text-weak">{note()}</div>
+        </Show>
+
         <div class="min-h-0 flex-1 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger" data-testid="mcp-registry-list">
-          <For each={servers()}>
-            {(server: any) => (
+          <Show when={servers().length > 0}>
+            <div class="sticky top-0 bg-background-base px-3 py-1.5 text-10-medium uppercase tracking-wide text-text-weak">Configured</div>
+            <For each={servers()}>
+              {(s: any) => (
+                <div class="flex flex-col gap-1 border-b border-border-weaker-base px-3 py-2 last:border-b-0">
+                  <div class="flex items-center justify-between gap-3">
+                    <span class="min-w-0 truncate text-13-regular text-text-strong">{s.label ?? s.id}</span>
+                    <div class="flex shrink-0 items-center gap-2">
+                      <span class="rounded bg-background-base px-2 py-0.5 text-10-medium uppercase tracking-wide" classList={{ "text-green-300": s.enabled, "text-text-weak": !s.enabled }}>{s.enabled ? "enabled" : "off"}</span>
+                      <Show when={s.authMode === "oauth"}>
+                        <Button variant="ghost" disabled={busy() !== undefined} onClick={() => void connect(s)}>{busy() === s.id ? "…" : "Connect"}</Button>
+                      </Show>
+                      <Button variant="ghost" disabled={busy() !== undefined} onClick={() => void removeServer(s)}>Remove</Button>
+                    </div>
+                  </div>
+                  <Show when={s.url}><code class="truncate rounded bg-background-base px-2 py-1 font-mono text-11-regular text-text-strong">{s.url}</code></Show>
+                </div>
+              )}
+            </For>
+          </Show>
+          <div class="sticky top-0 bg-background-base px-3 py-1.5 text-10-medium uppercase tracking-wide text-text-weak">Catalog</div>
+          <For each={templates()}>
+            {(t: any) => (
               <div class="flex flex-col gap-1 border-b border-border-weaker-base px-3 py-3 last:border-b-0">
                 <div class="flex items-center justify-between gap-3">
-                  <span class="min-w-0 truncate text-13-regular text-text-strong">{server.title ?? server.name}</span>
-                  <span class="shrink-0 rounded bg-background-base px-2 py-0.5 text-10-medium uppercase tracking-wide text-text-weak">{server.transport}</span>
+                  <span class="min-w-0 truncate text-13-regular text-text-strong">{t.label ?? t.id}</span>
+                  <div class="flex shrink-0 items-center gap-2">
+                    <span class="rounded bg-background-base px-2 py-0.5 text-10-medium uppercase tracking-wide text-text-weak">{t.transport}</span>
+                    <Button variant="ghost" disabled={busy() !== undefined || configuredIds().has(t.id)} onClick={() => void addTemplate(t)}>
+                      {configuredIds().has(t.id) ? "Added" : busy() === t.id ? "Adding…" : "Add"}
+                    </Button>
+                  </div>
                 </div>
-                <div class="text-11-regular text-text-weak">{server.description}</div>
-                <Show when={server.install}>
-                  <code class="mt-1 truncate rounded bg-background-base px-2 py-1 font-mono text-11-regular text-text-strong">{server.install}</code>
-                </Show>
-                <Show when={server.homepage}>
-                  <a href={server.homepage} target="_blank" rel="noreferrer" class="text-11-regular text-[#f97316] hover:underline">{server.homepage}</a>
+                <div class="text-11-regular text-text-weak line-clamp-2">{t.description}</div>
+                <Show when={t.homepage}>
+                  <a href={t.homepage} target="_blank" rel="noreferrer" class="text-11-regular text-[#f97316] hover:underline">{t.homepage}</a>
                 </Show>
               </div>
             )}
           </For>
-          <Show when={servers().length === 0}>
-            <div class="p-4 text-13-regular text-text-weak">No catalog entries.</div>
+          <Show when={servers().length === 0 && templates().length === 0}>
+            <div class="p-4 text-13-regular text-text-weak">No servers or templates (OpenDesign offline?).</div>
           </Show>
         </div>
-        <StatusRow label="Registries" value={(registry.data()?.registries ?? []).join(", ")} />
-        <StatusRow label="Last checked" value={registry.data()?.generatedAt} />
+        <StatusRow label="Backend" value={`${MCP_OD}/servers`} />
       </div>
     </TabChrome>
   )
