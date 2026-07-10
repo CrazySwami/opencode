@@ -3413,7 +3413,7 @@ function AgentFleetTabContent() {
   // daemon (FLEET_DRIVE_ENABLED); an error frame surfaces here if it's off.
   const [continuing, setContinuing] = createSignal<string | undefined>()
   const [prompt, setPrompt] = createSignal("")
-  const [streamLog, setStreamLog] = createSignal<string[]>([])
+  const [streamLog, setStreamLog] = createSignal<any[]>([])
   let abort: AbortController | undefined
   onCleanup(() => abort?.abort())
   const continueSession = async (s: any) => {
@@ -3444,7 +3444,15 @@ function AgentFleetTabContent() {
         buf = frames.pop() ?? ""
         for (const frame of frames) {
           const dataLine = frame.split("\n").find((ln) => ln.startsWith("data:"))
-          if (dataLine) setStreamLog((l) => [...l, dataLine.slice(5).trim()].slice(-200))
+          if (!dataLine) continue
+          const raw = dataLine.slice(5).trim()
+          let ev: any
+          try {
+            ev = JSON.parse(raw)
+          } catch {
+            ev = { type: "message", text: raw }
+          }
+          setStreamLog((l) => [...l, ev].slice(-200))
         }
       }
     } catch (err) {
@@ -3518,8 +3526,32 @@ function AgentFleetTabContent() {
               <Button variant="ghost" onClick={() => abort?.abort()} aria-label="Stop stream">Stop</Button>
             </Show>
           </div>
-          <div class="max-h-48 min-h-0 overflow-auto rounded-md border border-border-weaker-base bg-background-base p-2 font-mono text-10-regular text-text-weak">
-            <For each={streamLog()}>{(line) => <div class="whitespace-pre-wrap break-words">{line}</div>}</For>
+          <div class="max-h-48 min-h-0 overflow-auto rounded-md border border-border-weaker-base bg-background-base p-2 text-10-regular text-text-weak">
+            <For each={streamLog()}>
+              {(ev: any) => {
+                const type = ev?.type ?? "message"
+                const body = ev?.text ?? (ev?.data !== undefined ? JSON.stringify(ev.data) : "")
+                const isQ = type === "question"
+                const isErr = type === "error"
+                return (
+                  <div
+                    class="flex gap-2 border-b border-border-weaker-base/40 py-0.5 last:border-b-0"
+                    classList={{ "text-orange-200": isQ, "text-red-300": isErr }}
+                  >
+                    <span
+                      class="shrink-0 rounded bg-background-stronger px-1 text-9-medium uppercase tracking-wide"
+                      classList={{ "bg-orange-500/20 text-orange-100": isQ }}
+                    >
+                      {type === "tool_call" || type === "tool_result" ? (ev?.name ?? type) : type}
+                    </span>
+                    <span class="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono">
+                      {isQ ? "❓ " : ""}
+                      {body || (ev?.role ? `(${ev.role})` : "")}
+                    </span>
+                  </div>
+                )
+              }}
+            </For>
             <Show when={streamLog().length === 0 && continuing() !== undefined}>
               <div>waiting for stream…</div>
             </Show>
