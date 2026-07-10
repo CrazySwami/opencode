@@ -3101,6 +3101,15 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
         const base = process.env.OPENCODE_TOKEN_MAXING_URL || "http://127.0.0.1:8787"
         try {
           const res = await fetch(`${base}/usage`, { signal: AbortSignal.timeout(3000) })
+          if (!res.ok) {
+            return HttpServerResponse.jsonUnsafe({
+              ok: false,
+              daemon: base,
+              error: `token-maxing daemon error (${res.status})`,
+              generatedAt: new Date().toISOString(),
+              snapshots: [],
+            })
+          }
           const data = (await res.json()) as Record<string, unknown>
           return HttpServerResponse.jsonUnsafe({ ok: true, daemon: base, generatedAt: new Date().toISOString(), ...data })
         } catch {
@@ -3123,6 +3132,17 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
         const fleet = process.env.OPENCODE_FLEET_URL || "http://127.0.0.1:8788"
         try {
           const res = await fetch(`${fleet}/sessions?limit=200`, { signal: AbortSignal.timeout(3000) })
+          // A reachable-but-erroring daemon (5xx/4xx) must not be reported as ok:true.
+          if (!res.ok) {
+            return HttpServerResponse.jsonUnsafe({
+              ok: false,
+              fleet,
+              error: `fleet service error (${res.status})`,
+              generatedAt: new Date().toISOString(),
+              sessions: [],
+              count: 0,
+            })
+          }
           const data = (await res.json()) as Record<string, unknown>
           return HttpServerResponse.jsonUnsafe({ ok: true, fleet, generatedAt: new Date().toISOString(), ...data })
         } catch {
