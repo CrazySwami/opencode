@@ -2249,6 +2249,10 @@ function MacViewTabContent() {
   const [bitrate, setBitrate] = createSignal(6000)
   const [transport, setTransport] = createSignal<"webrtc" | "video" | "mjpeg">("webrtc")
   const [transportTouched, setTransportTouched] = createSignal(false)
+  // Privacy gate: a live desktop stream can leak whatever is on screen (personal
+  // apps, notifications, other accounts) during a screen-share/shoulder-surf.
+  // Default HIDDEN — the user must explicitly reveal, and can re-hide anytime.
+  const [exposed, setExposed] = createSignal(false)
   const streamReconnectMs = 30_000
 
   const reconnect = setInterval(() => setStreamKey(Date.now()), streamReconnectMs)
@@ -2466,7 +2470,27 @@ function MacViewTabContent() {
           </div>
         }
       >
-        <div class="min-h-0 flex-1 overflow-auto bg-background-base">
+        <Show
+          when={exposed()}
+          fallback={
+            <div class="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+              <div class="text-13-medium text-text-base">Live desktop hidden</div>
+              <div class="max-w-sm text-12-regular text-text-weak">
+                Revealing streams your Mac screen into this panel — anything visible (notifications,
+                messages, other accounts) may be exposed if you're sharing or being watched.
+              </div>
+              <Button variant="secondary" onClick={() => setExposed(true)}>
+                Reveal live screen
+              </Button>
+            </div>
+          }
+        >
+          <div class="flex items-center justify-end px-2 pt-1">
+            <Button variant="ghost" onClick={() => setExposed(false)} aria-label="Hide live screen">
+              Hide screen
+            </Button>
+          </div>
+          <div class="min-h-0 flex-1 overflow-auto bg-background-base">
           <Switch>
             <Match when={transport() === "webrtc"}>
               <iframe
@@ -2510,7 +2534,8 @@ function MacViewTabContent() {
               />
             </Match>
           </Switch>
-        </div>
+          </div>
+        </Show>
       </Show>
     </TabChrome>
   )
