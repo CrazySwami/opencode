@@ -137,6 +137,7 @@ export const RoutinesTool = Tool.define<typeof Parameters, Metadata, never>(
           // We prompt with the resolved command + host so the human sees exactly
           // what will execute. Rejection dies the effect before anything runs.
           let approval: string | undefined
+          let enableApproved = false
           if (action === "run") {
             const routine = readRoutines().find((item) => item.id === safeID(params.id ?? ""))
             const command = routine?.command?.trim() ?? ""
@@ -160,6 +161,34 @@ export const RoutinesTool = Tool.define<typeof Parameters, Metadata, never>(
               })
               approval = mintRunApproval(routine.id, { command, host, updatedAt: routine.updatedAt })
             }
+          } else if (action === "enable" || (action === "update" && params.enabled === true)) {
+            // Anti-bypass: ENABLING a routine authorizes the scheduler to run it
+            // autonomously on its schedule (no per-fire ctx.ask). So enabling via
+            // the model/tool must itself pass the same human approval gate as a
+            // manual run — the human sees the command/host/schedule that will run
+            // on a timer. Rejection dies the effect; enabled stays off.
+            const routine = readRoutines().find((item) => item.id === safeID(params.id ?? ""))
+            if (routine) {
+              const command = (action === "update" && params.command !== undefined ? params.command : routine.command)?.trim() ?? ""
+              const host = resolveHostInput(
+                action === "update" && params.host !== undefined ? params.host : routine.host,
+              )
+              const schedule = (action === "update" && params.schedule !== undefined ? params.schedule : routine.schedule) || "manual"
+              yield* ctx.ask({
+                permission: "routines",
+                patterns: [`enable ${host}:: ${command} @ ${schedule}`],
+                always: [`routines enable ${host}`],
+                metadata: {
+                  routineID: routine.id,
+                  routineName: routine.name,
+                  host,
+                  command,
+                  schedule,
+                  intent: "enable-for-schedule",
+                },
+              })
+              enableApproved = true
+            }
           }
           const result = yield* Effect.promise(() =>
             routinesAction({
@@ -176,6 +205,7 @@ export const RoutinesTool = Tool.define<typeof Parameters, Metadata, never>(
               notify: params.notify,
               caller: "tool",
               approval,
+              enableApproved,
             }),
           )
           return {
@@ -207,10 +237,13 @@ export async function routinesStatus() {
     mutationPolicy: routinesMutationsEnabled() ? "disabled_draft_writes_enabled" : "disabled_draft_writes_disabled",
     scheduler: {
       engine: "opencode-native-json-store",
-      externalPlugin: "opencode-scheduler-compatible",
-      note: routinesMutationsEnabled()
-        ? "Live route can create disabled draft routines. Manual runs stay disabled unless OPENCODE_ROUTINES_RUN_ENABLED=1."
-        : "The tab/tool can wrap opencode-scheduler later; disabled draft writes are off until OPENCODE_ROUTINES_MUTATIONS=1.",
+      active: !!schedulerTimer,
+      tickMs: SCHEDULER_TICK_MS,
+      fires: routinesRunEnabled(),
+      formats: ["manual", "hourly", "daily HH:MM", "weekly <dow> HH:MM", "every N[m|h|s]"],
+      note: routinesRunEnabled()
+        ? "Scheduler is armed: enabled routines fire on their schedule."
+        : "Scheduler tracks nextRunAt but does NOT execute until OPENCODE_ROUTINES_RUN_ENABLED=1.",
     },
     counts: {
       total: routines.length,
@@ -235,16 +268,19 @@ export async function routinesAction(input: {
   notify?: readonly string[]
   caller?: RoutineCaller
   approval?: string
+  enableApproved?: boolean
   operatorToken?: string
 }) {
   const action = input.action ?? "list"
+  const caller = input.caller ?? "http"
+  const authFields = { caller, enableApproved: input.enableApproved, operatorToken: input.operatorToken }
   if (action === "status") return routinesStatus()
   if (action === "logs") return routineLogs(input.id)
   if (action === "create") return createRoutineDraft(input)
-  if (action === "update") return updateRoutine(input.id, input)
+  if (action === "update") return updateRoutine(input.id, { ...input, ...authFields })
   if (action === "delete") return deleteRoutine(input.id)
-  if (action === "enable") return updateRoutine(input.id, { enabled: true })
-  if (action === "disable") return updateRoutine(input.id, { enabled: false })
+  if (action === "enable") return updateRoutine(input.id, { enabled: true, ...authFields })
+  if (action === "disable") return updateRoutine(input.id, { enabled: false, ...authFields })
   if (action === "run")
     return runRoutine(input.id, {
       caller: input.caller ?? "http",
@@ -314,6 +350,24 @@ export async function createRoutineDraft(input: {
   }
 }
 
+// Is this caller allowed to move a routine into the enabled (schedule-armed)
+// state? tool → only with a fresh ctx.ask approval; http → operator (token when
+// one is configured); internal (scheduler) → yes. Anything else → no.
+function authorizeEnable(input: { caller?: RoutineCaller; enableApproved?: boolean; operatorToken?: string }): boolean {
+  switch (input.caller ?? "http") {
+    case "internal":
+      return true
+    case "tool":
+      return input.enableApproved === true
+    case "http": {
+      const token = routinesOperatorToken()
+      return !token || input.operatorToken === token
+    }
+    default:
+      return false
+  }
+}
+
 export async function updateRoutine(
   id: string | undefined,
   input: {
@@ -326,6 +380,9 @@ export async function updateRoutine(
     icon?: string
     tags?: readonly string[]
     notify?: readonly string[]
+    caller?: RoutineCaller
+    enableApproved?: boolean
+    operatorToken?: string
   },
 ) {
   if (!routinesMutationsEnabled()) {
@@ -342,17 +399,53 @@ export async function updateRoutine(
   if (index < 0) return { ok: false, error: `Routine not found: ${safe}` }
 
   const current = routines[index]!
+  const nextName = optionalText(input.name) ?? current.name
+  const nextDescription = input.description === undefined ? current.description : optionalText(input.description)
+  const nextSchedule = input.schedule === undefined ? current.schedule : optionalText(input.schedule) || "manual"
+  const nextCommand = input.command === undefined ? current.command : optionalText(input.command)
+  const nextHost = input.host === undefined ? current.host : resolveHostInput(input.host)
+  const nextIcon = input.icon === undefined ? current.icon : optionalText(input.icon)
+
+  // Anti-bypass gate for scheduled execution (see tool execute): the enabled
+  // state may only become/stay true through an authorized action, and editing
+  // what runs (command/host/schedule) revokes approval.
+  const contentChanged =
+    nextCommand !== current.command || nextHost !== current.host || nextSchedule !== current.schedule
+  const wantsEnabled = typeof input.enabled === "boolean" ? input.enabled : current.enabled
+  let finalEnabled: boolean
+  if (!wantsEnabled) {
+    finalEnabled = false
+  } else if (current.enabled === true && !contentChanged) {
+    // already armed and nothing that runs changed → stays enabled
+    finalEnabled = true
+  } else if (authorizeEnable(input)) {
+    finalEnabled = true
+  } else if (input.enabled === true) {
+    // explicit enable request without authorization → reject
+    return {
+      ok: false,
+      error: "Enabling a routine for scheduled execution requires approval.",
+      mutationPolicy: "enable_approval_required",
+    }
+  } else {
+    // content edit on an armed routine without re-approval → de-arm it
+    finalEnabled = false
+  }
+
   const updated: Routine = {
     ...current,
-    name: optionalText(input.name) ?? current.name,
-    description: input.description === undefined ? current.description : optionalText(input.description),
-    schedule: input.schedule === undefined ? current.schedule : optionalText(input.schedule) || "manual",
-    command: input.command === undefined ? current.command : optionalText(input.command),
-    enabled: typeof input.enabled === "boolean" ? input.enabled : current.enabled,
-    host: input.host === undefined ? current.host : input.host && ROUTINE_HOSTS[input.host] ? input.host : DEFAULT_HOST,
-    icon: input.icon === undefined ? current.icon : optionalText(input.icon),
+    name: nextName,
+    description: nextDescription,
+    schedule: nextSchedule,
+    command: nextCommand,
+    enabled: finalEnabled,
+    host: nextHost,
+    icon: nextIcon,
     tags: input.tags === undefined ? cloneList(current.tags) : sanitizedList(input.tags, current.tags ?? []),
     notify: input.notify === undefined ? cloneList(current.notify) : sanitizedList(input.notify, current.notify ?? []),
+    // Re-arm the schedule clock when the routine transitions into enabled.
+    nextRunAt:
+      finalEnabled && !current.enabled ? computeNextRunAt(nextSchedule, new Date()) : finalEnabled ? current.nextRunAt : undefined,
     updatedAt: new Date().toISOString(),
   }
   routines[index] = updated
@@ -421,11 +514,15 @@ function appendRoutineLog(routineID: string, level: RoutineLog["level"], message
   }
 }
 
+// Patch RUNTIME metadata (lastStatus/lastRunAt/lastExitCode/nextRunAt) only.
+// Deliberately does NOT touch updatedAt — that field tracks user EDITS and is
+// compared against the run-approval snapshot, so a scheduler tick or a status
+// write must not bump it (would falsely invalidate an approval / churn edits).
 function patchRoutine(id: string, patch: Partial<Routine>) {
   const routines = readRoutines()
   const idx = routines.findIndex((routine) => routine.id === id)
   if (idx === -1) return
-  routines[idx] = { ...routines[idx], ...patch, updatedAt: new Date().toISOString() }
+  routines[idx] = { ...routines[idx], ...patch }
   writeRoutines(routines)
 }
 
@@ -561,7 +658,9 @@ export async function runRoutine(
   // Layer 2: caller authorization (MUST-FIX #1/#2). A model/agent `tool` caller
   // must present a single-use approval token minted by the ctx.ask gate; an
   // `http` operator caller must present the operator token when one is
-  // configured. `internal` (scheduler) is reserved and rejected until built.
+  // configured. `internal` = the scheduler, which is server-only code
+  // unreachable by any model — its authorization is that enabling the routine
+  // was already human-approved (see authorizeEnable / force-disable-on-edit).
   let approvedSnapshot: RunApprovalSnapshot | undefined
   if (auth.caller === "tool") {
     approvedSnapshot = auth.approval ? consumeRunApproval(safe, auth.approval) : undefined
@@ -573,8 +672,8 @@ export async function runRoutine(
     if (required && auth.operatorToken !== required) {
       return { ok: false, routine, error: "Operator token required to run routines.", mutationPolicy: "operator_token_required" }
     }
-  } else {
-    return { ok: false, routine, error: `Caller '${auth.caller}' cannot run routines yet.`, mutationPolicy: "caller_not_allowed" }
+  } else if (auth.caller !== "internal") {
+    return { ok: false, routine, error: `Caller '${auth.caller}' cannot run routines.`, mutationPolicy: "caller_not_allowed" }
   }
 
   // Layer 3: only enabled routines run (MUST-FIX #2). Draft/disabled routines
@@ -781,6 +880,121 @@ function routinesRunEnabled() {
 function routinesOperatorToken() {
   const token = process.env.OPENCODE_ROUTINES_OPERATOR_TOKEN?.trim()
   return token ? token : undefined
+}
+
+function resolveHostInput(host: string | undefined): string {
+  return host && ROUTINE_HOSTS[host] ? host : DEFAULT_HOST
+}
+
+// --- Scheduler ---------------------------------------------------------------
+// A single in-process timer fires enabled routines when their schedule comes
+// due. It routes through runRoutine with caller:"internal", so it inherits ALL
+// the run gates — most importantly `routinesRunEnabled()`, which is OFF on live,
+// so the scheduler is INERT until execution is explicitly enabled. Its authority
+// to run without a per-fire prompt comes from the approval-gated enable +
+// force-disable-on-edit invariant (see updateRoutine / authorizeEnable).
+const SCHEDULER_TICK_MS = 30 * 1000
+const DOW: Record<string, number> = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 }
+
+function nextDailyAt(from: Date, hour: number, minute: number): Date | undefined {
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return undefined
+  const next = new Date(from)
+  next.setHours(hour, minute, 0, 0)
+  if (next.getTime() <= from.getTime()) next.setDate(next.getDate() + 1)
+  return next
+}
+
+function nextWeeklyAt(from: Date, dow: number, hour: number, minute: number): Date | undefined {
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return undefined
+  const next = new Date(from)
+  next.setHours(hour, minute, 0, 0)
+  let delta = (dow - next.getDay() + 7) % 7
+  if (delta === 0 && next.getTime() <= from.getTime()) delta = 7
+  next.setDate(next.getDate() + delta)
+  return next
+}
+
+// Next fire time strictly after `from`, or undefined for manual/unrecognized
+// schedules (which are treated as never-auto-run — fail safe). Supported:
+// "manual", "hourly", "daily [HH:MM]", "weekly <dow> HH:MM", "every N[m|h|s]".
+function computeNextRunDate(schedule: string | undefined, from: Date): Date | undefined {
+  const s = (schedule ?? "").trim().toLowerCase()
+  if (!s || s === "manual" || s === "never" || s === "none" || s === "off") return undefined
+
+  const every = s.match(/^every\s+(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)$/)
+  if (every) {
+    const n = parseInt(every[1]!, 10)
+    if (!n || n < 1) return undefined
+    const unit = every[2]![0]
+    const ms = unit === "s" ? n * 1000 : unit === "h" ? n * 3_600_000 : n * 60_000
+    return new Date(from.getTime() + ms)
+  }
+  if (s === "hourly") {
+    const next = new Date(from)
+    next.setMinutes(0, 0, 0)
+    next.setHours(next.getHours() + 1)
+    return next
+  }
+  if (s === "daily") return nextDailyAt(from, 9, 0)
+  const daily = s.match(/^daily\s+(\d{1,2}):(\d{2})$/)
+  if (daily) return nextDailyAt(from, parseInt(daily[1]!, 10), parseInt(daily[2]!, 10))
+  const weekly = s.match(/^weekly\s+([a-z]{3,})\s+(\d{1,2}):(\d{2})$/)
+  if (weekly) {
+    const dow = DOW[weekly[1]!.slice(0, 3)]
+    if (dow === undefined) return undefined
+    return nextWeeklyAt(from, dow, parseInt(weekly[2]!, 10), parseInt(weekly[3]!, 10))
+  }
+  return undefined
+}
+
+function computeNextRunAt(schedule: string | undefined, from: Date): string | undefined {
+  return computeNextRunDate(schedule, from)?.toISOString()
+}
+
+let schedulerTimer: ReturnType<typeof setInterval> | undefined
+let schedulerTicking = false
+
+// Start the scheduler timer exactly once per process (idempotent). Called from
+// the server so it only runs in a serving context.
+export function ensureRoutinesScheduler() {
+  if (schedulerTimer) return
+  schedulerTimer = setInterval(() => {
+    void schedulerTick()
+  }, SCHEDULER_TICK_MS)
+  if (typeof schedulerTimer.unref === "function") schedulerTimer.unref()
+}
+
+export async function schedulerTick() {
+  if (schedulerTicking) return
+  schedulerTicking = true
+  try {
+    reconcileStaleRunning()
+    const fireEnabled = routinesRunEnabled()
+    const now = new Date()
+    const routines = readRoutines()
+    for (const routine of routines) {
+      if (!routine.enabled) continue
+      const upcoming = computeNextRunDate(routine.schedule, now)
+      if (!upcoming) continue // manual / unrecognized → never auto-run
+      const scheduled = routine.nextRunAt ? Date.parse(routine.nextRunAt) : NaN
+      if (Number.isNaN(scheduled)) {
+        patchRoutine(routine.id, { nextRunAt: upcoming.toISOString() })
+        continue
+      }
+      if (scheduled > now.getTime()) continue // not due yet
+      // Due. Only actually execute when the global run flag is on; either way,
+      // advance nextRunAt so a long-OFF period can't build up a run backlog.
+      if (fireEnabled && !RUNNING.has(routine.id)) {
+        appendRoutineLog(routine.id, "info", "scheduler fired (due)")
+        await runRoutine(routine.id, { caller: "internal" })
+      }
+      patchRoutine(routine.id, { nextRunAt: computeNextRunDate(routine.schedule, new Date())?.toISOString() })
+    }
+  } catch {
+    // never let a tick error kill the interval
+  } finally {
+    schedulerTicking = false
+  }
 }
 
 // --- Single-use approval nonces (MUST-FIX #1) -------------------------------
