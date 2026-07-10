@@ -195,4 +195,17 @@ describe("mutations & flag", () => {
     expect(entry).toBeTruthy()
     expect(entry.value).toBeUndefined()
   })
+
+  test("secretsEnvFor: scope-specific value overrides a global of the same name", async () => {
+    await Secrets.setSecret({ name: "SHARED", value: "global-val" })
+    await Secrets.setSecret({ name: "SHARED", value: "scoped-val", scope: "proj" })
+    await Secrets.setSecret({ name: "ONLY_GLOBAL", value: "g" })
+    const globalEnv = await Secrets.secretsEnvFor()
+    expect(globalEnv.SHARED).toBe("global-val")
+    expect(globalEnv.ONLY_GLOBAL).toBe("g")
+    const scopedEnv = await Secrets.secretsEnvFor("proj")
+    expect(scopedEnv.SHARED).toBe("scoped-val") // scope wins
+    expect(scopedEnv.ONLY_GLOBAL).toBe("g") // global still present
+  })
+
 })

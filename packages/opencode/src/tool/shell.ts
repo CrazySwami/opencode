@@ -22,6 +22,7 @@ import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner
 import { ShellPrompt, type Parameters } from "./shell/prompt"
 import { BashArity } from "@/permission/arity"
 import { workspaceEnvForProcess } from "@opencode-ai/core/workspace-env"
+import * as Secrets from "@/secrets/store"
 
 export { Parameters } from "./shell/prompt"
 
@@ -420,6 +421,13 @@ export const ShellTool = Tool.define(
         cwd,
         surface: "terminal",
       })
+      // Server-side secrets store (gated by OPENCODE_SECRETS_ENABLED): inject the
+      // user's stored vars so spawned commands can use them. Decrypted values are
+      // placed directly into the child env and never logged; an explicit
+      // workspace-env or plugin var still wins over a stored secret of the same name.
+      const secretsEnv = Secrets.secretsEnabled()
+        ? yield* Effect.promise(() => Secrets.secretsEnvFor())
+        : {}
       const extra = yield* plugin.trigger(
         "shell.env",
         { cwd, sessionID: ctx.sessionID, callID: ctx.callID },
@@ -427,6 +435,7 @@ export const ShellTool = Tool.define(
       )
       return {
         ...process.env,
+        ...secretsEnv,
         ...workspaceEnv,
         ...extra.env,
       }
