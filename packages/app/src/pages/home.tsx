@@ -595,6 +595,11 @@ function HomeChat() {
   const [running, setRunning] = createSignal(false)
   const [runId, setRunId] = createSignal<string | undefined>()
   const [tagOpen, setTagOpen] = createSignal(false)
+  // Broader @-tag (M2): besides OD projects, offer the machines the fleet daemon
+  // knows about. Tagging a machine is a CONTEXT hint — it inserts `@<machine>` into
+  // the message so the agent knows the intended target — not a separate dispatch
+  // backend (the run still goes to OD). Design-owned semantic: tags annotate, OD runs.
+  const [machines, setMachines] = createSignal<string[]>([])
   let entrySeq = 0
   let inputRef: HTMLTextAreaElement | undefined
   let activeController: AbortController | undefined
@@ -622,8 +627,25 @@ function HomeChat() {
     }
   }
 
+  const loadMachines = async () => {
+    try {
+      const res = await fetch("/experimental/fleet/sessions", { cache: "no-store" })
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; sessions?: Array<{ host?: string }> }
+      if (!res.ok || body.ok === false) {
+        setMachines([])
+        return
+      }
+      const hosts = new Set<string>()
+      for (const s of body.sessions ?? []) if (s.host) hosts.add(s.host)
+      setMachines([...hosts].sort())
+    } catch {
+      setMachines([])
+    }
+  }
+
   onMount(() => {
     void loadProjects()
+    void loadMachines()
   })
   onCleanup(() => activeController?.abort())
 
@@ -633,6 +655,13 @@ function HomeChat() {
     const token = `@${project.name.replace(/\s+/g, "-")} `
     setMessage((prev) => (prev.endsWith(" ") || prev.length === 0 ? prev : prev + " ") + token)
     setProjectId(project.id)
+    setTagOpen(false)
+    inputRef?.focus()
+  }
+
+  const insertMachineTag = (machine: string) => {
+    const token = `@${machine.replace(/\s+/g, "-")} `
+    setMessage((prev) => (prev.endsWith(" ") || prev.length === 0 ? prev : prev + " ") + token)
     setTagOpen(false)
     inputRef?.focus()
   }
@@ -808,19 +837,36 @@ function HomeChat() {
             onClick={() => setTagOpen((open) => !open)}
             aria-label="Insert project tag"
           />
-          <Show when={tagOpen() && projects().length > 0}>
+          <Show when={tagOpen() && (projects().length > 0 || machines().length > 0)}>
             <div class="absolute bottom-10 left-0 z-10 max-h-[220px] w-[220px] overflow-y-auto rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-base p-1 shadow-[var(--v2-elevation-floating)]">
-              <For each={projects()}>
-                {(project) => (
-                  <button
-                    type="button"
-                    class={`${HOME_ROW} h-8 gap-2 px-2 text-[13px]`}
-                    onClick={() => insertTag(project)}
-                  >
-                    <span class="min-w-0 truncate">@{project.name}</span>
-                  </button>
-                )}
-              </For>
+              <Show when={projects().length > 0}>
+                <div class="px-2 py-1 text-[10px] uppercase tracking-[0.04em] text-v2-text-text-muted">Projects</div>
+                <For each={projects()}>
+                  {(project) => (
+                    <button
+                      type="button"
+                      class={`${HOME_ROW} h-8 gap-2 px-2 text-[13px]`}
+                      onClick={() => insertTag(project)}
+                    >
+                      <span class="min-w-0 truncate">@{project.name}</span>
+                    </button>
+                  )}
+                </For>
+              </Show>
+              <Show when={machines().length > 0}>
+                <div class="px-2 py-1 text-[10px] uppercase tracking-[0.04em] text-v2-text-text-muted">Machines</div>
+                <For each={machines()}>
+                  {(machine) => (
+                    <button
+                      type="button"
+                      class={`${HOME_ROW} h-8 gap-2 px-2 text-[13px]`}
+                      onClick={() => insertMachineTag(machine)}
+                    >
+                      <span class="min-w-0 truncate">@{machine}</span>
+                    </button>
+                  )}
+                </For>
+              </Show>
             </div>
           </Show>
         </div>
