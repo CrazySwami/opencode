@@ -41,6 +41,7 @@ import { Vcs } from "@/project/vcs"
 import { ProviderAuth } from "@/provider/auth"
 import { Provider } from "@/provider/provider"
 import { Question } from "@/question"
+import * as Secrets from "@/secrets/store"
 import { SessionCompaction } from "@/session/compaction"
 import { Instruction } from "@/session/instruction"
 import { LLM } from "@/session/llm"
@@ -1011,6 +1012,79 @@ const imageGenRoute = HttpRouter.use((router) =>
 
         const result = yield* Effect.promise(() => generateImage({ prompt, provider, size }))
         return HttpServerResponse.jsonUnsafe(result, { status: result.ok ? 200 : 502 })
+      }),
+    )
+  }),
+).pipe(Layer.provide(authOnlyRouterLayer))
+
+// SECURITY-CRITICAL: server-side encrypted env/secrets store.
+//   - GET  /experimental/env/secrets        -> metadata list ONLY (no values).
+//   - POST /experimental/env/secrets        -> set {name,value,scope?}; the
+//                                              value is encrypted + never echoed.
+//   - DELETE /experimental/env/secrets/:name -> delete (scope via ?scope=).
+// Mutations (POST/DELETE) are gated behind OPENCODE_SECRETS_ENABLED. There is
+// deliberately NO route that returns a decrypted value — the only consumer of
+// plaintext is the internal Secrets.secretsEnvFor() used to build a spawned
+// child's env, which is never routed. See src/secrets/store.ts.
+const secretsRoute = HttpRouter.use((router) =>
+  Effect.gen(function* () {
+    yield* router.add("GET", "/experimental/env/secrets", (request) =>
+      Effect.promise(async () => {
+        const url = new URL(request.url, "http://localhost")
+        const scope = url.searchParams.get("scope") ?? undefined
+        const secrets = await Secrets.listSecrets(scope)
+        // Metadata only — never a value.
+        return HttpServerResponse.jsonUnsafe({ enabled: Secrets.secretsEnabled(), secrets })
+      }),
+    )
+
+    yield* router.add("POST", "/experimental/env/secrets", (request) =>
+      Effect.gen(function* () {
+        if (!Secrets.secretsEnabled()) {
+          return HttpServerResponse.jsonUnsafe(
+            { ok: false, error: "secrets are disabled (set OPENCODE_SECRETS_ENABLED=1)" },
+            { status: 403 },
+          )
+        }
+        const raw = yield* Effect.orDie(request.text)
+        let body: { name?: unknown; value?: unknown; scope?: unknown }
+        try {
+          body = JSON.parse(raw || "{}")
+        } catch {
+          return HttpServerResponse.jsonUnsafe({ ok: false, error: "invalid JSON body" }, { status: 400 })
+        }
+        const name = typeof body.name === "string" ? body.name : ""
+        const value = typeof body.value === "string" ? body.value : ""
+        const scope = typeof body.scope === "string" ? body.scope : undefined
+        const result = yield* Effect.promise(async () => {
+          try {
+            const meta = await Secrets.setSecret({ name, value, scope })
+            // Response echoes metadata ONLY — never the value the caller sent.
+            return { status: 201 as const, body: { ok: true as const, secret: meta } }
+          } catch (err: unknown) {
+            // Scrub any secret material out of the error before returning it.
+            const message = String((Secrets.redact as any)(err instanceof Error ? err.message : String(err), [value]))
+            return { status: 400 as const, body: { ok: false as const, error: message } }
+          }
+        })
+        return HttpServerResponse.jsonUnsafe(result.body, { status: result.status })
+      }),
+    )
+
+    yield* router.add("DELETE", "/experimental/env/secrets/:name", (request) =>
+      Effect.promise(async () => {
+        if (!Secrets.secretsEnabled()) {
+          return HttpServerResponse.jsonUnsafe(
+            { ok: false, error: "secrets are disabled (set OPENCODE_SECRETS_ENABLED=1)" },
+            { status: 403 },
+          )
+        }
+        const name = decodeParam(request.url, /^\/experimental\/env\/secrets\/([^/]+)$/)
+        if (!name) return HttpServerResponse.jsonUnsafe({ ok: false, error: "missing secret name" }, { status: 400 })
+        const url = new URL(request.url, "http://localhost")
+        const scope = url.searchParams.get("scope") ?? undefined
+        const deleted = await Secrets.deleteSecret(name, scope)
+        return HttpServerResponse.jsonUnsafe({ ok: true, deleted }, { status: deleted ? 200 : 404 })
       }),
     )
   }),
@@ -5432,6 +5506,7 @@ export function createRoutes(
     fileViewerRoute,
     tracingStatusRoute,
     imageGenRoute,
+    secretsRoute,
     workspaceSuiteRoute,
     uiRoute,
   ).pipe(
