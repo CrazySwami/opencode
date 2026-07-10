@@ -13,6 +13,7 @@ export type WorkspacePanelTabID =
   | "panel://mcp-registry"
   | "panel://token-maxing"
   | "panel://skills"
+  | "panel://fleet"
 
 export type WorkspacePanelActionID =
   | "refresh"
@@ -268,6 +269,20 @@ export const WORKSPACE_PANEL_TABS: WorkspacePanelDefinition[] = [
     canSnapshot: false,
     canAttachToChat: true,
     description: "Library of installed skills across Claude/Codex/OpenCode/project roots, with source + description.",
+  },
+  {
+    id: "panel://fleet",
+    label: "Agent Fleet",
+    badge: "FLT",
+    route: "/experimental/fleet/sessions",
+    toolIDs: ["workspace_tabs"],
+    mentionIDs: ["fleet", "agents", "sessions"],
+    aliases: ["fleet", "agents", "sessions"],
+    actions: ["refresh", "attach_to_chat", "tools"],
+    safetyPolicy: "Read-only view of the cross-CLI session fleet via the local fleet-service daemon. Never leak session content beyond title/model/status metadata.",
+    canSnapshot: false,
+    canAttachToChat: true,
+    description: "Cross-CLI session fleet (opencode/codex/claude) surfaced from the local fleet-service daemon.",
   },
 ]
 

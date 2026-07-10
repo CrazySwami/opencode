@@ -2788,6 +2788,29 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
       }),
     )
 
+    // Agent Fleet tab: proxy the local fleet-service daemon's /sessions. Daemon
+    // URL is env-configurable; if it's offline we return a graceful marked shape
+    // so the tab renders "daemon offline" instead of erroring.
+    yield* router.add("GET", "/experimental/fleet/sessions", () =>
+      Effect.promise(async () => {
+        const fleet = process.env.OPENCODE_FLEET_URL || "http://127.0.0.1:8788"
+        try {
+          const res = await fetch(`${fleet}/sessions?limit=200`, { signal: AbortSignal.timeout(3000) })
+          const data = (await res.json()) as Record<string, unknown>
+          return HttpServerResponse.jsonUnsafe({ ok: true, fleet, generatedAt: new Date().toISOString(), ...data })
+        } catch {
+          return HttpServerResponse.jsonUnsafe({
+            ok: false,
+            fleet,
+            error: "fleet service offline",
+            generatedAt: new Date().toISOString(),
+            sessions: [],
+            count: 0,
+          })
+        }
+      }),
+    )
+
     yield* router.add("GET", "/experimental/routines/jobs", () =>
       Effect.promise(async () => HttpServerResponse.jsonUnsafe(await routinesAction({ action: "list" }))),
     )

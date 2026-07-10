@@ -60,6 +60,7 @@ const PANEL_ENVIRONMENT_TAB = "panel://environment" satisfies WorkspacePanelTabI
 const PANEL_MCP_REGISTRY_TAB = "panel://mcp-registry" satisfies WorkspacePanelTabID
 const PANEL_TOKEN_MAXING_TAB = "panel://token-maxing" satisfies WorkspacePanelTabID
 const PANEL_SKILLS_TAB = "panel://skills" satisfies WorkspacePanelTabID
+const PANEL_FLEET_TAB = "panel://fleet" satisfies WorkspacePanelTabID
 const PANEL_RESOURCES_TAB = "panel://resources" satisfies WorkspacePanelTabID
 const PANEL_ARTIFACTS_TAB = "panel://artifacts" satisfies WorkspacePanelTabID
 const PANEL_FILE_BROWSER_TAB = "panel://file-browser" satisfies WorkspacePanelTabID
@@ -3247,6 +3248,61 @@ function TokenMaxingTabContent() {
           </Show>
         </div>
         <StatusRow label="Last checked" value={usage.data()?.generatedAt} />
+      </div>
+    </TabChrome>
+  )
+}
+
+function AgentFleetTabContent() {
+  const fleet = createPolledJson<any>(() => "/experimental/fleet/sessions", 10000)
+  const online = () => fleet.data()?.ok === true
+  const sessions = () => fleet.data()?.sessions ?? []
+  const byCli = createMemo(() => {
+    const groups: Record<string, any[]> = {}
+    for (const s of sessions()) (groups[s.cli ?? "unknown"] ??= []).push(s)
+    return Object.entries(groups)
+  })
+  const cliSummary = () => byCli().map(([cli, items]) => `${cli} ${items.length}`).join(" · ")
+  return (
+    <TabChrome title="Agent Fleet" iconTab={PANEL_FLEET_TAB} onRefresh={() => void fleet.refresh()}>
+      <div class="flex min-h-0 flex-1 flex-col gap-3">
+        <Show when={!online()}>
+          <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-12-regular text-orange-100">
+            Fleet service offline ({fleet.data()?.fleet ?? "127.0.0.1:8788"}). Start it locally or set OPENCODE_FLEET_URL.
+          </div>
+        </Show>
+        <div class="grid gap-3 xl:grid-cols-3">
+          <EnvironmentSummaryCard label="Sessions" value={String(sessions().length)} detail="Across all CLIs" tone={online() ? "ready" : "warn"} />
+          <EnvironmentSummaryCard label="CLIs" value={String(byCli().length)} detail={cliSummary() || "No sessions"} tone="ready" />
+          <EnvironmentSummaryCard label="Daemon" value={online() ? "online" : "offline"} detail={fleet.data()?.fleet ?? "127.0.0.1:8788"} tone={online() ? "ready" : "blocked"} />
+        </div>
+        <div class="min-h-0 flex-1 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger" data-testid="fleet-list">
+          <For each={byCli()}>
+            {([cli, items]) => (
+              <div>
+                <div class="sticky top-0 bg-background-base px-3 py-1.5 text-10-medium uppercase tracking-wide text-text-weak">{cli} · {items.length}</div>
+                <For each={items}>
+                  {(s: any) => (
+                    <div class="flex flex-col gap-0.5 border-b border-border-weaker-base px-3 py-2 last:border-b-0">
+                      <div class="flex items-center justify-between gap-3">
+                        <span class="min-w-0 truncate text-13-regular text-text-strong">{s.title || s.id}</span>
+                        <span class="shrink-0 text-11-regular text-text-weak">{s.model ?? "unknown model"}</span>
+                      </div>
+                      <div class="flex items-center justify-between gap-3 text-11-regular text-text-weak">
+                        <span class="truncate">{s.lastActivityAt ?? s.startedAt ?? "no activity recorded"}</span>
+                        <span class="shrink-0">{s.messageCount ?? 0} msgs</span>
+                      </div>
+                    </div>
+                  )}
+                </For>
+              </div>
+            )}
+          </For>
+          <Show when={sessions().length === 0}>
+            <div class="p-4 text-13-regular text-text-weak">No fleet sessions{online() ? "" : " (fleet service offline)"}.</div>
+          </Show>
+        </div>
+        <StatusRow label="Last checked" value={fleet.data()?.generatedAt} />
       </div>
     </TabChrome>
   )
@@ -6547,6 +6603,15 @@ export function SessionSidePanel(props: {
                       >
                         <Show when={activePanelTab() === PANEL_SKILLS_TAB}>
                           <SkillsTabContent />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_FLEET_TAB}
+                        class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
+                      >
+                        <Show when={activePanelTab() === PANEL_FLEET_TAB}>
+                          <AgentFleetTabContent />
                         </Show>
                       </Tabs.Content>
 
