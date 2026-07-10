@@ -3284,6 +3284,14 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
       Effect.gen(function* () {
         const m = request.url.match(/^\/experimental\/fleet\/continue\/([^/]+)\/([^/]+)/)
         if (!m) return HttpServerResponse.text("Missing cli/id", { status: 400 })
+        let cli: string
+        let id: string
+        try {
+          cli = decodeURIComponent(m[1]!)
+          id = decodeURIComponent(m[2]!)
+        } catch {
+          return HttpServerResponse.text("Malformed cli/id", { status: 400 })
+        }
         const raw = yield* Effect.orDie(request.text)
         // Pass the client's body through as-is (prompt etc.); default to {}.
         const bodyJson = (() => {
@@ -3293,9 +3301,7 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
             return "{}"
           }
         })()
-        return yield* Effect.promise(() =>
-          fleetContinueResponse(decodeURIComponent(m[1]!), decodeURIComponent(m[2]!), bodyJson),
-        )
+        return yield* Effect.promise(() => fleetContinueResponse(cli, id, bodyJson))
       }),
     )
 
