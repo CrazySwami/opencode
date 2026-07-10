@@ -3247,6 +3247,36 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
       }),
     )
 
+    // Auto-improve tab: proxy the (standalone, default-OFF) auto-improve daemon's
+    // /status — designated projects + per-project gate/run state. Graceful offline.
+    yield* router.add("GET", "/experimental/auto-improve/status", () =>
+      Effect.promise(async () => {
+        const base = process.env.OPENCODE_AUTO_IMPROVE_URL || "http://127.0.0.1:8789"
+        try {
+          const res = await fetch(`${base}/status`, { signal: AbortSignal.timeout(3000) })
+          if (!res.ok) {
+            return HttpServerResponse.jsonUnsafe({
+              ok: false,
+              daemon: base,
+              error: `auto-improve daemon error (${res.status})`,
+              generatedAt: new Date().toISOString(),
+              projects: [],
+            })
+          }
+          const data = (await res.json()) as Record<string, unknown>
+          return HttpServerResponse.jsonUnsafe({ ok: true, daemon: base, generatedAt: new Date().toISOString(), ...data })
+        } catch {
+          return HttpServerResponse.jsonUnsafe({
+            ok: false,
+            daemon: base,
+            error: "auto-improve daemon offline",
+            generatedAt: new Date().toISOString(),
+            projects: [],
+          })
+        }
+      }),
+    )
+
     // Cross-CLI continue: resume a session on its native CLI via the fleet daemon
     // and relay the live StreamEvent SSE. Spawning is gated at the daemon
     // (FLEET_DRIVE_ENABLED); this proxy just streams whatever it returns.

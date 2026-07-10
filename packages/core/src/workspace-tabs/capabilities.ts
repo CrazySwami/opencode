@@ -15,6 +15,7 @@ export type WorkspacePanelTabID =
   | "panel://skills"
   | "panel://fleet"
   | "panel://env-secrets"
+  | "panel://auto-improve"
 
 export type WorkspacePanelActionID =
   | "refresh"
@@ -299,6 +300,21 @@ export const WORKSPACE_PANEL_TABS: WorkspacePanelDefinition[] = [
     canSnapshot: false,
     canAttachToChat: true,
     description: "Server-side encrypted env/secrets store: metadata-only listing plus gated add/delete, backed by the local secrets store.",
+  },
+  {
+    id: "panel://auto-improve",
+    label: "Auto-Improve",
+    badge: "IMP",
+    route: "/experimental/auto-improve/status",
+    toolIDs: ["workspace_tabs"],
+    mentionIDs: ["auto-improve", "improve", "autonomous"],
+    aliases: ["auto-improve", "improve", "autonomous"],
+    actions: ["refresh", "attach_to_chat", "tools"],
+    safetyPolicy:
+      "Read-only view of the autonomous-improvement engine's designated projects and per-project gate/run state. The engine itself is gated OFF by default (AUTO_IMPROVE_ENABLED) and never mutates a repo from this tab.",
+    canSnapshot: false,
+    canAttachToChat: true,
+    description: "Autonomous-improvement engine status: designated projects, per-project enable/rate-limit state, last run — fronting the local auto-improve daemon (OFF by default).",
   },
 ]
 

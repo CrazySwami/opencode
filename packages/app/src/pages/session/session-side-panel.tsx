@@ -63,6 +63,7 @@ const PANEL_TOKEN_MAXING_TAB = "panel://token-maxing" satisfies WorkspacePanelTa
 const PANEL_SKILLS_TAB = "panel://skills" satisfies WorkspacePanelTabID
 const PANEL_FLEET_TAB = "panel://fleet" satisfies WorkspacePanelTabID
 const PANEL_ENV_SECRETS_TAB = "panel://env-secrets" satisfies WorkspacePanelTabID
+const PANEL_AUTO_IMPROVE_TAB = "panel://auto-improve" satisfies WorkspacePanelTabID
 const PANEL_RESOURCES_TAB = "panel://resources" satisfies WorkspacePanelTabID
 const PANEL_ARTIFACTS_TAB = "panel://artifacts" satisfies WorkspacePanelTabID
 const PANEL_FILE_BROWSER_TAB = "panel://file-browser" satisfies WorkspacePanelTabID
@@ -3371,6 +3372,51 @@ function AgentFleetTabContent() {
           </Show>
         </div>
         <StatusRow label="Last checked" value={fleet.data()?.generatedAt} />
+      </div>
+    </TabChrome>
+  )
+}
+
+function AutoImproveTabContent() {
+  const status = createPolledJson<any>(() => "/experimental/auto-improve/status", 15000)
+  const online = () => status.data()?.ok === true
+  const globalEnabled = () => status.data()?.enabled === true
+  const projects = () => status.data()?.projects ?? []
+  return (
+    <TabChrome title="Auto-Improve" iconTab={PANEL_AUTO_IMPROVE_TAB} onRefresh={() => void status.refresh()}>
+      <div class="flex min-h-0 flex-1 flex-col gap-3">
+        <Show when={!online()}>
+          <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-12-regular text-orange-100">
+            Auto-improve daemon offline ({status.data()?.daemon ?? "127.0.0.1:8789"}). Start it locally or set OPENCODE_AUTO_IMPROVE_URL.
+          </div>
+        </Show>
+        <div class="grid gap-3 xl:grid-cols-3">
+          <EnvironmentSummaryCard label="Projects" value={String(projects().length)} detail="Designated improve targets" tone={online() ? "ready" : "warn"} />
+          <EnvironmentSummaryCard label="Global gate" value={globalEnabled() ? "ENABLED" : "OFF"} detail="AUTO_IMPROVE_ENABLED" tone={globalEnabled() ? "warn" : "ready"} />
+          <EnvironmentSummaryCard label="Daemon" value={online() ? "online" : "offline"} detail={status.data()?.daemon ?? "127.0.0.1:8789"} tone={online() ? "ready" : "blocked"} />
+        </div>
+        <div class="min-h-0 flex-1 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger">
+          <For each={projects()}>
+            {(p: any) => (
+              <div class="flex flex-col gap-1 border-b border-border-weaker-base px-3 py-3 last:border-b-0">
+                <div class="flex items-center justify-between gap-3">
+                  <span class="min-w-0 truncate text-13-regular text-text-strong">{p.name ?? p.id}</span>
+                  <span class="shrink-0 text-11-regular" classList={{ "text-green-300": p.enabled, "text-text-weak": !p.enabled }}>
+                    {p.enabled ? "enabled" : "disabled"}
+                  </span>
+                </div>
+                <Show when={p.vision}><span class="text-11-regular text-text-weak line-clamp-2">{p.vision}</span></Show>
+                <span class="text-10-regular text-text-weak">
+                  runs: {p.runCount ?? 0}{p.lastResult ? ` · last: ${p.lastResult}` : ""}{p.requireReview ? " · review-required" : ""}
+                </span>
+              </div>
+            )}
+          </For>
+          <Show when={projects().length === 0}>
+            <div class="p-4 text-13-regular text-text-weak">No designated projects{online() ? "" : " (daemon offline)"}.</div>
+          </Show>
+        </div>
+        <StatusRow label="Last checked" value={status.data()?.generatedAt} />
       </div>
     </TabChrome>
   )
@@ -6891,6 +6937,15 @@ export function SessionSidePanel(props: {
                       >
                         <Show when={activePanelTab() === PANEL_ENV_SECRETS_TAB}>
                           <EnvSecretsTabContent />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_AUTO_IMPROVE_TAB}
+                        class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
+                      >
+                        <Show when={activePanelTab() === PANEL_AUTO_IMPROVE_TAB}>
+                          <AutoImproveTabContent />
                         </Show>
                       </Tabs.Content>
 
