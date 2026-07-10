@@ -1238,6 +1238,54 @@ async function odRunEventsResponse(runId: string) {
   )
 }
 
+// Relay the fleet daemon's "continue" SSE (a resumed cross-CLI session's live
+// StreamEvents) to the client. Same disconnect-safety as odRunEventsResponse:
+// client disconnect interrupts the fiber → finally aborts the upstream fetch.
+// The daemon itself gates spawning behind FLEET_DRIVE_ENABLED=1 (403 when off).
+async function fleetContinueResponse(cli: string, id: string, bodyJson: string) {
+  const base = process.env.OPENCODE_FLEET_URL || "http://127.0.0.1:8788"
+  const controller = new AbortController()
+  let res: Response
+  try {
+    res = await fetch(`${base}/sessions/${encodeURIComponent(cli)}/${encodeURIComponent(id)}/continue`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "text/event-stream" },
+      body: bodyJson,
+      signal: controller.signal,
+    })
+  } catch {
+    controller.abort()
+    return homeChatSseError("fleet service offline")
+  }
+  if (!res.ok || !res.body) {
+    controller.abort()
+    return homeChatSseError(res.status === 403 ? "fleet drive disabled (set FLEET_DRIVE_ENABLED=1)" : `continue failed (${res.status})`)
+  }
+  const reader = res.body.getReader()
+  return HttpServerResponse.setHeader(
+    HttpServerResponse.stream(
+      Stream.fromAsyncIterable(
+        (async function* () {
+          try {
+            while (true) {
+              const chunk = await reader.read()
+              if (chunk.done) return
+              yield chunk.value
+            }
+          } finally {
+            controller.abort()
+            await reader.cancel().catch(() => undefined)
+          }
+        })(),
+        (cause) => new Error(`fleet continue stream error: ${String(cause)}`),
+      ),
+      { contentType: "text/event-stream" },
+    ),
+    "cache-control",
+    "no-store",
+  )
+}
+
 // List OD projects for the home-chat project picker: id + name + baseDir only.
 async function odHomeChatProjects() {
   const od = odDaemonUrl()
@@ -3196,6 +3244,28 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
             count: 0,
           })
         }
+      }),
+    )
+
+    // Cross-CLI continue: resume a session on its native CLI via the fleet daemon
+    // and relay the live StreamEvent SSE. Spawning is gated at the daemon
+    // (FLEET_DRIVE_ENABLED); this proxy just streams whatever it returns.
+    yield* router.add("POST", "/experimental/fleet/continue/:cli/:id", (request) =>
+      Effect.gen(function* () {
+        const m = request.url.match(/^\/experimental\/fleet\/continue\/([^/]+)\/([^/]+)/)
+        if (!m) return HttpServerResponse.text("Missing cli/id", { status: 400 })
+        const raw = yield* Effect.orDie(request.text)
+        // Pass the client's body through as-is (prompt etc.); default to {}.
+        const bodyJson = (() => {
+          try {
+            return JSON.stringify(JSON.parse(raw || "{}"))
+          } catch {
+            return "{}"
+          }
+        })()
+        return yield* Effect.promise(() =>
+          fleetContinueResponse(decodeURIComponent(m[1]!), decodeURIComponent(m[2]!), bodyJson),
+        )
       }),
     )
 
