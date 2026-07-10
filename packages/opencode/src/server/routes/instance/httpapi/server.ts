@@ -172,6 +172,23 @@ const MCP_REGISTRY_CATALOG: McpCatalogEntry[] = [
 // name + description. All async FS (no request-path sync IO).
 type SkillEntry = { name: string; description: string; source: string; path: string }
 async function listSkills(): Promise<{ ok: boolean; generatedAt: string; roots: string[]; skills: SkillEntry[] }> {
+  // Prefer OpenDesign's skills (the integration backend) when its daemon is up;
+  // fall back to a local SKILL.md scan if OD is offline.
+  try {
+    const res = await fetch(`${odDaemonUrl()}/api/skills`, { signal: AbortSignal.timeout(3000) })
+    const data = (await res.json()) as { skills?: any[] }
+    if (Array.isArray(data.skills)) {
+      const skills: SkillEntry[] = data.skills.map((s) => ({
+        name: s.name ?? s.id,
+        description: String(s.description ?? "").slice(0, 300),
+        source: `opendesign:${s.source ?? "?"}`,
+        path: s.id ?? "",
+      }))
+      return { ok: true, generatedAt: new Date().toISOString(), roots: [`${odDaemonUrl()}/api/skills`], skills }
+    }
+  } catch {
+    // OD offline → local scan below
+  }
   const fsp = await import("node:fs/promises")
   const path = await import("node:path")
   const home = process.env.HOME || "/home/dev"
@@ -222,14 +239,43 @@ async function listSkills(): Promise<{ ok: boolean; generatedAt: string; roots: 
   return { ok: true, generatedAt: new Date().toISOString(), roots: roots.map((r) => r.dir), skills }
 }
 
-function mcpRegistryCatalog() {
-  return {
-    ok: true,
-    generatedAt: new Date().toISOString(),
-    source: "seed",
-    note: "Curated seed catalog. Configured servers come from the client MCP config; add via opencode.jsonc mcp{}.",
-    registries: ["https://registry.modelcontextprotocol.io", "https://mcp.so"],
-    servers: MCP_REGISTRY_CATALOG,
+function odDaemonUrl() {
+  return process.env.OPENCODE_OD_URL || "http://127.0.0.1:7456"
+}
+// MCP registry is sourced from OpenDesign (the integration backend) when its
+// daemon is up: OD's /api/mcp/servers gives configured servers + a rich template
+// catalog. Falls back to the local seed if OD is offline.
+async function mcpRegistryCatalog() {
+  try {
+    const res = await fetch(`${odDaemonUrl()}/api/mcp/servers`, { signal: AbortSignal.timeout(3000) })
+    const data = (await res.json()) as { servers?: unknown[]; templates?: any[] }
+    const servers = (data.templates ?? []).map((t) => ({
+      name: t.id,
+      title: t.label ?? t.id,
+      description: String(t.description ?? "").slice(0, 300),
+      transport: t.transport === "stdio" ? "local" : "remote",
+      homepage: t.homepage ?? "",
+      install: t.url ?? undefined,
+    }))
+    return {
+      ok: true,
+      generatedAt: new Date().toISOString(),
+      source: "opendesign",
+      note: "Sourced from OpenDesign daemon (/api/mcp/servers). Configured servers + template catalog.",
+      registries: [`${odDaemonUrl()}/api/mcp/servers`],
+      configured: data.servers ?? [],
+      servers: servers.length ? servers : MCP_REGISTRY_CATALOG,
+    }
+  } catch {
+    return {
+      ok: true,
+      generatedAt: new Date().toISOString(),
+      source: "seed",
+      note: "OpenDesign daemon offline — showing local seed. Start OD (:7456) for the full catalog.",
+      registries: ["https://registry.modelcontextprotocol.io", "https://mcp.so"],
+      configured: [],
+      servers: MCP_REGISTRY_CATALOG,
+    }
   }
 }
 // Reject an oversized body BEFORE buffering it (Codex finding #2): check the
@@ -2710,7 +2756,7 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
     )
 
     yield* router.add("GET", "/experimental/mcp/registry", () =>
-      Effect.sync(() => HttpServerResponse.jsonUnsafe(mcpRegistryCatalog())),
+      Effect.promise(async () => HttpServerResponse.jsonUnsafe(await mcpRegistryCatalog())),
     )
 
     // Skills Library tab: enumerate skills across known roots. Async FS only
