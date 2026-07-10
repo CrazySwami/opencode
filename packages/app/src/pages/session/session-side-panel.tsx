@@ -3441,7 +3441,7 @@ function AgentFleetTabContent() {
         signal: abort.signal,
       })
       if (!res.body) {
-        setStreamLog((l) => [...l, "no stream body"])
+        setStreamLog((l) => [...l, { type: "error", text: "no stream body" }])
         return
       }
       const reader = res.body.getReader()
@@ -3468,10 +3468,13 @@ function AgentFleetTabContent() {
       }
     } catch (err) {
       if (!(err instanceof DOMException && err.name === "AbortError")) {
-        setStreamLog((l) => [...l, `error: ${err instanceof Error ? err.message : String(err)}`])
+        setStreamLog((l) => [...l, { type: "error", text: err instanceof Error ? err.message : String(err) }])
       }
     } finally {
       setContinuing(undefined)
+      // Clear the shared prompt so an answer/prompt isn't silently re-sent on the
+      // next Continue (the input is reused across sessions).
+      setPrompt("")
     }
   }
   return (
@@ -3666,7 +3669,12 @@ function ImageGenTabContent() {
       setBusy(false)
     }
   }
-  const imageSrc = () => result()?.dataUri ?? result()?.url
+  const imageSrc = () => {
+    const src = result()?.dataUri ?? result()?.url
+    if (typeof src !== "string") return undefined
+    // Scheme allowlist: only render data:image or http(s) sources.
+    return src.startsWith("data:image/") || /^https?:\/\//i.test(src) ? src : undefined
+  }
   return (
     <TabChrome title="Image" iconTab={PANEL_IMAGE_GEN_TAB} onRefresh={() => void providers.refresh()}>
       <div class="flex min-h-0 flex-1 flex-col gap-3">
@@ -3970,9 +3978,13 @@ function MCPRegistryTabContent() {
         body: JSON.stringify({ serverId: s.id }),
       })
       const body = await res.json().catch(() => ({}))
-      if (res.ok && body?.authorizeUrl) {
+      // Only ever navigate to an http(s) URL — never a javascript:/data: scheme,
+      // even from the (trusted, local) daemon, since window.open executes them.
+      if (res.ok && typeof body?.authorizeUrl === "string" && /^https?:\/\//i.test(body.authorizeUrl)) {
         window.open(body.authorizeUrl, "_blank", "noopener,noreferrer")
         setNote(`Opened OAuth for ${s.label ?? s.id} — complete it in the new tab.`)
+      } else if (res.ok && body?.authorizeUrl) {
+        setNote("Refused to open a non-http(s) OAuth URL.")
       } else {
         setNote(body?.error ?? `connect failed (${res.status})`)
       }
