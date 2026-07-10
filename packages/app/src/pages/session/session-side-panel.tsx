@@ -3414,9 +3414,19 @@ function AgentFleetTabContent() {
   const [continuing, setContinuing] = createSignal<string | undefined>()
   const [prompt, setPrompt] = createSignal("")
   const [streamLog, setStreamLog] = createSignal<any[]>([])
+  const [streamSession, setStreamSession] = createSignal<any>()
+  // A resumed session "answers" a question by resuming again with the answer as
+  // the prompt (resumeCommand(id, prompt) keeps the same session context). So a
+  // pending question = the last stream event is a question and we're idle.
+  const pendingQuestion = createMemo(() => {
+    if (continuing() !== undefined) return undefined
+    const last = streamLog()[streamLog().length - 1]
+    return last?.type === "question" ? (last.text ?? "the agent's question") : undefined
+  })
   let abort: AbortController | undefined
   onCleanup(() => abort?.abort())
   const continueSession = async (s: any) => {
+    setStreamSession(s)
     abort?.abort()
     const key = `${s.cli}:${s.id}`
     setContinuing(key)
@@ -3515,13 +3525,24 @@ function AgentFleetTabContent() {
           </Show>
         </div>
         <Show when={continuing() !== undefined || streamLog().length > 0}>
+          <Show when={pendingQuestion()}>
+            <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-11-regular text-orange-100">
+              ❓ Awaiting your answer{streamSession() ? ` for ${streamSession().cli} session` : ""}: <span class="text-orange-50">{pendingQuestion()}</span>
+            </div>
+          </Show>
           <div class="flex items-center gap-2">
             <input
               class="min-w-0 flex-1 rounded-md border border-border-weaker-base bg-background-stronger px-2 py-1 text-12-regular text-text-strong"
-              placeholder="Optional prompt to send on continue…"
+              placeholder={pendingQuestion() ? "Type your answer and press Answer…" : "Optional prompt to send on continue…"}
               value={prompt()}
               onInput={(e) => setPrompt(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && pendingQuestion() && streamSession() && prompt().trim()) void continueSession(streamSession())
+              }}
             />
+            <Show when={pendingQuestion() && streamSession()}>
+              <Button variant="secondary" disabled={!prompt().trim()} onClick={() => void continueSession(streamSession())} aria-label="Answer the question">Answer</Button>
+            </Show>
             <Show when={continuing() !== undefined}>
               <Button variant="ghost" onClick={() => abort?.abort()} aria-label="Stop stream">Stop</Button>
             </Show>
