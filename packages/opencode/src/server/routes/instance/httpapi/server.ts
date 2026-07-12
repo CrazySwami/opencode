@@ -17,6 +17,7 @@ import path from "node:path"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import * as Observability from "@opencode-ai/core/observability"
 import { LangSmith } from "@opencode-ai/core/observability/langsmith"
+import { Otlp } from "@opencode-ai/core/observability/otlp"
 import { Account } from "@/account/account"
 import { Agent } from "@/agent/agent"
 import { Auth } from "@/auth"
@@ -1045,11 +1046,20 @@ const tracingStatusRoute = HttpRouter.use((router) =>
     yield* router.add("GET", "/experimental/tracing/status", () =>
       Effect.sync(() => {
         const tracing = LangSmith.tracingConfig()
+        // exporterConfigured is the load-bearing field: telemetry can be
+        // `enabled:true` yet export NOTHING if no OTLP exporter is resolvable.
+        // We now auto-derive the exporter from the LangSmith config, so this is
+        // usually true when enabled is — but it surfaces the gap explicitly when
+        // LANGSMITH_TRACING is on without a usable exporter target.
+        const exporterConfigured = Otlp.exporterConfigured()
         return HttpServerResponse.jsonUnsafe({
           ok: true,
           enabled: tracing.enabled,
           project: tracing.project,
           hasKey: tracing.hasKey,
+          exporterConfigured,
+          exporting: tracing.enabled && exporterConfigured,
+          recordsContent: LangSmith.traceRecordContent(),
         })
       }),
     )
