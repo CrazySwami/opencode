@@ -159,9 +159,11 @@ function routinesRunRateOk() {
 }
 
 // MCP Registry tab: a curated catalog of installable MCP servers. This is the
-// server-side data source for the panel://mcp-registry tab. Static for now;
-// TODO: fetch + cache the official registry (registry.modelcontextprotocol.io)
-// and community catalogs (mcp.so) instead of the hardcoded seed below.
+// server-side data source for the panel://mcp-registry tab. The hardcoded seed
+// below is now only the last-resort fallback — see fetchOfficialRegistry() /
+// mcpRegistryCatalog() further down, which fetch + TTL-cache the live official
+// registry (registry.modelcontextprotocol.io) when OpenDesign is offline.
+// TODO: also blend in community catalogs (mcp.so).
 type McpCatalogEntry = { name: string; title: string; description: string; transport: "local" | "remote"; homepage: string; install?: string }
 const MCP_REGISTRY_CATALOG: McpCatalogEntry[] = [
   { name: "github", title: "GitHub", description: "Repos, PRs, issues, code search.", transport: "remote", homepage: "https://github.com/github/github-mcp-server" },
@@ -245,9 +247,66 @@ async function listSkills(): Promise<{ ok: boolean; generatedAt: string; roots: 
 function odDaemonUrl() {
   return process.env.OPENCODE_OD_URL || "http://127.0.0.1:7456"
 }
+
+// Official MCP registry (registry.modelcontextprotocol.io). Base URL is
+// env-overridable so tests can point it at a local stub instead of the network.
+const MCP_REGISTRY_URL = () => process.env.OPENCODE_MCP_REGISTRY_URL || "https://registry.modelcontextprotocol.io"
+const MCP_REGISTRY_CACHE_TTL_MS = 6 * 60 * 60 * 1000 // 6h — never block the request path on a slow/offline registry
+let officialRegistryCache: { fetchedAt: number; entries: McpCatalogEntry[] } | null = null
+
+// Test-only hook to bust the module-level TTL cache between test cases (mirrors
+// the NODE_ENV==="test" gating pattern used for the routines enable-approval
+// helpers in src/tool/routines.ts).
+export function __resetMcpRegistryCacheForTest() {
+  if (process.env.NODE_ENV === "test") officialRegistryCache = null
+}
+
+// Fetch + cache the official registry's server list. Never throws: on any
+// failure (network, timeout, non-2xx, parse) it returns the stale cache if one
+// exists, else null, so callers can fall back to the hardcoded seed.
+async function fetchOfficialRegistry(): Promise<McpCatalogEntry[] | null> {
+  if (officialRegistryCache && Date.now() - officialRegistryCache.fetchedAt < MCP_REGISTRY_CACHE_TTL_MS) {
+    return officialRegistryCache.entries
+  }
+  try {
+    const res = await fetch(`${MCP_REGISTRY_URL()}/v0/servers?limit=100`, { signal: AbortSignal.timeout(4000) })
+    if (!res.ok) throw new Error(`registry responded ${res.status}`)
+    const data = (await res.json()) as { servers?: Array<{ server?: Record<string, any> }> }
+    const entries: McpCatalogEntry[] = (data.servers ?? [])
+      .map((item) => item.server)
+      .filter((server): server is Record<string, any> => !!server?.name)
+      .map((server) => {
+        const remotes = Array.isArray(server.remotes) ? server.remotes : []
+        const packages = Array.isArray(server.packages) ? server.packages : []
+        const transport: "local" | "remote" = remotes.length ? "remote" : "local"
+        const firstPackage = packages[0]
+        const install =
+          transport === "remote"
+            ? (remotes[0]?.url ?? undefined)
+            : firstPackage
+              ? `${firstPackage.registryType || firstPackage.registry_type || ""} ${firstPackage.identifier || firstPackage.name || ""}`.trim() ||
+                undefined
+              : undefined
+        return {
+          name: server.name as string,
+          title: (server.title ?? server.name) as string,
+          description: String(server.description ?? "").slice(0, 300),
+          transport,
+          homepage: server.repository?.url ?? server.homepage ?? "",
+          install,
+        }
+      })
+    officialRegistryCache = { fetchedAt: Date.now(), entries }
+    return entries
+  } catch {
+    return officialRegistryCache?.entries ?? null
+  }
+}
+
 // MCP registry is sourced from OpenDesign (the integration backend) when its
 // daemon is up: OD's /api/mcp/servers gives configured servers + a rich template
-// catalog. Falls back to the local seed if OD is offline.
+// catalog. Falls back to the live official registry, and if that's also
+// unreachable, the hardcoded local seed.
 async function mcpRegistryCatalog() {
   try {
     const res = await fetch(`${odDaemonUrl()}/api/mcp/servers`, { signal: AbortSignal.timeout(3000) })
@@ -270,6 +329,18 @@ async function mcpRegistryCatalog() {
       servers: servers.length ? servers : MCP_REGISTRY_CATALOG,
     }
   } catch {
+    const live = await fetchOfficialRegistry()
+    if (live && live.length) {
+      return {
+        ok: true,
+        generatedAt: new Date().toISOString(),
+        source: "registry",
+        note: `OpenDesign daemon offline — showing the official MCP registry (${MCP_REGISTRY_URL()}).`,
+        registries: [`${MCP_REGISTRY_URL()}/v0/servers`],
+        configured: [],
+        servers: live,
+      }
+    }
     return {
       ok: true,
       generatedAt: new Date().toISOString(),

@@ -3319,6 +3319,22 @@ function TokenMaxingTabContent() {
   const snapshots = () => usage.data()?.snapshots ?? []
   const online = () => usage.data()?.ok === true
   const pct = (s: any) => (s?.limit ? Math.min(100, Math.round((Number(s.used) / Number(s.limit)) * 100)) : null)
+  // Group accounts into per-provider pools (the "account pool" view).
+  const byProvider = createMemo(() => {
+    const groups: Record<string, any[]> = {}
+    for (const s of snapshots()) (groups[s.provider ?? "?"] ??= []).push(s)
+    return Object.entries(groups).sort((a, b) => a[0].localeCompare(b[0]))
+  })
+  // Tone per normalized lane status (from the daemon's /usage classifier).
+  const STATUS_TONE: Record<string, string> = {
+    usage_observed: "text-emerald-300 border-emerald-500/30 bg-emerald-500/10",
+    authenticated: "text-sky-300 border-sky-500/30 bg-sky-500/10",
+    limited: "text-red-300 border-red-500/30 bg-red-500/10",
+    cooling: "text-amber-300 border-amber-500/30 bg-amber-500/10",
+    stale: "text-text-weak border-border-weaker-base bg-background-base",
+    unavailable: "text-text-weak border-border-weaker-base bg-background-base",
+  }
+  const statusTone = (st?: string) => STATUS_TONE[st ?? ""] ?? STATUS_TONE.unavailable
   const [switching, setSwitching] = createSignal<string | undefined>()
   const [switchNote, setSwitchNote] = createSignal<string | undefined>()
   const doSwitch = async (adapterId: string) => {
@@ -3352,36 +3368,53 @@ function TokenMaxingTabContent() {
           </div>
         </Show>
         <div class="grid gap-3 xl:grid-cols-3">
-          <EnvironmentSummaryCard label="Accounts" value={String(snapshots().length)} detail="Tracked usage snapshots" tone={online() ? "ready" : "warn"} />
+          <EnvironmentSummaryCard label="Accounts" value={String(snapshots().length)} detail={`${byProvider().length} provider${byProvider().length === 1 ? "" : "s"}`} tone={online() ? "ready" : "warn"} />
           <EnvironmentSummaryCard label="Daemon" value={online() ? "online" : "offline"} detail={usage.data()?.daemon ?? "127.0.0.1:8787"} tone={online() ? "ready" : "blocked"} />
           <EnvironmentSummaryCard label="Switching" value="operator-gated" detail="Subscription auto-rotation off by default" tone="warn" />
         </div>
         <div class="min-h-0 flex-1 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger" data-testid="token-maxing-list">
-          <For each={snapshots()}>
-            {(s: any) => (
-              <div class="flex flex-col gap-1 border-b border-border-weaker-base px-3 py-3 last:border-b-0">
-                <div class="flex items-center justify-between gap-3">
-                  <span class="min-w-0 truncate text-13-regular text-text-strong">{s.provider}<Show when={s.account}><span class="text-text-weak"> · {s.account}</span></Show></span>
-                  <div class="flex shrink-0 items-center gap-2">
-                    <span class="text-11-regular text-text-weak">{s.used ?? "?"}{s.limit ? ` / ${s.limit}` : ""} {s.unit ?? ""}</span>
-                    <Show when={s.adapterId ?? s.id}>
-                      <Button
-                        variant="ghost"
-                        disabled={switching() !== undefined}
-                        onClick={() => void doSwitch(s.adapterId ?? s.id)}
-                        aria-label={`Fail over from ${s.provider}`}
-                      >
-                        {switching() === (s.adapterId ?? s.id) ? "Switching…" : "Fail over"}
-                      </Button>
-                    </Show>
-                  </div>
+          <For each={byProvider()}>
+            {([provider, accounts]: [string, any[]]) => (
+              <div class="border-b border-border-weaker-base last:border-b-0">
+                <div class="flex items-center justify-between gap-2 bg-background-base/40 px-3 py-1.5">
+                  <span class="text-11-medium uppercase tracking-wide text-text-weak">{provider}</span>
+                  <span class="text-10-regular text-text-weak">{accounts.length} account{accounts.length === 1 ? "" : "s"}</span>
                 </div>
-                <Show when={pct(s) !== null}>
-                  <div class="h-1.5 w-full overflow-hidden rounded bg-background-base">
-                    <div class="h-full rounded bg-[#f97316]" style={{ width: `${pct(s)}%` }} />
-                  </div>
-                </Show>
-                <Show when={s.source}><span class="text-10-regular text-text-weak">{s.source}{s.stale ? " · stale" : ""}</span></Show>
+                <For each={accounts}>
+                  {(s: any) => (
+                    <div class="flex flex-col gap-1 px-3 py-2.5">
+                      <div class="flex items-center justify-between gap-3">
+                        <span class="min-w-0 truncate text-13-regular text-text-strong">{s.account ?? provider}</span>
+                        <div class="flex shrink-0 items-center gap-2">
+                          <span class="text-11-regular text-text-weak">{s.used ?? "?"}{s.limit ? ` / ${s.limit}` : ""} {s.unit ?? ""}</span>
+                          <Show when={s.adapterId ?? s.id}>
+                            <Button
+                              variant="ghost"
+                              disabled={switching() !== undefined}
+                              onClick={() => void doSwitch(s.adapterId ?? s.id)}
+                              aria-label={`Fail over from ${s.account ?? provider}`}
+                            >
+                              {switching() === (s.adapterId ?? s.id) ? "Switching…" : "Fail over"}
+                            </Button>
+                          </Show>
+                        </div>
+                      </div>
+                      <Show when={pct(s) !== null}>
+                        <div class="h-1.5 w-full overflow-hidden rounded bg-background-base">
+                          <div class="h-full rounded bg-[#f97316]" style={{ width: `${pct(s)}%` }} />
+                        </div>
+                      </Show>
+                      <div class="flex flex-wrap items-center gap-2">
+                        <Show when={s.status}>
+                          <span class={`rounded border px-1.5 py-0.5 text-10-regular ${statusTone(s.status)}`}>{String(s.status).replace(/_/g, " ")}</span>
+                        </Show>
+                        <Show when={s.evidence}><span class="text-10-regular text-text-weak">{s.evidence}</span></Show>
+                        <Show when={s.freshnessSec != null}><span class="text-10-regular text-text-weak">· {s.freshnessSec}s ago</span></Show>
+                        <Show when={s.source && !s.status}><span class="text-10-regular text-text-weak">{s.source}{s.stale ? " · stale" : ""}</span></Show>
+                      </div>
+                    </div>
+                  )}
+                </For>
               </div>
             )}
           </For>
