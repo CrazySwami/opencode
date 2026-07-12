@@ -77,6 +77,23 @@ function stubDaemon(status: number, payload: unknown): string {
   return `http://127.0.0.1:${server.port}`
 }
 
+// A live stub daemon that returns the given status + JSON payload, invoking
+// `onRequest` with the incoming Request so callers can inspect headers.
+function stubDaemonCapture(status: number, payload: unknown, onRequest: (req: Request) => void): string {
+  const server = Bun.serve({
+    port: 0,
+    fetch: (req) => {
+      onRequest(req)
+      return new Response(JSON.stringify(payload), {
+        status,
+        headers: { "content-type": "application/json" },
+      })
+    },
+  })
+  liveServers.push(server)
+  return `http://127.0.0.1:${server.port}`
+}
+
 // --- token-maxing/usage -----------------------------------------------------
 
 describe("experimental daemon-proxy HttpApi", () => {
@@ -232,6 +249,46 @@ describe("experimental daemon-proxy HttpApi", () => {
       const body = yield* json<{ ok: boolean; error: string }>(res)
       expect(body.ok).toBe(false)
       expect(body.error).toContain("offline")
+    }),
+  )
+
+  it.instance("token-maxing/switch: token set + daemon ok → 200, ok:true + merged decision", () =>
+    Effect.gen(function* () {
+      const tmp = yield* TestInstance
+      process.env.OPENCODE_TOKEN_MAXING_TOKEN = "operator-secret"
+      process.env.OPENCODE_TOKEN_MAXING_URL = stubDaemon(200, {
+        ok: true,
+        decision: { fromAdapterId: "glm-sub:x", toAdapterId: "glm-sub:y", reason: "rotating" },
+      })
+      const res = yield* request("/experimental/token-maxing/switch", tmp.directory, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ adapterId: "glm-sub:x" }),
+      })
+      expect(res.status).toBe(200)
+      const body = yield* json<{ ok: boolean; decision: { toAdapterId: string } }>(res)
+      expect(body.ok).toBe(true)
+      expect(body.decision.toAdapterId).toBe("glm-sub:y")
+    }),
+  )
+
+  it.instance("token-maxing/switch: forwards x-operator-token to daemon, never echoes it back", () =>
+    Effect.gen(function* () {
+      const tmp = yield* TestInstance
+      process.env.OPENCODE_TOKEN_MAXING_TOKEN = "operator-secret"
+      const captured: { token: string | null } = { token: null }
+      process.env.OPENCODE_TOKEN_MAXING_URL = stubDaemonCapture(200, { ok: true, decision: { toAdapterId: "glm-sub:y" } }, (req) => {
+        captured.token = req.headers.get("x-operator-token")
+      })
+      const res = yield* request("/experimental/token-maxing/switch", tmp.directory, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ adapterId: "glm-sub:x" }),
+      })
+      expect(res.status).toBe(200)
+      const body = yield* json<Record<string, unknown>>(res)
+      expect(captured.token).toBe("operator-secret")
+      expect(JSON.stringify(body)).not.toMatch(/operator-secret/)
     }),
   )
 

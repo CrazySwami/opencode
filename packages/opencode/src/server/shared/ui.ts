@@ -5,6 +5,7 @@ import { createHash } from "node:crypto"
 import { ProxyUtil } from "../proxy-util"
 
 let embeddedUIPromise: Promise<Record<string, string> | null> | undefined
+let warnedHostedFallback = false
 
 export const UI_UPSTREAM = new URL("https://app.opencode.ai")
 
@@ -84,6 +85,21 @@ export function serveUIEffect(
     const path = new URL(request.url, "http://localhost").pathname
 
     if (embeddedWebUI) return yield* serveEmbeddedUIEffect(path, services.fs, embeddedWebUI)
+
+    // DEPLOY FOOTGUN GUARD: no embedded UI bundle found, so we're about to serve
+    // the HOSTED UI from app.opencode.ai. On a production self-host this almost
+    // always means the build's embed step was skipped/failed — the server would
+    // silently serve the wrong (upstream) UI and none of the local tabs/changes.
+    // Make that loud once instead of failing silently.
+    if (!warnedHostedFallback && !services.disableEmbeddedWebUi) {
+      warnedHostedFallback = true
+      console.warn(
+        `[ui] embedded web UI bundle not found — serving the HOSTED UI from ${UI_UPSTREAM.href}. ` +
+          `If this is a self-hosted/production build, the embed step was skipped or failed and your ` +
+          `local UI (custom tabs, changes) will NOT be served. Rebuild with the web UI embedded, or set ` +
+          `OPENCODE_DISABLE_EMBEDDED_WEB_UI=1 to intentionally proxy upstream.`,
+      )
+    }
 
     const response = yield* services.client.execute(
       HttpClientRequest.make(request.method)(upstreamURL(path), {
