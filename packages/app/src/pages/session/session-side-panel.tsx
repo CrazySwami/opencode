@@ -1666,10 +1666,18 @@ function createPolledJson<T>(url: () => string | undefined, intervalMs = 10000, 
     }
   }
   createEffect(() => {
+    // Only re-run this effect when the URL changes. `refresh()` synchronously
+    // reads `pending()` (and `url()`) before its first await, so calling it
+    // untracked is essential: otherwise `setPending()` in refresh re-triggers the
+    // effect, which re-creates the interval below and, against a fast backend,
+    // hot-loops the poll (starving the macrotask queue). Only `url()` here is a
+    // real dependency.
     if (!url()) return
-    void refresh()
-    const timer = window.setInterval(() => void refresh(), intervalMs)
-    onCleanup(() => window.clearInterval(timer))
+    untrack(() => {
+      void refresh()
+      const timer = window.setInterval(() => void refresh(), intervalMs)
+      onCleanup(() => window.clearInterval(timer))
+    })
   })
   return { data, error, pending, refresh }
 }
