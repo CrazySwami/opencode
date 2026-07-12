@@ -31,6 +31,11 @@ import { createFileTabListSync } from "@/pages/session/file-tab-scroll"
 import { FileTabContent } from "@/pages/session/file-tabs"
 import { terminalTabLabel } from "@/pages/session/terminal-label"
 import {
+  groupTokenMaxingSnapshotsByProvider,
+  tokenMaxingStatusTone,
+  tokenMaxingUtilizationPct,
+} from "@/pages/session/token-maxing-helpers"
+import {
   createOpenSessionFileTab,
   createSessionTabs,
   focusTerminalById,
@@ -3318,23 +3323,11 @@ function TokenMaxingTabContent() {
   const usage = createPolledJson<any>(() => "/experimental/token-maxing/usage", 10000)
   const snapshots = () => usage.data()?.snapshots ?? []
   const online = () => usage.data()?.ok === true
-  const pct = (s: any) => (s?.limit ? Math.min(100, Math.round((Number(s.used) / Number(s.limit)) * 100)) : null)
+  const pct = tokenMaxingUtilizationPct
   // Group accounts into per-provider pools (the "account pool" view).
-  const byProvider = createMemo(() => {
-    const groups: Record<string, any[]> = {}
-    for (const s of snapshots()) (groups[s.provider ?? "?"] ??= []).push(s)
-    return Object.entries(groups).sort((a, b) => a[0].localeCompare(b[0]))
-  })
+  const byProvider = createMemo(() => groupTokenMaxingSnapshotsByProvider(snapshots()))
   // Tone per normalized lane status (from the daemon's /usage classifier).
-  const STATUS_TONE: Record<string, string> = {
-    usage_observed: "text-emerald-300 border-emerald-500/30 bg-emerald-500/10",
-    authenticated: "text-sky-300 border-sky-500/30 bg-sky-500/10",
-    limited: "text-red-300 border-red-500/30 bg-red-500/10",
-    cooling: "text-amber-300 border-amber-500/30 bg-amber-500/10",
-    stale: "text-text-weak border-border-weaker-base bg-background-base",
-    unavailable: "text-text-weak border-border-weaker-base bg-background-base",
-  }
-  const statusTone = (st?: string) => STATUS_TONE[st ?? ""] ?? STATUS_TONE.unavailable
+  const statusTone = tokenMaxingStatusTone
   const [switching, setSwitching] = createSignal<string | undefined>()
   const [switchNote, setSwitchNote] = createSignal<string | undefined>()
   const doSwitch = async (adapterId: string) => {
