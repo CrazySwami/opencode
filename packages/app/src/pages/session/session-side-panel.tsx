@@ -3319,7 +3319,7 @@ function SkillsTabContent() {
   )
 }
 
-function TokenMaxingTabContent() {
+export function TokenMaxingTabContent() {
   const usage = createPolledJson<any>(() => "/experimental/token-maxing/usage", 10000)
   const snapshots = () => usage.data()?.snapshots ?? []
   const online = () => usage.data()?.ok === true
