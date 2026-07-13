@@ -1,6 +1,14 @@
 import { Effect, Schema } from "effect"
 import * as Tool from "./tool"
+import { InstanceState } from "@/effect/instance-state"
+import { SteelClient } from "@/browser/steel-client"
 import DESCRIPTION from "./browser-use.txt"
+
+/** OPENCODE_BROWSER_STACK on → route automation to Steel instead of the legacy bridge. */
+function browserStackEnabled() {
+  const v = process.env.OPENCODE_BROWSER_STACK?.trim().toLowerCase()
+  return v === "1" || v === "true" || v === "yes"
+}
 
 const actions = [
   "status",
@@ -76,6 +84,20 @@ export const BrowserUseTool = Tool.define<typeof Parameters, Metadata, never>(
       parameters: Parameters,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
+          // Steel mode: the headless automation lane. OFF path (legacy bridge) below.
+          if (browserStackEnabled()) {
+            if (!["status", "sessions"].includes(params.action)) {
+              yield* ctx.ask({
+                permission: "browser_use",
+                patterns: [params.action],
+                always: ["status", "sessions"],
+                metadata: { action: params.action, sessionID: params.sessionID, url: params.url },
+              })
+            }
+            const ins = yield* InstanceState.context
+            return yield* Effect.promise(() => runSteel(params, ins.directory))
+          }
+
           const bridgeURL = browserUseBridgeURL()
           if (!["status", "sessions"].includes(params.action)) {
             yield* ctx.ask({
@@ -108,6 +130,46 @@ export const BrowserUseTool = Tool.define<typeof Parameters, Metadata, never>(
     }
   }),
 )
+
+// Steel-mode handler: Steel is the isolated/parallel automation lane, so the tool
+// manages session lifecycle (status/sessions/create/close). Interactive
+// navigate/click/type belong to the shared 'browser' (neko) tool.
+async function runSteel(params: Schema.Schema.Type<typeof Parameters>, directory?: string) {
+  const steel = new SteelClient(directory)
+  const bridgeURL = (process.env.OPENCODE_STEEL_URL || "").trim().replace(/\/+$/, "") || "steel: not configured"
+  const viewer = process.env.OPENCODE_STEEL_VIEWER_URL?.trim().replace(/\/+$/, "")
+  const base: Metadata = { action: params.action, bridgeURL, ...(viewer ? { liveURL: viewer } : {}) }
+  const out = (body: unknown, sessionID?: string) => ({
+    title: `browser_use ${params.action} (steel)`,
+    output: typeof body === "string" ? body : JSON.stringify(redactBrowserUseResult(body), null, 2),
+    metadata: { ...base, ...(sessionID ? { sessionID } : {}) },
+  })
+  switch (params.action) {
+    case "status": {
+      const health = await steel.health()
+      const sessions = await steel.listSessions()
+      return out({ health, sessions: sessions.ok ? sessions.data : sessions })
+    }
+    case "sessions": {
+      const s = await steel.listSessions()
+      return out(s.ok ? s.data : s)
+    }
+    case "create": {
+      const c = await steel.createSession({ url: normalizeURL(params.url) })
+      return out(c.ok ? c.data : c, c.ok ? c.data.id : undefined)
+    }
+    case "close": {
+      if (!params.sessionID) return out("steel: close requires sessionID")
+      const r = await steel.releaseSession(params.sessionID)
+      return out(r.ok ? `released ${params.sessionID}` : r, params.sessionID)
+    }
+    default:
+      return out(
+        `browser_use.${params.action} in Steel mode: Steel is the headless automation lane (session lifecycle — status/sessions/create/close). For interactive navigate/click/type, use the 'browser' tool (the shared neko browser).`,
+        params.sessionID,
+      )
+  }
+}
 
 async function runBrowserUse(params: Schema.Schema.Type<typeof Parameters>, bridgeURL: string) {
   switch (params.action) {

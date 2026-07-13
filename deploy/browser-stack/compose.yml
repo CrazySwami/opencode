@@ -1,0 +1,102 @@
+# OpenCode remote browser stack — neko (shared interactive browser) + Steel
+# (headless automation lane) + ttyd (remote terminal). Runs on CT100; OpenCode
+# proxies to it via the OPENCODE_NEKO_URL / OPENCODE_STEEL_URL / OPENCODE_TTYD_URL
+# env vars (see .env.example and README.md).
+#
+# ⚠️  PIN BEFORE TRUSTING (see README "Verify before you trust it"):
+#   1. Replace every `:latest` with the exact tag/digest you pin. neko's env
+#      schema changed between v2 and v3 — this file targets **v3**.
+#   2. Regenerate chromium.conf from YOUR pinned neko image, do not trust the
+#      committed copy blindly (the baseline drifts between versions).
+#   3. Confirm Steel's env vars against steel-browser's current repo (beta).
+
+name: opencode-browser-stack
+
+services:
+  # --- neko: the shared interactive browser (WebRTC + persistent profile) ------
+  neko:
+    image: "ghcr.io/m1k1o/neko/chromium:latest" # PIN ME (e.g. :3.0.x or a digest)
+    restart: unless-stopped
+    shm_size: "2gb" # Chromium needs a large /dev/shm or tabs crash
+    cap_add:
+      - SYS_ADMIN # Chromium sandbox / namespaces inside the container
+    ports:
+      - "${NEKO_HTTP_PORT:-8080}:8080" # web UI + websocket signalling
+      - "${NEKO_EPR_RANGE:-52000-52100}:${NEKO_EPR_RANGE:-52000-52100}/udp" # WebRTC media
+      - "${NEKO_CDP_PORT:-9223}:9223" # CDP, exposed by the socat sidecar below
+    environment:
+      NEKO_DESKTOP_SCREEN: "1920x1080@30"
+      # Auth — neko v3 multiuser. Override in .env; never commit real secrets.
+      NEKO_MEMBER_MULTIUSER_USER_PASSWORD: "${NEKO_USER_PASSWORD:?set in .env}"
+      NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD: "${NEKO_ADMIN_PASSWORD:?set in .env}"
+      # WebRTC. EPR must match the published UDP range above.
+      NEKO_WEBRTC_EPR: "${NEKO_EPR_RANGE:-52000-52100}"
+      NEKO_WEBRTC_ICELITE: "1"
+      # NAT1TO1 = the address your browser reaches CT100 at (public IP or LAN IP).
+      # Required whenever the viewer is not on the same host as neko.
+      NEKO_WEBRTC_NAT1TO1: "${NEKO_NAT1TO1:?set CT100 reachable IP in .env}"
+      # TURN/STUN for remote viewers behind NAT (see README "WebRTC reachability").
+      # JSON array; leave empty for LAN-only. Frontend = sent to browser, backend = used by neko.
+      NEKO_WEBRTC_ICESERVERS_FRONTEND: "${NEKO_ICESERVERS_FRONTEND:-[]}"
+      NEKO_WEBRTC_ICESERVERS_BACKEND: "${NEKO_ICESERVERS_BACKEND:-[]}"
+    volumes:
+      # Persistent Chromium profile (logged-in sessions survive restarts).
+      # NOTE: persistence is fragile in neko (upstream issue #605) AND requires the
+      # chromium.conf override below (it drops --bwsi/--disable-file-system).
+      - neko-profile:/home/neko/.config/chromium
+      # Override the chromium launch config to (a) drop --bwsi/--disable-file-system
+      # and (b) add --remote-debugging-port=9222 --remote-allow-origins=*.
+      # ⚠️ Confirm this mount path against YOUR pinned image (see README).
+      - ./chromium.conf:/etc/neko/supervisord/chromium.conf:ro
+
+  # --- socat sidecar: expose neko's CDP off 127.0.0.1 -------------------------
+  # Chromium M113+ force-binds --remote-debugging to 127.0.0.1 and ignores
+  # --remote-debugging-address, so CDP is unreachable from other hosts/containers.
+  # This sidecar shares neko's network namespace and forwards 0.0.0.0:9223 →
+  # 127.0.0.1:9222 so OpenCode can drive it. (The published 9223 lives on `neko`.)
+  neko-cdp-proxy:
+    image: "alpine/socat:latest" # PIN ME
+    restart: unless-stopped
+    network_mode: "service:neko"
+    command: "TCP-LISTEN:9223,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:9222"
+    depends_on:
+      - neko
+
+  # --- Steel: headless/isolated automation lane (agent-only) ------------------
+  steel-api:
+    image: "ghcr.io/steel-dev/steel-browser-api:latest" # PIN ME (beta — verify env)
+    restart: unless-stopped
+    shm_size: "2gb"
+    ports:
+      - "${STEEL_API_PORT:-3000}:3000" # Steel session API
+      - "${STEEL_CDP_PORT:-9224}:9223" # Steel's own CDP (remapped to avoid neko's 9223)
+    environment:
+      DOMAIN: "${STEEL_DOMAIN:-localhost:3000}"
+      CDP_DOMAIN: "${STEEL_CDP_DOMAIN:-localhost:9224}"
+      LOG_STORAGE_ENABLED: "true"
+      LOG_STORAGE_PATH: "/data/logs/browser-logs.duckdb"
+    volumes:
+      - steel-data:/data
+
+  steel-ui:
+    image: "ghcr.io/steel-dev/steel-browser-ui:latest" # PIN ME — the embeddable viewer
+    restart: unless-stopped
+    ports:
+      - "${STEEL_UI_PORT:-5173}:80"
+    environment:
+      API_URL: "${STEEL_API_INTERNAL_URL:-http://steel-api:3000}"
+    depends_on:
+      - steel-api
+
+  # --- ttyd: remote terminal into the stack host ------------------------------
+  ttyd:
+    image: "tsl0922/ttyd:latest" # PIN ME
+    restart: unless-stopped
+    ports:
+      - "${TTYD_PORT:-7681}:7681"
+    # -W = writable; -c = basic auth. Terminal panel embeds this behind OpenCode auth.
+    command: "ttyd -W -c ${TTYD_USER:-opencode}:${TTYD_PASSWORD:?set in .env} bash"
+
+volumes:
+  neko-profile:
+  steel-data:

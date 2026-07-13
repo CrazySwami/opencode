@@ -18,6 +18,10 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import * as Observability from "@opencode-ai/core/observability"
 import { LangSmith } from "@opencode-ai/core/observability/langsmith"
 import { Otlp } from "@opencode-ai/core/observability/otlp"
+import { TrellisRemoteClient } from "@/trellis/client"
+import { NekoClient, resolveNekoViewerUrl } from "@/browser/neko-client"
+import { SteelClient } from "@/browser/steel-client"
+import { ReportsRemoteClient } from "@/reports/client"
 import { Account } from "@/account/account"
 import { Agent } from "@/agent/agent"
 import { Auth } from "@/auth"
@@ -3325,6 +3329,113 @@ const workspaceSuiteRoute = HttpRouter.use((router) =>
             count: 0,
           })
         }
+      }),
+    )
+
+    // --- Trellis read-only bridge (Mirror Factory Open SWE / LangGraph) --------
+    // GET-only. Back the read-only panel://trellis tab via the TrellisRemoteClient:
+    // when no Trellis URL is configured these serve deterministic FIXTURES
+    // (source:"fixture"); unreachable/malformed degrade to {ok:false} — never throw.
+    // The client is directory-scoped for Personal vs Mirror-Factory isolation.
+    yield* router.add("GET", "/experimental/trellis/health", () =>
+      Effect.promise(async () =>
+        HttpServerResponse.jsonUnsafe({ ...(await new TrellisRemoteClient().health()), generatedAt: new Date().toISOString() }),
+      ),
+    )
+    yield* router.add("GET", "/experimental/trellis/agents", () =>
+      Effect.promise(async () =>
+        HttpServerResponse.jsonUnsafe({ ...(await new TrellisRemoteClient().listAgents()), generatedAt: new Date().toISOString() }),
+      ),
+    )
+    yield* router.add("GET", "/experimental/trellis/runs", () =>
+      Effect.promise(async () =>
+        HttpServerResponse.jsonUnsafe({ ...(await new TrellisRemoteClient().listRuns()), generatedAt: new Date().toISOString() }),
+      ),
+    )
+    yield* router.add("GET", "/experimental/trellis/run/:id", (request) =>
+      Effect.promise(async () => {
+        const m = request.url.match(/^\/experimental\/trellis\/run\/([^/?]+)/)
+        let id = ""
+        if (m) {
+          try {
+            id = decodeURIComponent(m[1]!)
+          } catch {
+            id = m[1]!
+          }
+        }
+        return HttpServerResponse.jsonUnsafe({ ...(await new TrellisRemoteClient().getRun(id)), generatedAt: new Date().toISOString() })
+      }),
+    )
+    yield* router.add("GET", "/experimental/trellis/report/:runId", (request) =>
+      Effect.promise(async () => {
+        const m = request.url.match(/^\/experimental\/trellis\/report\/([^/?]+)/)
+        let runId = ""
+        if (m) {
+          try {
+            runId = decodeURIComponent(m[1]!)
+          } catch {
+            runId = m[1]!
+          }
+        }
+        return HttpServerResponse.jsonUnsafe({ ...(await new TrellisRemoteClient().getReport(runId)), generatedAt: new Date().toISOString() })
+      }),
+    )
+
+    // --- Personal daily reports (OpenBook) -------------------------------------
+    // Read-only. Fixtures-first (source:"fixture") until OPENCODE_REPORTS_URL is
+    // set; unreachable/malformed degrade to {ok:false} — never throw. Backs the
+    // panel://reports tab shown next to Routines.
+    yield* router.add("GET", "/experimental/reports/list", () =>
+      Effect.promise(async () =>
+        HttpServerResponse.jsonUnsafe({ ...(await new ReportsRemoteClient().listReports()), generatedAt: new Date().toISOString() }),
+      ),
+    )
+    yield* router.add("GET", "/experimental/reports/health", () =>
+      Effect.promise(async () =>
+        HttpServerResponse.jsonUnsafe({ ...(await new ReportsRemoteClient().health()), generatedAt: new Date().toISOString() }),
+      ),
+    )
+    yield* router.add("GET", "/experimental/reports/get/:id", (request) =>
+      Effect.promise(async () => {
+        const m = request.url.match(/^\/experimental\/reports\/get\/([^/?]+)/)
+        let id = ""
+        if (m) {
+          try {
+            id = decodeURIComponent(m[1]!)
+          } catch {
+            id = m[1]!
+          }
+        }
+        return HttpServerResponse.jsonUnsafe({ ...(await new ReportsRemoteClient().getReport(id)), generatedAt: new Date().toISOString() })
+      }),
+    )
+
+    // --- neko + Steel + ttyd remote browser stack (reachability) ---------------
+    // GET-only status behind the daemon-proxy convention: always HTTP 200 with a
+    // graceful shape so a down stack degrades instead of throwing. neko member
+    // password / Steel token are read server-side by the clients and never echoed.
+    yield* router.add("GET", "/experimental/browser/status", () =>
+      Effect.promise(async () => {
+        const neko = await new NekoClient().health()
+        const steel = await new SteelClient().health()
+        const ttydUrl = process.env["OPENCODE_TTYD_URL"]?.trim().replace(/\/+$/, "")
+        let ttyd: { ok: boolean; url: string | null; error?: string } = { ok: false, url: ttydUrl ?? null }
+        if (ttydUrl) {
+          try {
+            const res = await fetch(ttydUrl, { signal: AbortSignal.timeout(3000) })
+            ttyd = { ok: res.ok || res.status === 401, url: ttydUrl } // 401 = up but auth-gated
+          } catch {
+            ttyd = { ok: false, url: ttydUrl, error: "ttyd offline" }
+          }
+        }
+        return HttpServerResponse.jsonUnsafe({
+          ok: neko.ok || steel.ok || ttyd.ok,
+          neko,
+          steel,
+          ttyd,
+          viewer: resolveNekoViewerUrl() ?? null,
+          generatedAt: new Date().toISOString(),
+        })
       }),
     )
 

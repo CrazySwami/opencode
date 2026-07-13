@@ -1,0 +1,1 @@
+Read-only. List the agents registered in the Mirror Factory Trellis runtime (e.g. Armando, the chief-engineer agent, plus per-task sprout subagents) with each agent's role and status. Read-only; never mutates. Returns FIXTURE data when Trellis is not configured for this directory.

@@ -1,0 +1,1 @@
+Read-only. Get detail for a single Mirror Factory Trellis run by its id, including the run's steps. Read-only; never mutates. Returns FIXTURE data when Trellis is not configured for this directory.

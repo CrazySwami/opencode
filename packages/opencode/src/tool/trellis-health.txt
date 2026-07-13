@@ -1,0 +1,1 @@
+Read-only. Report the health/status of the Mirror Factory Trellis agent runtime (Open SWE / LangGraph): status, runtime, version. This tool never mutates anything and never triggers Trellis execution. If no live Trellis endpoint is configured for the current directory, it returns clearly-labeled FIXTURE data.

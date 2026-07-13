@@ -1,0 +1,1 @@
+Read-only. List recent Mirror Factory Trellis agent runs: id, owning agent, title, status, and timestamps. Read-only; never mutates and never starts a run. Use trellis_get_run for a run's step detail and trellis_get_report for its human-readable OpenBook report. Returns FIXTURE data when Trellis is not configured.

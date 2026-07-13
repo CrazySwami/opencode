@@ -49,6 +49,13 @@ export class Service extends ConfigService.Service<Service>()("@opencode/Runtime
   experimentalWorkspaces: enabledByExperimental("OPENCODE_EXPERIMENTAL_WORKSPACES"),
   experimentalIconDiscovery: enabledByExperimental("OPENCODE_EXPERIMENTAL_ICON_DISCOVERY"),
   experimentalImageGen: enabledByExperimental("OPENCODE_EXPERIMENTAL_IMAGE_GEN"),
+  // Read-only Trellis bridge tools. OFF by default; NOT swept on by
+  // OPENCODE_EXPERIMENTAL — must be set explicitly (safe until Trellis is real).
+  experimentalTrellis: bool("OPENCODE_TRELLIS_ENABLED"),
+  // neko + Steel remote browser stack (replaces the noVNC browser). OFF by
+  // default; NOT swept on by OPENCODE_EXPERIMENTAL — the old browser stays the
+  // default until the CT100 stack is proven and noVNC is deleted.
+  experimentalBrowserStack: bool("OPENCODE_BROWSER_STACK"),
   outputTokenMax: positiveInteger("OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"),
   bashDefaultTimeoutMs: positiveInteger("OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"),
   experimentalNativeLlm: bool("OPENCODE_EXPERIMENTAL_NATIVE_LLM"),

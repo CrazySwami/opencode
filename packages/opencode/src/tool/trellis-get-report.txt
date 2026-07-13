@@ -1,0 +1,1 @@
+Read-only. Get the human-readable OpenBook report for a Mirror Factory Trellis run, by run id. Read-only; never mutates. Returns FIXTURE data when Trellis is not configured for this directory.

@@ -30,6 +30,11 @@ import { RoutinesTool } from "./routines"
 import { WorkspaceEnvTool } from "./workspace-env"
 import { WorkspaceTabsTool } from "./workspace-tabs"
 import { ImageGenTool } from "./image-gen-tool"
+import { TrellisHealthTool } from "./trellis-health"
+import { TrellisListAgentsTool } from "./trellis-list-agents"
+import { TrellisListRunsTool } from "./trellis-list-runs"
+import { TrellisGetRunTool } from "./trellis-get-run"
+import { TrellisGetReportTool } from "./trellis-get-report"
 import * as Tool from "./tool"
 import { Config } from "@/config/config"
 import { type ToolContext as PluginToolContext, type ToolDefinition } from "@opencode-ai/plugin"
@@ -133,6 +138,11 @@ export const layer = Layer.effect(
     const workspaceEnv = yield* WorkspaceEnvTool
     const workspaceTabs = yield* WorkspaceTabsTool
     const imageGen = yield* ImageGenTool
+    const trellisHealth = yield* TrellisHealthTool
+    const trellisListAgents = yield* TrellisListAgentsTool
+    const trellisListRuns = yield* TrellisListRunsTool
+    const trellisGetRun = yield* TrellisGetRunTool
+    const trellisGetReport = yield* TrellisGetReportTool
     const agent = yield* Agent.Service
 
     const state = yield* InstanceState.make<State>(
@@ -254,6 +264,11 @@ export const layer = Layer.effect(
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
           imageGen: Tool.init(imageGen),
+          trellisHealth: Tool.init(trellisHealth),
+          trellisListAgents: Tool.init(trellisListAgents),
+          trellisListRuns: Tool.init(trellisListRuns),
+          trellisGetRun: Tool.init(trellisGetRun),
+          trellisGetReport: Tool.init(trellisGetReport),
         })
         const terminal: Tool.Def = {
           ...tool.shell,
@@ -298,6 +313,9 @@ export const layer = Layer.effect(
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
             ...(flags.experimentalImageGen ? [tool.imageGen] : []),
+            ...(flags.experimentalTrellis
+              ? [tool.trellisHealth, tool.trellisListAgents, tool.trellisListRuns, tool.trellisGetRun, tool.trellisGetReport]
+              : []),
           ],
           task: tool.task,
           read: tool.read,

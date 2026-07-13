@@ -9,11 +9,13 @@ export type WorkspacePanelTabID =
   | "panel://artifacts"
   | "panel://file-browser"
   | "panel://routines"
+  | "panel://reports"
   | "panel://environment"
   | "panel://mcp-registry"
   | "panel://token-maxing"
   | "panel://skills"
   | "panel://fleet"
+  | "panel://trellis"
   | "panel://env-secrets"
   | "panel://auto-improve"
   | "panel://image-gen"
@@ -217,6 +219,22 @@ export const WORKSPACE_PANEL_TABS: WorkspacePanelDefinition[] = [
     description: "Scheduled routine list, logs, draft routine creation, and scheduler status.",
   },
   {
+    id: "panel://reports",
+    label: "Reports",
+    badge: "RPT",
+    icon: "checklist",
+    route: "/experimental/reports/list",
+    toolIDs: ["workspace_tabs"],
+    mentionIDs: ["reports", "daily-report", "daily_report", "openbook", "report"],
+    aliases: ["reports", "daily-report", "daily_report", "openbook", "report"],
+    actions: ["refresh", "attach_to_chat", "tools"],
+    safetyPolicy:
+      "Read-only view of your personal daily reports (OpenBook format), served by the reports feed (OPENCODE_REPORTS_URL) with any token kept server-side. With no feed configured it shows clearly-labelled FIXTURE data. Personal reports never share credentials or state with Mirror Factory or ROI surfaces.",
+    canSnapshot: false,
+    canAttachToChat: true,
+    description: "Your personal daily reports (OpenBook): a dated feed with per-report detail, shown next to Routines. Fixtures until a live feed is wired.",
+  },
+  {
     id: "panel://environment",
     label: "Environment",
     badge: "ENV",
@@ -286,6 +304,22 @@ export const WORKSPACE_PANEL_TABS: WorkspacePanelDefinition[] = [
     canSnapshot: false,
     canAttachToChat: true,
     description: "Cross-CLI session fleet (opencode/codex/claude) surfaced from the local fleet-service daemon.",
+  },
+  {
+    id: "panel://trellis",
+    label: "Trellis",
+    badge: "TRL",
+    hidden: true,
+    route: "/experimental/trellis/runs",
+    toolIDs: ["workspace_tabs"],
+    mentionIDs: ["trellis", "open_swe", "armando", "sprout"],
+    aliases: ["trellis", "open_swe", "armando", "sprout"],
+    actions: ["refresh", "attach_to_chat", "tools"],
+    safetyPolicy:
+      "Read-only view of the separate Mirror Factory Trellis (Open SWE / LangGraph) runtime — agents, runs, and OpenBook reports only. OpenCode never executes, deploys, checkpoints, or writes to Trellis; any Trellis auth stays server-side and is never shown. Gated OFF by default (OPENCODE_TRELLIS_ENABLED); with no configured Trellis URL it displays clearly-labelled FIXTURE data. Personal/ROI and Mirror Factory share no credentials, DBs, traces, or task authority through this tab.",
+    canSnapshot: false,
+    canAttachToChat: true,
+    description: "Cross-runtime, read-only window into Mirror Factory Trellis agents/runs/reports (fixtures until a live read API exists). Not a Manager dashboard; viewing only.",
   },
   {
     id: "panel://env-secrets",

@@ -68,6 +68,8 @@ const PANEL_MCP_REGISTRY_TAB = "panel://mcp-registry" satisfies WorkspacePanelTa
 const PANEL_TOKEN_MAXING_TAB = "panel://token-maxing" satisfies WorkspacePanelTabID
 const PANEL_SKILLS_TAB = "panel://skills" satisfies WorkspacePanelTabID
 const PANEL_FLEET_TAB = "panel://fleet" satisfies WorkspacePanelTabID
+const PANEL_TRELLIS_TAB = "panel://trellis" satisfies WorkspacePanelTabID
+const PANEL_REPORTS_TAB = "panel://reports" satisfies WorkspacePanelTabID
 const PANEL_ENV_SECRETS_TAB = "panel://env-secrets" satisfies WorkspacePanelTabID
 const PANEL_AUTO_IMPROVE_TAB = "panel://auto-improve" satisfies WorkspacePanelTabID
 const PANEL_IMAGE_GEN_TAB = "panel://image-gen" satisfies WorkspacePanelTabID
@@ -539,6 +541,13 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
   let consumedLaunch = 0
   let imageRef: HTMLImageElement | undefined
   let canvasRef: HTMLCanvasElement | undefined
+
+  // neko stack (OPENCODE_BROWSER_STACK): when the remote neko browser is live,
+  // overlay its WebRTC viewer. Default OFF → neko.ok is false → nothing renders,
+  // so the existing noVNC experience below is completely untouched.
+  const browserStack = createPolledJson<any>(() => "/experimental/browser/status", 15000)
+  const nekoMode = () => browserStack.data()?.neko?.ok === true && !!browserStack.data()?.viewer
+  const nekoViewer = () => browserStack.data()?.viewer as string | undefined
 
   const browserExposureBlocked = createMemo(() => !!status().exposureBlocked)
   const profilePolicy = createMemo(() => status().profilePolicy)
@@ -1316,6 +1325,20 @@ function BrowserTabContent(props: { sessionID?: string; launch?: BrowserLaunchRe
               Clear
             </button>
           </Show>
+        </Show>
+        <Show when={nekoMode()}>
+          <div class="absolute inset-0 z-20 flex flex-col bg-background-base" data-testid="neko-browser">
+            <div class="flex items-center gap-2 border-b border-border-weaker-base px-3 py-1.5 text-11-regular text-text-weak">
+              <span class="rounded bg-blue-500/20 px-1 text-10-medium uppercase tracking-wide text-blue-100">neko</span>
+              <span class="min-w-0 truncate">Shared interactive browser (WebRTC + persistent profile) — the agent drives this same browser over CDP.</span>
+            </div>
+            <iframe
+              src={nekoViewer()!}
+              title="neko shared browser"
+              class="w-full min-h-0 flex-1 border-0"
+              allow="autoplay; clipboard-read; clipboard-write; fullscreen; microphone; camera"
+            />
+          </div>
         </Show>
       </div>
     </TabChrome>
@@ -3618,6 +3641,195 @@ function AgentFleetTabContent() {
           </div>
         </Show>
         <StatusRow label="Last checked" value={fleet.data()?.generatedAt} />
+      </div>
+    </TabChrome>
+  )
+}
+
+// Personal daily reports (OpenBook). Read-only, fixtures-first via
+// /experimental/reports/*: with no OPENCODE_REPORTS_URL configured it shows
+// clearly-labelled FIXTURE data. Shown next to Routines in the manager.
+function ReportsTabContent() {
+  const reports = createPolledJson<any>(() => "/experimental/reports/list", 30000)
+  const online = () => reports.data()?.ok === true
+  const isFixture = () => reports.data()?.source === "fixture"
+  const list = () => ((reports.data()?.data ?? []) as any[]).slice().sort((a, b) => String(b.date).localeCompare(String(a.date)))
+
+  const [selected, setSelected] = createSignal<any | undefined>()
+  const body = () => selected()?.body as string | undefined
+
+  return (
+    <TabChrome title="Reports" iconTab={PANEL_REPORTS_TAB} onRefresh={() => void reports.refresh()}>
+      <div class="flex min-h-0 flex-1 flex-col gap-3">
+        <Show when={isFixture()}>
+          <div class="rounded-md border border-blue-500/20 bg-blue-500/10 px-3 py-2 text-11-regular text-blue-100">
+            FIXTURE DATA — no personal reports feed is configured. Set OPENCODE_REPORTS_URL (or a per-directory map) to surface your real daily reports here.
+          </div>
+        </Show>
+        <Show when={!online() && !isFixture()}>
+          <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-12-regular text-orange-100">
+            Reports feed unavailable{reports.data()?.error ? `: ${reports.data()?.error}` : ""}.
+          </div>
+        </Show>
+        <div class="grid gap-3 xl:grid-cols-2">
+          <EnvironmentSummaryCard label="Reports" value={String(list().length)} detail={isFixture() ? "fixture feed" : "from feed"} tone={online() || isFixture() ? "ready" : "warn"} />
+          <EnvironmentSummaryCard label="Latest" value={list()[0]?.date ?? "—"} detail={list()[0]?.title ?? "No reports"} tone="ready" />
+        </div>
+        <div class="min-h-0 flex-1 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger" data-testid="reports-list">
+          <For each={list()}>
+            {(r: any) => (
+              <button
+                type="button"
+                class="flex w-full flex-col gap-0.5 border-b border-border-weaker-base px-3 py-2 text-left last:border-b-0 hover:bg-background-base"
+                classList={{ "bg-background-base": selected()?.id === r.id }}
+                onClick={() => setSelected(selected()?.id === r.id ? undefined : r)}
+              >
+                <div class="flex items-center justify-between gap-3">
+                  <span class="min-w-0 truncate text-13-regular text-text-strong">{r.title || r.id}</span>
+                  <span class="shrink-0 text-11-regular text-text-weak">{r.date}</span>
+                </div>
+                <div class="flex items-center justify-between gap-3 text-11-regular text-text-weak">
+                  <span class="min-w-0 truncate">{r.summary}</span>
+                  <span class="shrink-0">{r.source}</span>
+                </div>
+              </button>
+            )}
+          </For>
+          <Show when={list().length === 0}>
+            <div class="p-4 text-13-regular text-text-weak">No reports yet{online() || isFixture() ? "" : " (feed offline)"}.</div>
+          </Show>
+        </div>
+        <Show when={selected()}>
+          <div class="max-h-64 min-h-0 overflow-auto rounded-md border border-border-weaker-base bg-background-base p-3 text-11-regular text-text-weak">
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-12-medium text-text-strong">{selected()?.title} · {selected()?.date}{isFixture() ? " · FIXTURE" : ""}</span>
+              <Button variant="ghost" onClick={() => setSelected(undefined)} aria-label="Close report">Close</Button>
+            </div>
+            <div class="whitespace-pre-wrap break-words font-mono text-10-regular">{body()}</div>
+          </div>
+        </Show>
+        <StatusRow label="Last checked" value={reports.data()?.generatedAt} />
+      </div>
+    </TabChrome>
+  )
+}
+
+// Read-only window into the separate Mirror Factory Trellis (Open SWE / LangGraph)
+// runtime. Viewing only — no continue/spawn/write. Data is served by the
+// TrellisRemoteClient behind /experimental/trellis/*: with no configured Trellis
+// URL it is clearly-labelled FIXTURE data (source === "fixture").
+function TrellisTabContent() {
+  const runs = createPolledJson<any>(() => "/experimental/trellis/runs", 15000)
+  const online = () => runs.data()?.ok === true
+  const isFixture = () => runs.data()?.source === "fixture"
+  const list = () => (runs.data()?.data ?? []) as any[]
+  const byAgent = createMemo(() => {
+    const groups: Record<string, any[]> = {}
+    for (const r of list()) (groups[r.agentId ?? "unknown"] ??= []).push(r)
+    return Object.entries(groups)
+  })
+  const running = () => list().filter((r) => r.status === "running").length
+
+  // Read-only drill-down: fetch the run detail (steps) + its OpenBook report.
+  const [selected, setSelected] = createSignal<string | undefined>()
+  const [detail, setDetail] = createSignal<any>()
+  const [report, setReport] = createSignal<any>()
+  const [loading, setLoading] = createSignal(false)
+  const viewRun = async (id: string) => {
+    setSelected(id)
+    setDetail(undefined)
+    setReport(undefined)
+    setLoading(true)
+    try {
+      const [d, r] = await Promise.all([
+        fetch(`/experimental/trellis/run/${encodeURIComponent(id)}`).then((x) => x.json()).catch(() => undefined),
+        fetch(`/experimental/trellis/report/${encodeURIComponent(id)}`).then((x) => x.json()).catch(() => undefined),
+      ])
+      setDetail(d)
+      setReport(r)
+    } finally {
+      setLoading(false)
+    }
+  }
+  const steps = () => (detail()?.ok ? (detail()?.data?.steps ?? []) : []) as any[]
+  const reportBody = () => (report()?.ok ? report()?.data?.body : undefined)
+
+  return (
+    <TabChrome title="Trellis" iconTab={PANEL_TRELLIS_TAB} onRefresh={() => void runs.refresh()}>
+      <div class="flex min-h-0 flex-1 flex-col gap-3">
+        <Show when={isFixture()}>
+          <div class="rounded-md border border-blue-500/20 bg-blue-500/10 px-3 py-2 text-11-regular text-blue-100">
+            FIXTURE DATA — no live Mirror Factory Trellis endpoint is configured. Read-only preview of the run/report contract; set OPENCODE_TRELLIS_URL (or a per-directory map) once Trellis exposes a read API.
+          </div>
+        </Show>
+        <Show when={!online() && !isFixture()}>
+          <div class="rounded-md border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-12-regular text-orange-100">
+            Trellis unavailable{runs.data()?.error ? `: ${runs.data()?.error}` : ""}. This tab is read-only; OpenCode never executes or writes to Trellis.
+          </div>
+        </Show>
+        <div class="grid gap-3 xl:grid-cols-3">
+          <EnvironmentSummaryCard label="Runs" value={String(list().length)} detail={isFixture() ? "fixture contract" : "from Trellis"} tone={online() ? "ready" : "warn"} />
+          <EnvironmentSummaryCard label="Agents" value={String(byAgent().length)} detail={byAgent().map(([a, items]) => `${a} ${items.length}`).join(" · ") || "None"} tone="ready" />
+          <EnvironmentSummaryCard label="Active" value={String(running())} detail={isFixture() ? "FIXTURE" : online() ? "live read" : "offline"} tone={running() > 0 ? "ready" : "warn"} />
+        </div>
+        <div class="min-h-0 flex-1 overflow-auto rounded-md border border-border-weaker-base bg-background-stronger" data-testid="trellis-list">
+          <For each={byAgent()}>
+            {([agent, items]) => (
+              <div>
+                <div class="sticky top-0 bg-background-base px-3 py-1.5 text-10-medium uppercase tracking-wide text-text-weak">{agent} · {items.length}</div>
+                <For each={items}>
+                  {(r: any) => (
+                    <div class="flex flex-col gap-0.5 border-b border-border-weaker-base px-3 py-2 last:border-b-0">
+                      <div class="flex items-center justify-between gap-3">
+                        <span class="min-w-0 truncate text-13-regular text-text-strong">{r.title || r.id}</span>
+                        <div class="flex shrink-0 items-center gap-2">
+                          <span class="text-11-regular text-text-weak" classList={{ "text-green-300": r.status === "running", "text-blue-300": r.status === "completed" }}>{r.status}</span>
+                          <Button variant="ghost" disabled={loading() && selected() === r.id} onClick={() => void viewRun(r.id)} aria-label={`View Trellis run ${r.id}`}>
+                            {loading() && selected() === r.id ? "Loading…" : "View"}
+                          </Button>
+                        </div>
+                      </div>
+                      <div class="flex items-center justify-between gap-3 text-11-regular text-text-weak">
+                        <span class="truncate">{r.linear ?? r.startedAt ?? "no linear issue"}</span>
+                        <span class="shrink-0">{r.finishedAt ? `done ${r.finishedAt}` : r.startedAt ?? ""}</span>
+                      </div>
+                    </div>
+                  )}
+                </For>
+              </div>
+            )}
+          </For>
+          <Show when={list().length === 0}>
+            <div class="p-4 text-13-regular text-text-weak">No Trellis runs{online() || isFixture() ? "" : " (Trellis offline)"}.</div>
+          </Show>
+        </div>
+        <Show when={selected() !== undefined}>
+          <div class="max-h-64 min-h-0 overflow-auto rounded-md border border-border-weaker-base bg-background-base p-3 text-11-regular text-text-weak">
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-12-medium text-text-strong">Run {selected()}{detail()?.source === "fixture" || report()?.source === "fixture" ? " · FIXTURE" : ""}</span>
+              <Button variant="ghost" onClick={() => setSelected(undefined)} aria-label="Close run detail">Close</Button>
+            </div>
+            <Show when={steps().length > 0}>
+              <div class="mb-2 font-mono">
+                <For each={steps()}>
+                  {(s: any) => (
+                    <div class="flex gap-2 border-b border-border-weaker-base/40 py-0.5 last:border-b-0">
+                      <span class="shrink-0 rounded bg-background-stronger px-1 text-9-medium uppercase tracking-wide">{s.kind}</span>
+                      <span class="min-w-0 flex-1 whitespace-pre-wrap break-words">{s.at} — {s.summary}</span>
+                    </div>
+                  )}
+                </For>
+              </div>
+            </Show>
+            <Show when={reportBody()}>
+              <div class="whitespace-pre-wrap break-words border-t border-border-weaker-base pt-2 font-mono text-10-regular">{reportBody()}</div>
+            </Show>
+            <Show when={!loading() && steps().length === 0 && !reportBody()}>
+              <div>No detail or report available for this run.</div>
+            </Show>
+          </div>
+        </Show>
+        <StatusRow label="Last checked" value={runs.data()?.generatedAt} />
       </div>
     </TabChrome>
   )
@@ -7365,6 +7577,24 @@ export function SessionSidePanel(props: {
                       >
                         <Show when={activePanelTab() === PANEL_FLEET_TAB}>
                           <AgentFleetTabContent />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_TRELLIS_TAB}
+                        class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
+                      >
+                        <Show when={activePanelTab() === PANEL_TRELLIS_TAB}>
+                          <TrellisTabContent />
+                        </Show>
+                      </Tabs.Content>
+
+                      <Tabs.Content
+                        value={PANEL_REPORTS_TAB}
+                        class={WORKSPACE_PANEL_CONTENT_STRICT_CLASS}
+                      >
+                        <Show when={activePanelTab() === PANEL_REPORTS_TAB}>
+                          <ReportsTabContent />
                         </Show>
                       </Tabs.Content>
 

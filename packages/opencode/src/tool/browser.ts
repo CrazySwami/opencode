@@ -1,9 +1,18 @@
 import { Effect, Schema } from "effect"
 import * as Tool from "./tool"
+import { InstanceState } from "@/effect/instance-state"
+import { NekoClient, resolveNekoViewerUrl } from "@/browser/neko-client"
 import DESCRIPTION from "./browser.txt"
 import path from "node:path"
 import os from "node:os"
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs"
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
+
+/** OPENCODE_BROWSER_STACK on → drive the shared neko Chromium over CDP instead
+ * of spawning local Playwright. Kept in sync with the RuntimeFlag of the same env. */
+function browserStackEnabled() {
+  const v = process.env.OPENCODE_BROWSER_STACK?.trim().toLowerCase()
+  return v === "1" || v === "true" || v === "yes"
+}
 
 const actions = [
   "open",
@@ -145,6 +154,13 @@ export const BrowserTool = Tool.define<typeof Parameters, Metadata, never>(
             },
           })
 
+          // neko mode: drive the shared browser over CDP; the OFF path below is
+          // the original per-session Playwright driver, untouched.
+          if (browserStackEnabled()) {
+            const ins = yield* InstanceState.context
+            return yield* Effect.promise(() => runNekoBrowserAction(params, paths, ins.directory))
+          }
+
           const commands = commandsFor(params, paths)
           const beforeScreenshot = latestPng(paths.artifactDir)
           const result = yield* Effect.promise(() => runAll(commands, paths.artifactDir, ctx.abort))
@@ -207,6 +223,69 @@ export const BrowserTool = Tool.define<typeof Parameters, Metadata, never>(
     }
   }),
 )
+
+// neko-mode driver: acts on the ONE shared Chromium over CDP. A subset of the
+// Playwright action set is mapped; unsupported actions return a clear message
+// rather than silently doing nothing. Never throws (client returns {ok:false}).
+async function runNekoBrowserAction(
+  params: Schema.Schema.Type<typeof Parameters>,
+  paths: ReturnType<typeof sessionPaths>,
+  directory?: string,
+) {
+  const neko = new NekoClient(directory)
+  const base: Metadata = {
+    action: params.action,
+    browserSessionID: paths.browserSessionID,
+    profileDir: paths.profileDir,
+    artifactDir: paths.artifactDir,
+    auditPath: paths.auditPath,
+    command: ["neko", params.action],
+  }
+  const done = (output: string, extra: Partial<Metadata> = {}, attachments?: ReturnType<typeof imageAttachment>[]) => ({
+    title: `browser ${params.action} (neko)`,
+    output,
+    metadata: { ...base, ...extra },
+    ...(attachments ? { attachments } : {}),
+  })
+  switch (params.action) {
+    case "open":
+    case "goto":
+    case "tab-new": {
+      if (!params.url) return done(`browser.${params.action} (neko) requires a url`)
+      const r = await neko.navigate(params.url)
+      return done(r.ok ? `Navigated shared browser to ${r.data.url}` : `neko: ${r.error}`)
+    }
+    case "screenshot": {
+      const r = await neko.screenshot()
+      if (!r.ok) return done(`neko: ${r.error}`)
+      const file = path.join(paths.artifactDir, `neko-${Date.now()}.png`)
+      writeFileSync(file, Buffer.from(r.data.base64, "base64"))
+      return done(`Captured shared browser screenshot → ${file}`, { screenshotPath: file, screenshotURL: fileViewerURL(file) }, [
+        imageAttachment(file),
+      ])
+    }
+    case "eval":
+    case "run-code": {
+      if (!params.text) return done(`browser.${params.action} (neko) requires code in text`)
+      const r = await neko.evaluate(params.text)
+      return done(r.ok ? `Result: ${JSON.stringify(r.data.value)}` : `neko: ${r.error}`)
+    }
+    case "snapshot":
+    case "tab-list": {
+      const r = await neko.listTargets()
+      if (!r.ok) return done(`neko: ${r.error}`)
+      return done(r.data.map((t) => `- [${t.type}] ${t.title || "(untitled)"} — ${t.url}`).join("\n") || "(no targets)")
+    }
+    case "show": {
+      const viewer = resolveNekoViewerUrl(directory)
+      return done(viewer ? `Shared neko browser viewer: ${viewer}` : "neko: OPENCODE_NEKO_URL (viewer) not configured")
+    }
+    default:
+      return done(
+        `browser.${params.action} is not yet supported in neko mode. Supported: open/goto, screenshot, eval/run-code, snapshot/tab-list, show. Unset OPENCODE_BROWSER_STACK for the full Playwright action set.`,
+      )
+  }
+}
 
 export function sessionPaths(sessionID: string) {
   const root = process.env.OPENCODE_BROWSER_HOME || path.join(os.homedir(), ".local", "share", "opencode-browser")
